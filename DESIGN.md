@@ -288,6 +288,8 @@ fleetpull/
   config.py        # Pydantic config models + YAML loader (providers, rate_limits, storage, sync plan)
   limits.py        # QuotaScopeLimiter, RateLimiterRegistry
   client.py        # HTTP transport, retry policy, limiter consultation, pagination iterator
+  network/
+    truststore_context.py  # SSLContext factory backed by the OS trust store (Zscaler-class proxies)
   endpoints/
     base.py        # EndpointDefinition ABC: auth, pagination style, quota_scope,
                    #   incremental strategy (watermark | feed_token), storage strategy
@@ -301,6 +303,12 @@ fleetpull/
   orchestrator.py  # sync planner: builds work units, per-provider executors, per-endpoint writer threads
   cli.py           # fetch, sync
 ```
+
+The package root holds user-facing modules only; internal code lives in
+subpackages. Open question (settle before Prompt 1): the flat placement of the
+remaining internal modules (`limits.py`, `client.py`, `records.py`,
+`storage.py`, `state.py`, `orchestrator.py`) predates that rule and needs
+restructuring or an explicit exemption.
 
 Boundary rules:
 
