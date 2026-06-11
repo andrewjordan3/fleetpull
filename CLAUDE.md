@@ -30,7 +30,7 @@ These rules regress silently if violated — no single scoped task sees the whol
 - **The limiter lives at the transport boundary.** `client.py` consults the `RateLimiterRegistry` (keyed by `endpoint.quota_scope`) immediately before every HTTP request. The orchestrator never touches the limiter.
 - **Every HTTP attempt consumes a token. Every page is an attempt.** `request_slot()` wraps the single httpx call inside the pagination loop — never around the loop, never around a retry loop. Retries re-acquire.
 - **429 / Retry-After penalizes the whole quota scope** via `penalize(seconds)`: `pause_until = max(pause_until, monotonic() + seconds)`. Never represent Retry-After as a local sleep in retry logic.
-- **All limiter timing uses `time.monotonic()`.** Never wall clock.
+- **All limiter timing flows through the injected `Clock.monotonic_seconds()`** — never wall clock, and never a direct `time.*` call inside the limits package.
 - **SQLite is the single source of truth** for operational state. `metadata.json` files are generated human-readable snapshots written from SQLite after successful runs; the program never reads them.
 - **SQLite transactions are tiny.** Claim → commit; finish → commit. Never hold a transaction across an HTTP call.
 - **Incremental state is a tagged union** (`DateWatermark | FeedToken`), declared per endpoint definition. Never assume datetime watermarks.
