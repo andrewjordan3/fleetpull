@@ -1,6 +1,6 @@
 # fleetpull — Design Document
 
-**Status:** Design settled through module layout. No code written.
+**Status:** Design settled through module layout; implementation underway (see §14 for build progress).
 **Working name:** `fleetpull` (PyPI availability confirmed 2026-06-10 for `fleetpull`, `fleetloader`, `telematics`, `telematics-io`; `fleetpull` selected — describes exactly what the package does and nothing more).
 **Relationship to fleet-telemetry-hub:** New package, not a rewrite. fleet-telemetry-hub remains in production untouched while fleetpull is built.
 
@@ -245,7 +245,60 @@ deterministic.
 
 ---
 
-## 8. Records, Flattening, and Schema Derivation
+## 8. Authentication and Response Classification
+
+### Auth is a strategy, not a constant
+
+A provider-agnostic `AuthStrategy` protocol:
+
+- `prepare(spec) -> spec` — injects credentials: a header for Motive/Samsara static keys; JSON-RPC body params plus the resolved host for GeoTab.
+- `on_auth_failure() -> bool` — answers "did I fix anything worth one retry?" Static keys: False — a rejected API key cannot be fixed by retrying. Sessions: invalidate + refresh, True.
+
+Provider names appear ONLY at the composition root that constructs
+strategies; the client and everything downstream is provider-blind.
+*(Design-only as of the auth-manager prompt; implemented with the request
+contract.)*
+
+### GeoTab session lifecycle (implemented: `network/auth/`)
+
+GeoTab authenticates by session: `Authenticate` returns a session id and a
+resolved host; the session lives ~14 days but can die early (password
+change; a 100-concurrent-session LRU cap per account).
+
+- One session per process, shared by all threads.
+- **Single-flight refresh:** one lock, held ACROSS the authenticate call, with a generation counter as the staleness/stampede guard — ten workers hitting expiry simultaneously produce one `Authenticate` call, not ten. (Deliberately the opposite of the SQLite never-hold-a-transaction-across-HTTP rule; the blocking is the point.)
+- **Reactive invalidation is primary; proactive refresh is insurance:** 14-day assumed lifetime, 1-day margin, pessimistic timestamping (the session is stamped before the network call, so latency counts against the lifetime rather than extending it).
+- `authenticate_fn` is injected so `network/auth/` never imports httpx. The real implementation is an HTTP attempt and passes through the rate limiter — no exceptions to token-per-attempt.
+- **No disk persistence:** a session id is a bearer-equivalent secret, and at one process per scheduled run the steady-state session count stays far below GeoTab's 100-session cap.
+- Passwords are `SecretStr`, extracted only inside the real `authenticate_fn`; the manager never reads the secret and never logs session ids.
+
+### Response classification, single-producer
+
+A closed vocabulary `ResponseCategory` (StrEnum): SUCCESS, TRANSIENT,
+RATE_LIMITED, AUTH_FAILURE, FATAL. The vocabulary means "what the client
+does next," and each member earns its slot by demanding a distinct client
+action (parse / retry / penalize-shared-scope-then-retry / ask the auth
+strategy / raise). **Closure invariant: a new category is admissible only
+if it arrives with a new client action.**
+
+Classification results travel as a frozen `ClassifiedResponse` (category;
+`retry_after_seconds: float | None`; `detail: str | None` — fields inert
+outside their category).
+
+The producer is a per-provider `ResponseClassifier` ABC:
+
+- `classify_response(status, headers, body)` — abstract; provider envelopes differ (GeoTab returns JSON-RPC errors inside HTTP 200, so a status-code-only client cannot see failure).
+- `classify_transport_exception(exc)` — CONCRETE in the base, written once: timeouts and connection failures are below the provider envelope and must not vary per provider.
+
+The classifier is the SOLE producer of the vocabulary; the client only
+consumes, dispatching on category. House rule this establishes:
+**Protocol for pure shape** (`AuthStrategy` — zero shared code), **ABC for
+shared substance** (`ResponseClassifier`). *(Design-only as of the
+auth-manager prompt; implemented with the request contract.)*
+
+---
+
+## 9. Records, Flattening, and Schema Derivation
 
 **Models stay pure API mirrors.** Ported Pydantic models carry no use-case
 logic. Flattening and schema derivation are generic transforms in
@@ -271,7 +324,7 @@ public internal contract, not a later retrofit.
 
 ---
 
-## 9. Public API and CLI
+## 10. Public API and CLI
 
 **Programmatic:**
 
@@ -286,17 +339,21 @@ public internal contract, not a later retrofit.
 
 ---
 
-## 10. Module Layout
+## 11. Module Layout
 
 ```
 fleetpull/
   client.py        # HTTP transport, retry policy, limiter consultation, pagination iterator
   config/          # Pydantic models for user-provided YAML, one module per section; the YAML loader joins in a later prompt
     logger.py      # LoggerConfig
+    geotab.py      # GeotabAuthConfig
   logger/
     setup.py       # package logging setup (setup_logger), driven by LoggerConfig
   network/
     truststore_context.py  # SSLContext factory backed by the OS trust store (Zscaler-class proxies)
+    auth/
+      models.py    # AuthenticationResult, GeotabSession (frozen dataclasses)
+      manager.py   # GeotabSessionManager — single-flight session lifecycle (§8)
     limits/
       config.py        # RateLimitConfig (frozen Pydantic)
       bucket_math.py   # pure token-bucket arithmetic (stateless functions)
@@ -335,7 +392,7 @@ Boundary rules:
 
 ---
 
-## 11. House Code Standards (carried into this package)
+## 12. House Code Standards (carried into this package)
 
 - Asserts only in tests, never production code
 - Annotated locals; explicit type hints everywhere
@@ -348,17 +405,17 @@ Boundary rules:
 
 ---
 
-## 12. Open Questions
+## 13. Open Questions
 
-- GeoTab specifics pending API access: auth model, `GetFeed` semantics in practice, real rate limits, which entities map to which storage strategies
+- GeoTab specifics pending API access: `GetFeed` semantics in practice, real rate limits, which entities map to which storage strategies (the auth model is settled — session-based, §8)
 - Real rate-limit values for Motive/Samsara (YAML numbers above are placeholders)
 - Whether any endpoint actually warrants the flattening opt-out
 - Per-endpoint quota scopes for Samsara (config-only change when needed)
 - Final name confirmation before repo creation (`fleetpull` is the working selection)
 
-## 13. Next Steps
+## 14. Next Steps
 
 1. Review/amend this document
-2. Repo scaffold + first CC prompts, in dependency order: `limits.py` → `client.py` → `endpoints/base.py` → `records.py` → `storage.py` → `state.py` → `orchestrator.py` → `cli.py`
+2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (`RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`, likely a `ProviderProfile` bundle) → `client.py` → `endpoints/base.py` → `records.py` → `storage.py` → `state.py` → `orchestrator.py` → `cli.py`
 3. Port Motive/Samsara models and endpoint definitions onto the new base
 4. GeoTab integration when access lands
