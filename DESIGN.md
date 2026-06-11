@@ -221,7 +221,7 @@ protects the invariant for any caller outside the orchestrator.
 
 - **Every HTTP attempt consumes a token.** Not every logical task, not every page window — every actual HTTP request. Retries each pass through `request_slot()` again.
 - **Every page is an attempt.** `request_slot()` wraps the single httpx call *inside* the pagination loop, never around the loop. (This rule regresses silently if the pagination iterator is refactored — it lives here so it doesn't.)
-- **429 / Retry-After penalizes the whole quota scope:** `pause_until = max(pause_until, monotonic() + penalty_seconds)` — max-merged, never overwritten with a smaller penalty.
+- **429 / Retry-After penalizes the whole quota scope:** `pause_until = max(pause_until, clock.monotonic_seconds() + penalty_seconds)` — max-merged, never overwritten with a smaller penalty.
 - `request_slot()` checks penalty **before** bucket tokens (no token consumption while the scope is globally paused).
 - Retry policy logic may live in the retry layer, but **Retry-After waiting is represented in the shared limiter**, never as a local sleep — otherwise only the thread that saw the 429 learns the penalty.
 - No scattered `sleep()` calls in endpoint code.
@@ -290,8 +290,11 @@ public internal contract, not a later retrofit.
 
 ```
 fleetpull/
-  config.py        # Pydantic config models + YAML loader (providers, rate_limits, storage, sync plan)
   client.py        # HTTP transport, retry policy, limiter consultation, pagination iterator
+  config/          # Pydantic models for user-provided YAML, one module per section; the YAML loader joins in a later prompt
+    logger.py      # LoggerConfig
+  logger/
+    setup.py       # package logging setup (setup_logger), driven by LoggerConfig
   network/
     truststore_context.py  # SSLContext factory backed by the OS trust store (Zscaler-class proxies)
     limits/
@@ -316,10 +319,13 @@ fleetpull/
 ```
 
 The package root holds user-facing modules only; internal code lives in
-subpackages. Open question: the flat placement of the remaining internal
-modules (`client.py`, `config.py`, `records.py`, `storage.py`, `state.py`,
-`orchestrator.py`) predates that rule and needs restructuring or an explicit
-exemption (`limits` is settled: it lives at `network/limits/`).
+subpackages. Settled: ALL Pydantic models parsing user-provided YAML
+centralize in `config/` — including `RateLimitConfig`, which currently lives
+in `network/limits/config.py` and migrates to `config/` in the prompt that
+builds the YAML loader. Open question: the flat placement of the remaining
+internal modules (`client.py`, `records.py`, `storage.py`, `state.py`,
+`orchestrator.py`) predates the root rule and needs restructuring or an
+explicit exemption (`limits` is settled: it lives at `network/limits/`).
 
 Boundary rules:
 
