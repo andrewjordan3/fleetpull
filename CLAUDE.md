@@ -29,7 +29,7 @@ These rules regress silently if violated — no single scoped task sees the whol
 - **Single writer per endpoint.** Fetch workers parallelize; parquet merge for a given endpoint is one thread. Partitioned endpoints may parallelize across partitions, never within one.
 - **The limiter lives at the transport boundary.** `client.py` consults the `RateLimiterRegistry` (keyed by `endpoint.quota_scope`) immediately before every HTTP request. The orchestrator never touches the limiter.
 - **Every HTTP attempt consumes a token. Every page is an attempt.** `request_slot()` wraps the single httpx call inside the pagination loop — never around the loop, never around a retry loop. Retries re-acquire.
-- **429 / Retry-After penalizes the whole quota scope** via `penalize(seconds)`: `pause_until = max(pause_until, monotonic() + seconds)`. Never represent Retry-After as a local sleep in retry logic.
+- **429 / Retry-After penalizes the whole quota scope** via `penalize(seconds)`: `pause_until = max(pause_until, clock.monotonic_seconds() + seconds)`. Never represent Retry-After as a local sleep in retry logic.
 - **All limiter timing flows through the injected `Clock.monotonic_seconds()`** — never wall clock, and never a direct `time.*` call inside the limits package.
 - **SQLite is the single source of truth** for operational state. `metadata.json` files are generated human-readable snapshots written from SQLite after successful runs; the program never reads them.
 - **SQLite transactions are tiny.** Claim → commit; finish → commit. Never hold a transaction across an HTTP call.
@@ -80,6 +80,7 @@ Use sub-agents for parallelizable tasks: renaming a symbol across many files, up
 **Files and folders are cheap. Cramming is expensive.** When in doubt, create a new file. One responsibility per file. Target 150–200 lines; split rather than extend. Never combine unrelated things to avoid creating a file.
 
 - **Package root is user-facing only.** `src/fleetpull/` holds only user-facing modules. All internal code lives in subpackages, even when a subpackage holds a single module — a folder with one file is always preferred over exposing an internal module at the package root.
+- **YAML config models live in `src/fleetpull/config/`.** Pydantic models parsing user-provided YAML configuration go there, one module per config section.
 - **`__init__.py` files:** Imports and re-exports only. No functions, no classes, no logic.
 - **Re-exports:** Only `__init__.py` may re-export symbols from other modules. No other file should re-export something it didn't define.
 - **Import direction:** External callers import from the package (`from fleetpull import X`). Internal callers import from siblings (`from fleetpull.sibling import X`).
