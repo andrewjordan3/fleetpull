@@ -290,6 +290,8 @@ fleetpull/
   client.py        # HTTP transport, retry policy, limiter consultation, pagination iterator
   network/
     truststore_context.py  # SSLContext factory backed by the OS trust store (Zscaler-class proxies)
+  timing/
+    clock.py       # injectable Clock Protocol; SystemClock and FrozenClock implementations
   endpoints/
     base.py        # EndpointDefinition ABC: auth, pagination style, quota_scope,
                    #   incremental strategy (watermark | feed_token), storage strategy
