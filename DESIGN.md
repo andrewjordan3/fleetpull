@@ -186,7 +186,8 @@ rate_limits:
 ```
 
 Refill rate = `requests_per_period / period_seconds`, lazy refill on acquire,
-capped at `burst`. All timing uses `time.monotonic()`, never wall clock.
+capped at `burst`. All limiter timing flows through the injected
+`Clock.monotonic_seconds()`, never wall clock.
 
 ### Placement: transport boundary, not orchestrator
 
@@ -234,9 +235,13 @@ Interface:
 
 ```python
 class QuotaScopeLimiter:
+    def __init__(self, quota_scope: str, config: RateLimitConfig, clock: Clock = SystemClock()) -> None: ...
     def request_slot(self) -> AbstractContextManager[None]: ...  # blocks; yields in-flight slot
     def penalize(self, seconds: float) -> None: ...              # scope-wide pause, max-merged
 ```
+
+The clock is injected (`fleetpull.timing.Clock`) so limiter tests are
+deterministic.
 
 ---
 
@@ -286,10 +291,14 @@ public internal contract, not a later retrofit.
 ```
 fleetpull/
   config.py        # Pydantic config models + YAML loader (providers, rate_limits, storage, sync plan)
-  limits.py        # QuotaScopeLimiter, RateLimiterRegistry
   client.py        # HTTP transport, retry policy, limiter consultation, pagination iterator
   network/
     truststore_context.py  # SSLContext factory backed by the OS trust store (Zscaler-class proxies)
+    limits/
+      config.py        # RateLimitConfig (frozen Pydantic)
+      bucket_math.py   # pure token-bucket arithmetic (stateless functions)
+      limiter.py       # QuotaScopeLimiter
+      registry.py      # RateLimiterRegistry, UnknownQuotaScopeError
   timing/
     clock.py       # injectable Clock Protocol; SystemClock and FrozenClock implementations
   endpoints/
@@ -307,10 +316,10 @@ fleetpull/
 ```
 
 The package root holds user-facing modules only; internal code lives in
-subpackages. Open question (settle before Prompt 1): the flat placement of the
-remaining internal modules (`limits.py`, `client.py`, `records.py`,
-`storage.py`, `state.py`, `orchestrator.py`) predates that rule and needs
-restructuring or an explicit exemption.
+subpackages. Open question: the flat placement of the remaining internal
+modules (`client.py`, `config.py`, `records.py`, `storage.py`, `state.py`,
+`orchestrator.py`) predates that rule and needs restructuring or an explicit
+exemption (`limits` is settled: it lives at `network/limits/`).
 
 Boundary rules:
 
