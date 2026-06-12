@@ -1,6 +1,5 @@
 # src/fleetpull/logger/setup.py
-"""
-Logging configuration for the fleetpull package.
+"""Logging configuration for the fleetpull package.
 
 Provides centralized logging setup so every module that calls
 ``logging.getLogger(__name__)`` inherits the same level, format, and
@@ -71,7 +70,9 @@ def setup_logger(config: LoggerConfig) -> None:
         configuration automatically, so no handle is useful.
 
     Side Effects:
-        - Replaces the ``fleetpull`` logger's handlers.
+        - Closes and replaces the ``fleetpull`` logger's existing
+          handlers (closing releases the previous configuration's file
+          descriptors).
         - Sets the ``fleetpull`` logger's level (the minimum of the
           active handler levels, so no record is filtered at the
           logger before reaching a handler).
@@ -85,8 +86,14 @@ def setup_logger(config: LoggerConfig) -> None:
     """
     package_logger: logging.Logger = logging.getLogger(_PACKAGE_LOGGER_NAME)
 
-    # Clear existing handlers to make the call idempotent and to let a
-    # caller reconfigure at runtime without accumulating duplicates.
+    # Close, then clear, existing handlers: closing releases the file
+    # descriptors (and Windows file locks) a previous configuration
+    # holds; clearing makes the call idempotent so a caller can
+    # reconfigure at runtime without accumulating duplicates. Closing
+    # a StreamHandler never closes its underlying stream, so stderr is
+    # safe.
+    for previous_handler in package_logger.handlers:
+        previous_handler.close()
     package_logger.handlers.clear()
 
     # A hosting application may configure the root logger; disabling

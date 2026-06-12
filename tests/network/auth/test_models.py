@@ -7,8 +7,6 @@ import pytest
 
 from fleetpull.network.auth.models import AuthenticationResult, GeotabSession
 
-__all__: list[str] = []
-
 
 def build_result() -> AuthenticationResult:
     return AuthenticationResult(

@@ -110,7 +110,7 @@ class QuotaScopeLimiter:
             WARNING naming the scope and the effective pause duration.
         """
         if seconds <= 0:
-            raise ValueError(f'penalty seconds must be positive, got {seconds}.')
+            raise ValueError(f'penalty seconds must be positive, got {seconds}')
         with self._condition:
             now: float = self._clock.monotonic_seconds()
             self._pause_until = max(self._pause_until, now + seconds)

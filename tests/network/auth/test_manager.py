@@ -2,7 +2,8 @@
 
 Deterministic tests use FrozenClock on a single thread; concurrency
 tests use real threads with tiny waits and generous ceilings (the
-limits-tests precedent). No HTTP anywhere: authenticate_fn is a stub.
+``tests/network/limits/test_limiter.py`` precedent). No HTTP anywhere:
+authenticate_fn is a stub.
 """
 
 import logging
@@ -17,8 +18,6 @@ from fleetpull.config.geotab import GeotabAuthConfig
 from fleetpull.network.auth.manager import GeotabSessionManager
 from fleetpull.network.auth.models import AuthenticationResult, GeotabSession
 from fleetpull.timing.clock import FrozenClock
-
-__all__: list[str] = []
 
 FROZEN_START_TIME: datetime = datetime(2026, 1, 1, tzinfo=UTC)
 

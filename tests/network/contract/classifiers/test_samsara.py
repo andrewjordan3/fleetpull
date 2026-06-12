@@ -1,14 +1,13 @@
-"""Tests for the Samsara response classifier (fixtures: S1 capture, June 2026;
-rate-limit contract from official documentation)."""
+"""Tests for the Samsara response classifier (fixtures: scrubbed
+provider-behavior verification, June 2026; rate-limit contract from
+official documentation)."""
 
 import pytest
 
 from fleetpull.network.contract.classifiers.samsara import SamsaraResponseClassifier
 from fleetpull.network.contract.outcome import ResponseCategory
 
-__all__: list[str] = []
-
-# Samsara — invalid token (S1; HTTP 401):
+# Captured: invalid token (HTTP 401):
 SAMSARA_INVALID_TOKEN_BODY = (
     '{"message": "invalid token", "requestId": "aaaabbbb-ccccdddd"}'
 )
@@ -26,6 +25,9 @@ class TestSamsaraClassifier:
     def test_2xx_is_success(self, classifier: SamsaraResponseClassifier) -> None:
         outcome = classifier.classify_response(200, {}, '{"data": []}')
         assert outcome.category is ResponseCategory.SUCCESS
+        # Samsara classifies by status alone, so no parse is handed
+        # forward; the client parses.
+        assert outcome.parsed_body is None
 
     def test_429_with_fractional_retry_after(
         self, classifier: SamsaraResponseClassifier

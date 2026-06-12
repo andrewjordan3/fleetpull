@@ -16,8 +16,6 @@ import pytest
 from fleetpull.config.logger import LoggerConfig
 from fleetpull.logger.setup import _DATE_FORMAT, setup_logger
 
-__all__: list[str] = []
-
 
 @pytest.fixture(autouse=True)
 def restore_package_logger() -> Iterator[None]:
@@ -103,6 +101,20 @@ class TestFileSetup:
         nested_log_path = tmp_path / 'logs' / 'nested' / 'fleet.log'
         setup_logger(LoggerConfig(file_path=nested_log_path))
         assert nested_log_path.parent.is_dir()
+
+    def test_reconfiguration_closes_previous_file_handler(self, tmp_path: Path) -> None:
+        setup_logger(LoggerConfig(file_path=tmp_path / 'first.log'))
+        previous_file_handler = next(
+            attached_handler
+            for attached_handler in package_logger().handlers
+            if isinstance(attached_handler, logging.FileHandler)
+        )
+        # Capture the stream before reconfiguring: closed-ness is the
+        # observable handler state (FileHandler.close() closes it).
+        previous_stream = previous_file_handler.stream
+        assert previous_stream is not None
+        setup_logger(LoggerConfig())
+        assert previous_stream.closed
 
 
 class TestUtcTimestamps:

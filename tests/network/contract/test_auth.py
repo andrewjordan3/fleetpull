@@ -10,8 +10,6 @@ from fleetpull.network.auth.models import GeotabSession
 from fleetpull.network.contract.auth import GeotabSessionAuth, StaticHeaderAuth
 from fleetpull.network.contract.request import HttpMethod, RequestSpec
 
-__all__: list[str] = []
-
 SYNTHETIC_TOKEN = 'synthetic-token-plaintext'
 
 
@@ -37,9 +35,11 @@ class StubSessionManager:
         self._sessions = list(sessions)
         self._stub_lock = threading.Lock()
         self.invalidated: list[tuple[int, GeotabSession]] = []
+        self.get_session_calls: int = 0
 
     def get_session(self) -> GeotabSession:
         with self._stub_lock:
+            self.get_session_calls += 1
             if len(self._sessions) > 1:
                 return self._sessions.pop(0)
             return self._sessions[0]
@@ -56,6 +56,11 @@ def build_geotab_spec() -> RequestSpec:
         url='https://my.geotab.com/apiv1?probe=1',
         json_body={'method': 'Get', 'params': {'typeName': 'Device'}},
     )
+
+
+def build_strategy(manager: StubSessionManager) -> GeotabSessionAuth:
+    """Construct the strategy around a stub manager (single ignore site)."""
+    return GeotabSessionAuth(manager)  # type: ignore[arg-type]
 
 
 class TestStaticHeaderAuth:
@@ -90,7 +95,7 @@ class TestStaticHeaderAuth:
 class TestGeotabSessionAuthPrepare:
     def test_credentials_injected_with_exactly_three_keys(self) -> None:
         stub_manager = StubSessionManager([build_session(generation=1)])
-        strategy = GeotabSessionAuth(stub_manager)  # type: ignore[arg-type]
+        strategy = build_strategy(stub_manager)
         prepared_spec = strategy.prepare(build_geotab_spec())
         assert prepared_spec.json_body is not None
         prepared_params = prepared_spec.json_body['params']
@@ -105,7 +110,7 @@ class TestGeotabSessionAuthPrepare:
 
     def test_incoming_json_body_not_mutated(self) -> None:
         stub_manager = StubSessionManager([build_session(generation=1)])
-        strategy = GeotabSessionAuth(stub_manager)  # type: ignore[arg-type]
+        strategy = build_strategy(stub_manager)
         original_body: dict[str, object] = {
             'method': 'Get',
             'params': {'typeName': 'Device'},
@@ -120,13 +125,13 @@ class TestGeotabSessionAuthPrepare:
 
     def test_netloc_rewritten_scheme_path_query_intact(self) -> None:
         stub_manager = StubSessionManager([build_session(generation=1)])
-        strategy = GeotabSessionAuth(stub_manager)  # type: ignore[arg-type]
+        strategy = build_strategy(stub_manager)
         prepared_spec = strategy.prepare(build_geotab_spec())
         assert prepared_spec.url == 'https://resolved.example.geotab.com/apiv1?probe=1'
 
     def test_missing_params_key_creates_credentials_only_params(self) -> None:
         stub_manager = StubSessionManager([build_session(generation=1)])
-        strategy = GeotabSessionAuth(stub_manager)  # type: ignore[arg-type]
+        strategy = build_strategy(stub_manager)
         spec = RequestSpec(
             method=HttpMethod.POST,
             url='https://my.geotab.com/apiv1',
@@ -140,7 +145,7 @@ class TestGeotabSessionAuthPrepare:
 
     def test_stale_caller_credentials_overwritten(self) -> None:
         stub_manager = StubSessionManager([build_session(generation=1)])
-        strategy = GeotabSessionAuth(stub_manager)  # type: ignore[arg-type]
+        strategy = build_strategy(stub_manager)
         spec = RequestSpec(
             method=HttpMethod.POST,
             url='https://my.geotab.com/apiv1',
@@ -156,18 +161,22 @@ class TestGeotabSessionAuthPrepare:
             'userName': 'user@example.com',
         }
 
-    def test_body_less_spec_raises_value_error(self) -> None:
+    def test_body_less_spec_raises_before_fetching_a_session(self) -> None:
         stub_manager = StubSessionManager([build_session(generation=1)])
-        strategy = GeotabSessionAuth(stub_manager)  # type: ignore[arg-type]
+        strategy = build_strategy(stub_manager)
         body_less_spec = RequestSpec(
             method=HttpMethod.POST, url='https://my.geotab.com/apiv1'
         )
         with pytest.raises(ValueError, match='JSON-RPC body'):
             strategy.prepare(body_less_spec)
+        # The guard must fire before the session fetch: a malformed
+        # spec is a programming error and must not trigger a real
+        # Authenticate call.
+        assert stub_manager.get_session_calls == 0
 
     def test_non_mapping_params_raises_value_error(self) -> None:
         stub_manager = StubSessionManager([build_session(generation=1)])
-        strategy = GeotabSessionAuth(stub_manager)  # type: ignore[arg-type]
+        strategy = build_strategy(stub_manager)
         spec = RequestSpec(
             method=HttpMethod.POST,
             url='https://my.geotab.com/apiv1',
@@ -180,7 +189,7 @@ class TestGeotabSessionAuthPrepare:
 class TestGeotabSessionAuthFailure:
     def test_on_auth_failure_invalidates_and_returns_true(self) -> None:
         stub_manager = StubSessionManager([build_session(generation=1)])
-        strategy = GeotabSessionAuth(stub_manager)  # type: ignore[arg-type]
+        strategy = build_strategy(stub_manager)
         strategy.prepare(build_geotab_spec())
         assert strategy.on_auth_failure() is True
         assert len(stub_manager.invalidated) == 1
@@ -188,7 +197,7 @@ class TestGeotabSessionAuthFailure:
 
     def test_on_auth_failure_before_prepare_raises_runtime_error(self) -> None:
         stub_manager = StubSessionManager([build_session(generation=1)])
-        strategy = GeotabSessionAuth(stub_manager)  # type: ignore[arg-type]
+        strategy = build_strategy(stub_manager)
         with pytest.raises(RuntimeError, match='before any prepare'):
             strategy.on_auth_failure()
 
@@ -199,7 +208,7 @@ class TestGeotabSessionAuthFailure:
         stub_manager = StubSessionManager(
             [build_session(generation=1), build_session(generation=2)]
         )
-        strategy = GeotabSessionAuth(stub_manager)  # type: ignore[arg-type]
+        strategy = build_strategy(stub_manager)
         both_prepared = threading.Barrier(2)
         results_lock = threading.Lock()
         prepared_by_thread: dict[int, str] = {}

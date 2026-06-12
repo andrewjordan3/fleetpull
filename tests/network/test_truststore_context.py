@@ -4,8 +4,6 @@ import ssl
 
 from fleetpull.network.truststore_context import build_truststore_ssl_context
 
-__all__: list[str] = []
-
 
 def test_returns_ssl_context_instance() -> None:
     ssl_context: ssl.SSLContext = build_truststore_ssl_context()

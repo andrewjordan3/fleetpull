@@ -1,6 +1,5 @@
 # src/fleetpull/network/auth/models.py
-"""
-Runtime session state for GeoTab authentication.
+"""Runtime session state for GeoTab authentication.
 
 Internal runtime state, not user YAML — hence frozen dataclasses rather
 than Pydantic models. Pure data: assembling request credentials from a

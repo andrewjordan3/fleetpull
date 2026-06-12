@@ -1,6 +1,5 @@
 # src/fleetpull/config/geotab.py
-"""
-GeoTab authentication configuration model.
+"""GeoTab authentication configuration model.
 
 GeotabAuthConfig is the GeoTab authentication section of fleetpull's
 user-provided YAML configuration. The password is a ``SecretStr``: its
@@ -36,4 +35,4 @@ class GeotabAuthConfig(BaseModel):
     username: str = Field(min_length=1)
     password: SecretStr
     database: str = Field(min_length=1)
-    server: str = 'my.geotab.com'
+    server: str = Field(default='my.geotab.com', min_length=1)
