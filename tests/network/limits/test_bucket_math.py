@@ -4,8 +4,6 @@ import pytest
 
 from fleetpull.network.limits.bucket_math import refill_tokens, seconds_until_available
 
-__all__: list[str] = []
-
 
 class TestRefillTokens:
     def test_refill_from_empty_over_known_elapsed_time(self) -> None:

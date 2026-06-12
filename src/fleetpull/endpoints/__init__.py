@@ -1,3 +1,6 @@
-"""Endpoint definitions: self-describing provider endpoints (populated by later prompts)."""
+"""Endpoint definitions, one module per provider.
+
+Intentionally empty; modules are added as providers are implemented.
+"""
 
 __all__: list[str] = []

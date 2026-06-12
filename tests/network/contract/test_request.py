@@ -6,8 +6,6 @@ import pytest
 
 from fleetpull.network.contract.request import HttpMethod, RequestSpec
 
-__all__: list[str] = []
-
 
 def build_spec() -> RequestSpec:
     return RequestSpec(

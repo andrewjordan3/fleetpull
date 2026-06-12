@@ -9,12 +9,9 @@ from fleetpull.network.contract.classifier import (
     _BODY_SNIPPET_MAX_CHARS,
     ResponseClassifier,
     body_snippet,
-    find_header,
-    parse_retry_after_seconds,
+    retry_after_seconds_from_headers,
 )
 from fleetpull.network.contract.outcome import ClassifiedResponse, ResponseCategory
-
-__all__: list[str] = []
 
 
 class MinimalClassifier(ResponseClassifier):
@@ -51,26 +48,35 @@ class TestClassifyTransportException:
         assert excinfo.value is programming_error
 
 
-class TestFindHeader:
-    def test_finds_canonical_name_via_lowercase_lookup(self) -> None:
-        assert find_header({'Retry-After': '56'}, 'retry-after') == '56'
-
-    def test_finds_lowercase_name_via_canonical_lookup(self) -> None:
-        assert find_header({'retry-after': '56'}, 'Retry-After') == '56'
+class TestRetryAfterSecondsFromHeaders:
+    @pytest.mark.parametrize(
+        'header_name',
+        [
+            'Retry-After',  # canonical casing
+            'retry-after',  # lowercase, as captured from GeoTab
+        ],
+    )
+    def test_header_found_regardless_of_key_casing(self, header_name: str) -> None:
+        assert retry_after_seconds_from_headers({header_name: '56'}) == pytest.approx(
+            56.0
+        )
 
     def test_absent_header_returns_none(self) -> None:
-        assert find_header({'Content-Type': 'application/json'}, 'Retry-After') is None
+        assert (
+            retry_after_seconds_from_headers({'Content-Type': 'application/json'})
+            is None
+        )
 
-
-class TestParseRetryAfterSeconds:
     @pytest.mark.parametrize(
-        ('raw_value', 'expected_seconds'),
+        ('header_value', 'expected_seconds'),
         [('56', 56.0), ('0.40235', 0.40235)],
     )
     def test_finite_positive_values_parse(
-        self, raw_value: str, expected_seconds: float
+        self, header_value: str, expected_seconds: float
     ) -> None:
-        assert parse_retry_after_seconds(raw_value) == pytest.approx(expected_seconds)
+        assert retry_after_seconds_from_headers(
+            {'Retry-After': header_value}
+        ) == pytest.approx(expected_seconds)
 
     @pytest.mark.parametrize(
         'invalid_value',
@@ -88,7 +94,7 @@ class TestParseRetryAfterSeconds:
     ) -> None:
         # The limiter's penalize(seconds) raises on seconds <= 0; this
         # contract must be unviolatable from here.
-        assert parse_retry_after_seconds(invalid_value) is None
+        assert retry_after_seconds_from_headers({'Retry-After': invalid_value}) is None
 
 
 class TestBodySnippet:

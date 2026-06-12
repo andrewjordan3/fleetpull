@@ -288,8 +288,11 @@ strategy / raise). **Closure invariant: a new category is admissible only
 if it arrives with a new client action.**
 
 Classification results travel as a frozen `ClassifiedResponse` (category;
-`retry_after_seconds: float | None`; `detail: str | None` — fields inert
-outside their category).
+`retry_after_seconds: float | None`; `detail: str | None`;
+`parsed_body: JsonValue | None` — fields inert outside their category).
+Classifiers that parse the body to classify (GeoTab) hand the parse forward
+in `parsed_body`; the client parses only when `parsed_body` is None, and
+never re-parses when it is populated.
 
 The producer is a per-provider `ResponseClassifier` ABC:
 

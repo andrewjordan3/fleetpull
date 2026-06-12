@@ -1,6 +1,5 @@
 # src/fleetpull/network/contract/request.py
-"""
-Request description: the spec endpoint definitions build, auth
+"""Request description: the spec endpoint definitions build, auth
 strategies transform, and the client executes.
 
 A ``RequestSpec`` is a pure description of one HTTP request — no

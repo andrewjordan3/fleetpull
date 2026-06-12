@@ -8,8 +8,6 @@ from pydantic import ValidationError
 
 from fleetpull.config.logger import LoggerConfig
 
-__all__: list[str] = []
-
 LEVEL_FIELDS: tuple[str, str] = ('console_level', 'file_level')
 
 
@@ -34,12 +32,12 @@ class TestLevelNameCoercion:
     def test_level_fields_accept_names(
         self, field_name: str, level_name: str, expected_level: int
     ) -> None:
-        config = LoggerConfig(**{field_name: level_name})  # type: ignore[arg-type]
+        config = LoggerConfig(**{field_name: level_name})
         assert getattr(config, field_name) == expected_level
 
     def test_unknown_level_name_raises_naming_it(self) -> None:
         with pytest.raises(ValidationError, match='verbose'):
-            LoggerConfig(console_level='verbose')  # type: ignore[arg-type]
+            LoggerConfig(console_level='verbose')
 
     @pytest.mark.parametrize('field_name', LEVEL_FIELDS)
     @pytest.mark.parametrize('deprecated_name', ['WARN', 'FATAL', 'NOTSET'])
@@ -47,7 +45,7 @@ class TestLevelNameCoercion:
         self, field_name: str, deprecated_name: str
     ) -> None:
         with pytest.raises(ValidationError, match='not a recognized log level'):
-            LoggerConfig(**{field_name: deprecated_name})  # type: ignore[arg-type]
+            LoggerConfig(**{field_name: deprecated_name})
 
 
 class TestLevelIntegerValidation:
@@ -56,7 +54,7 @@ class TestLevelIntegerValidation:
     def test_standard_integers_pass_through_unchanged(
         self, field_name: str, standard_level: int
     ) -> None:
-        config = LoggerConfig(**{field_name: standard_level})  # type: ignore[arg-type]
+        config = LoggerConfig(**{field_name: standard_level})
         assert getattr(config, field_name) == standard_level
 
     @pytest.mark.parametrize('field_name', LEVEL_FIELDS)
@@ -65,7 +63,7 @@ class TestLevelIntegerValidation:
         self, field_name: str, boolean_value: bool
     ) -> None:
         with pytest.raises(ValidationError, match='bool'):
-            LoggerConfig(**{field_name: boolean_value})  # type: ignore[arg-type]
+            LoggerConfig(**{field_name: boolean_value})
 
     @pytest.mark.parametrize('field_name', LEVEL_FIELDS)
     @pytest.mark.parametrize('nonstandard_level', [999, 0])
@@ -73,22 +71,25 @@ class TestLevelIntegerValidation:
         self, field_name: str, nonstandard_level: int
     ) -> None:
         with pytest.raises(ValidationError, match='WARNING=30'):
-            LoggerConfig(**{field_name: nonstandard_level})  # type: ignore[arg-type]
+            LoggerConfig(**{field_name: nonstandard_level})
 
     @pytest.mark.parametrize('garbage_value', [1.5, [10]])
     def test_non_string_non_int_garbage_fails(
         self, garbage_value: float | list[int]
     ) -> None:
         with pytest.raises(ValidationError):
-            LoggerConfig(console_level=garbage_value)  # type: ignore[arg-type]
+            LoggerConfig(console_level=garbage_value)
 
 
 class TestFilePathNormalization:
     def test_tilde_expands_to_home(self) -> None:
-        config = LoggerConfig(file_path='~/x.log')  # type: ignore[arg-type]
+        config = LoggerConfig(file_path='~/x.log')
         assert config.file_path is not None
         assert config.file_path.is_absolute()
-        assert config.file_path == Path.home() / 'x.log'
+        # .resolve() on the expectation too: the production contract is
+        # symlink-dereferencing resolution, and home/temp paths traverse
+        # symlinks on some platforms (e.g. macOS /var -> /private/var).
+        assert config.file_path == (Path.home() / 'x.log').resolve()
 
     def test_relative_path_resolves_against_cwd(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -96,12 +97,12 @@ class TestFilePathNormalization:
         # chdir first — without it this test would nondeterministically
         # resolve against wherever pytest was invoked.
         monkeypatch.chdir(tmp_path)
-        config = LoggerConfig(file_path='x.log')  # type: ignore[arg-type]
-        assert config.file_path == tmp_path / 'x.log'
+        config = LoggerConfig(file_path='x.log')
+        assert config.file_path == (tmp_path / 'x.log').resolve()
 
     def test_path_instance_gets_same_normalization(self) -> None:
         config = LoggerConfig(file_path=Path('~/x.log'))
-        assert config.file_path == Path.home() / 'x.log'
+        assert config.file_path == (Path.home() / 'x.log').resolve()
 
     def test_none_stays_none(self) -> None:
         config = LoggerConfig(file_path=None)
@@ -109,7 +110,7 @@ class TestFilePathNormalization:
 
     def test_non_str_non_path_rejected_naming_type(self) -> None:
         with pytest.raises(ValidationError, match='int'):
-            LoggerConfig(file_path=123)  # type: ignore[arg-type]
+            LoggerConfig(file_path=123)
 
 
 class TestModelConstraints:

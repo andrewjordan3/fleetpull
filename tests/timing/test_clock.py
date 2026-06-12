@@ -6,8 +6,6 @@ import pytest
 
 from fleetpull.timing.clock import Clock, FrozenClock, SystemClock
 
-__all__: list[str] = []
-
 FROZEN_START_TIME: datetime = datetime(2026, 1, 23, 12, 0, tzinfo=UTC)
 FIXED_OFFSET_TIMEZONE: timezone = timezone(timedelta(hours=-5))
 
