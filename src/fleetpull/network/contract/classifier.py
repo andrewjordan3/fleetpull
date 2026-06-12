@@ -31,6 +31,14 @@ _BODY_SNIPPET_MAX_CHARS: Final[int] = 200
 
 # Generic HTTP status boundaries shared by all classifiers — protocol
 # semantics, not provider behavior, so they live in the base module.
+# These stay as a range and a bare int deliberately: the tempting
+# alternative, HTTPStatus(code).is_success / .is_server_error,
+# constructs the enum from an arbitrary code and raises ValueError on
+# nonstandard statuses (e.g. Cloudflare's 522). A classifier must
+# classify every status it meets, never crash on one. HTTPStatus
+# members are reserved for equality against specific well-known codes
+# in the provider classifiers; band membership is checked against
+# these constants.
 SUCCESS_STATUS_RANGE: Final[range] = range(200, 300)
 SERVER_ERROR_FLOOR: Final[int] = 500
 

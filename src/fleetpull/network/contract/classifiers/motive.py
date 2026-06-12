@@ -12,6 +12,7 @@ independently (blast-radius over DRY).
 
 import json
 from collections.abc import Mapping
+from http import HTTPStatus
 
 from fleetpull.network.contract.classifier import (
     SERVER_ERROR_FLOOR,
@@ -54,7 +55,7 @@ class MotiveResponseClassifier(ResponseClassifier):
         match status_code:
             case code if code in SUCCESS_STATUS_RANGE:
                 return ClassifiedResponse(category=ResponseCategory.SUCCESS)
-            case 429:
+            case HTTPStatus.TOO_MANY_REQUESTS:
                 # Motive rate limiting was probed and never observed
                 # (June 2026); this branch is built to the generic HTTP
                 # contract.
@@ -67,7 +68,7 @@ class MotiveResponseClassifier(ResponseClassifier):
                         else None
                     ),
                 )
-            case 401 | 403:
+            case HTTPStatus.UNAUTHORIZED | HTTPStatus.FORBIDDEN:
                 return ClassifiedResponse(
                     category=ResponseCategory.AUTH_FAILURE,
                     detail=_auth_failure_detail(body_text),
