@@ -76,6 +76,10 @@ class TestFieldAccess:
         assert error.scope == 'geotab'
         assert str(error) == "unknown quota scope: 'geotab'"
 
+    def test_unknown_quota_scope_folds_detail_into_the_message(self) -> None:
+        error = UnknownQuotaScopeError('geotab', detail='configured scopes: motive')
+        assert str(error) == "unknown quota scope: 'geotab': configured scopes: motive"
+
     def test_authentication_error_fixed_head(self) -> None:
         error = AuthenticationError(provider='samsara', detail='invalid token')
         assert str(error) == 'authentication failed [provider=samsara]: invalid token'
@@ -94,11 +98,9 @@ class TestFieldAccess:
         error = RetriesExhaustedError(
             category=ResponseCategory.RATE_LIMITED,
             attempt_count=5,
-            status_code=429,
         )
         assert error.category is ResponseCategory.RATE_LIMITED
         assert error.attempt_count == 5
-        assert error.status_code == 429
 
 
 class TestRetriesExhaustedHead:

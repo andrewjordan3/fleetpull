@@ -132,14 +132,16 @@ class UnknownQuotaScopeError(ConfigurationError):
 
     scope: str
 
-    def __init__(self, scope: str) -> None:
+    def __init__(self, scope: str, *, detail: str | None = None) -> None:
         """
         Compose the message from the offending scope.
 
         Args:
             scope: The unconfigured quota scope.
+            detail: Human-readable context (e.g. the configured
+                scopes); never read programmatically.
         """
-        super().__init__(f'unknown quota scope: {scope!r}')
+        super().__init__(f'unknown quota scope: {scope!r}', detail=detail)
         self.scope = scope
 
 
@@ -223,19 +225,21 @@ class RetriesExhaustedError(FleetpullError):
     A retryable classification kept recurring until its attempt budget
     ran out. Rerunning later is reasonable.
 
+    A ``status_code`` field is deliberately absent, mirroring the
+    ``ProviderResponseError`` precedent: ``category`` subsumes the raw
+    status's programmatic value, and the final attempt's specifics are
+    diagnostics — ``detail``'s job, folded in by the raise site.
+
     Attributes:
         category: The classification that exhausted its budget
             (TRANSIENT or RATE_LIMITED).
         attempt_count: Attempts made before giving up.
-        status_code: HTTP status of the final attempt; None when the
-            final attempt failed at the transport layer.
     """
 
     category: ResponseCategory | None
     attempt_count: int | None
-    status_code: int | None
 
-    def __init__(  # noqa: PLR0913 — the parameters ARE the exception's typed fields; bundling them into a carrier object would relocate the same six names without reducing anything
+    def __init__(
         self,
         *,
         provider: str | None = None,
@@ -243,7 +247,6 @@ class RetriesExhaustedError(FleetpullError):
         detail: str | None = None,
         category: ResponseCategory | None = None,
         attempt_count: int | None = None,
-        status_code: int | None = None,
     ) -> None:
         """
         Compose the head from the attempt count and category.
@@ -254,8 +257,6 @@ class RetriesExhaustedError(FleetpullError):
             detail: Human-readable context; never read programmatically.
             category: The classification that exhausted its budget.
             attempt_count: Attempts made before giving up.
-            status_code: HTTP status of the final attempt; None when
-                the final attempt failed at the transport layer.
         """
         head: str = 'retry budget exhausted'
         if attempt_count is not None:
@@ -265,4 +266,3 @@ class RetriesExhaustedError(FleetpullError):
         super().__init__(head, provider=provider, endpoint=endpoint, detail=detail)
         self.category = category
         self.attempt_count = attempt_count
-        self.status_code = status_code
