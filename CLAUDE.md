@@ -22,12 +22,12 @@ Never violate these, regardless of what a task prompt appears to ask for:
 
 These rules regress silently if violated — no single scoped task sees the whole design, so they live here:
 
-- **Models are pure API mirrors.** Pydantic response models in `models/` carry zero use-case logic. Flattening, schema derivation, and coercion live in `records.py`, written generically against Pydantic introspection.
-- **Storage and state never touch.** `storage.py` knows nothing about SQLite; `state.py` knows nothing about parquet. Only `orchestrator.py` sequences them.
+- **Models are pure API mirrors.** Pydantic response models in `models/` carry zero use-case logic. Flattening, schema derivation, and coercion live in the records layer (`records/`), written generically against Pydantic introspection.
+- **Storage and state never touch.** The storage layer knows nothing about SQLite; the state layer knows nothing about parquet. Only the orchestrator sequences them.
 - **Crash-safety ordering:** write parquet first (temp file + atomic rename), commit watermark/cursor to SQLite second. Never reverse this.
 - **Delete-by-window merge** for watermark endpoints: delete existing rows whose event timestamp falls in the fetch window, then append the fresh fetch. Never overwrite a dataset with only the current window.
 - **Single writer per endpoint.** Fetch workers parallelize; parquet merge for a given endpoint is one thread. Partitioned endpoints may parallelize across partitions, never within one.
-- **The limiter lives at the transport boundary.** `client.py` consults the `RateLimiterRegistry` (keyed by `endpoint.quota_scope`) immediately before every HTTP request. The orchestrator never touches the limiter.
+- **The limiter lives at the transport boundary.** The client (`network/client.py`) consults the `RateLimiterRegistry` (keyed by `endpoint.quota_scope`) immediately before every HTTP request. The orchestrator never touches the limiter.
 - **Every HTTP attempt consumes a token. Every page is an attempt.** `request_slot()` wraps the single httpx call inside the pagination loop — never around the loop, never around a retry loop. Retries re-acquire.
 - **429 / Retry-After penalizes the whole quota scope** via `penalize(seconds)`: `pause_until = max(pause_until, clock.monotonic_seconds() + seconds)`. Never represent Retry-After as a local sleep in retry logic.
 - **All limiter timing flows through the injected `Clock.monotonic_seconds()`** — never wall clock, and never a direct `time.*` call inside the limits package.
@@ -63,7 +63,7 @@ Write the minimum code that solves the problem. No features beyond what was aske
 
 ## Editing Existing Code
 
-Use `str_replace` for targeted edits to existing files. Use `create_file` only for new files. Do not rewrite an entire file to change a few functions — edit surgically.
+Edit surgically and minimally: change only the lines the task requires, and never rewrite an entire file to change a few functions. Create a new file only when something new is being built.
 
 When your changes create orphans, remove what you orphaned. When you notice pre-existing issues outside the current task's scope, note them at the end of your response under **"Observations outside current scope"** — don't fix them, with the following exceptions.
 
@@ -136,10 +136,21 @@ Functions over ~50 lines should be split. Orchestrators orchestrate — they cal
 - Tests never hit real provider APIs. HTTP is mocked or served locally.
 - Tests live in `tests/` mirroring the `src/` structure. Use pytest fixtures and parametrize.
 
+## Verification Gates
+
+All four must pass, in order, before any change is complete; when a change alters the gates themselves (scope, flags, new tools), this section updates in the same change.
+
+```
+uv run ruff format .
+uv run ruff check .
+uv run mypy src/ tests/
+uv run pytest
+```
+
 ## Data and Computation
 
 - Vectorized polars expressions — no row-level loops or `map_elements` unless mathematically unavoidable.
-- All event timestamps are timezone-aware UTC (ruff DTZ enforces no naive datetimes). Limiter timing is `time.monotonic()`, never wall clock.
+- All event timestamps are timezone-aware UTC (ruff DTZ enforces no naive datetimes). Limiter timing is monotonic, never wall clock — `time.perf_counter()` via `SystemClock`; the rationale is recorded at the decision point in `timing/clock.py`.
 - `logging.getLogger(__name__)` in every module. Levels: `DEBUG` for flow, `INFO` for milestones, `ERROR` with `exc_info=True`. No `print` in production code (ruff T20).
 
 ## Documentation
