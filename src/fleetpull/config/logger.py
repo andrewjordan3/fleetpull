@@ -1,6 +1,5 @@
 # src/fleetpull/config/logger.py
-"""
-Logging configuration model.
+"""Logging configuration model.
 
 LoggerConfig is one section of fleetpull's user-provided YAML
 configuration. Like every model in fleetpull.config, it validates user

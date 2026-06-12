@@ -1,7 +1,7 @@
 # src/fleetpull/network/contract/classifiers/motive.py
-"""
-Motive response classifier (sources: M1 capture, June 2026; rate
-limiting probed and never observed — generic HTTP posture).
+"""Motive response classifier (sources: scrubbed provider-behavior
+verification, June 2026; rate limiting probed and never observed —
+generic HTTP posture).
 
 Classification reads status codes and structured fields, never
 human-readable message text; ``detail`` carries messages for humans,
@@ -19,8 +19,7 @@ from fleetpull.network.contract.classifier import (
     SUCCESS_STATUS_RANGE,
     ResponseClassifier,
     body_snippet,
-    find_header,
-    parse_retry_after_seconds,
+    retry_after_seconds_from_headers,
 )
 from fleetpull.network.contract.outcome import ClassifiedResponse, ResponseCategory
 from fleetpull.network.contract.request import JsonValue
@@ -59,14 +58,9 @@ class MotiveResponseClassifier(ResponseClassifier):
                 # Motive rate limiting was probed and never observed
                 # (June 2026); this branch is built to the generic HTTP
                 # contract.
-                retry_after_header: str | None = find_header(headers, 'Retry-After')
                 return ClassifiedResponse(
                     category=ResponseCategory.RATE_LIMITED,
-                    retry_after_seconds=(
-                        parse_retry_after_seconds(retry_after_header)
-                        if retry_after_header is not None
-                        else None
-                    ),
+                    retry_after_seconds=retry_after_seconds_from_headers(headers),
                 )
             case HTTPStatus.UNAUTHORIZED | HTTPStatus.FORBIDDEN:
                 return ClassifiedResponse(

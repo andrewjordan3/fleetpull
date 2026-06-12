@@ -6,8 +6,6 @@ import pytest
 
 from fleetpull.network.contract.outcome import ClassifiedResponse, ResponseCategory
 
-__all__: list[str] = []
-
 
 class TestResponseCategory:
     def test_membership_is_the_closed_vocabulary(self) -> None:
@@ -47,3 +45,13 @@ class TestClassifiedResponse:
         outcome = ClassifiedResponse(category=ResponseCategory.SUCCESS)
         assert outcome.retry_after_seconds is None
         assert outcome.detail is None
+        assert outcome.parsed_body is None
+
+    def test_repr_excludes_parsed_body(self) -> None:
+        # parsed_body can hold a multi-megabyte structure; a log line
+        # formatting the outcome must never embed it.
+        outcome = ClassifiedResponse(
+            category=ResponseCategory.SUCCESS,
+            parsed_body={'data': ['sentinel-payload']},
+        )
+        assert 'sentinel-payload' not in repr(outcome)

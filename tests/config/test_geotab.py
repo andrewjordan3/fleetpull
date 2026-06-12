@@ -7,8 +7,6 @@ from pydantic import SecretStr, ValidationError
 
 from fleetpull.config.geotab import GeotabAuthConfig
 
-__all__: list[str] = []
-
 SYNTHETIC_PASSWORD = 'synthetic-password-123'
 
 
@@ -24,7 +22,7 @@ class TestFieldValidation:
     def test_server_defaults_to_my_geotab(self) -> None:
         assert build_config().server == 'my.geotab.com'
 
-    @pytest.mark.parametrize('empty_field', ['username', 'database'])
+    @pytest.mark.parametrize('empty_field', ['username', 'database', 'server'])
     def test_empty_required_strings_rejected(self, empty_field: str) -> None:
         config_kwargs: dict[str, str | SecretStr] = {
             'username': 'synthetic-user',
@@ -33,7 +31,7 @@ class TestFieldValidation:
             empty_field: '',
         }
         with pytest.raises(ValidationError):
-            GeotabAuthConfig(**config_kwargs)  # type: ignore[arg-type]
+            GeotabAuthConfig(**config_kwargs)
 
     def test_is_frozen(self) -> None:
         config = build_config()

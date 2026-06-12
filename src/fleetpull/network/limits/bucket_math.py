@@ -33,9 +33,7 @@ def refill_tokens(
             and must fail loudly.
     """
     if elapsed_seconds < 0:
-        raise ValueError(
-            f'elapsed_seconds must be non-negative, got {elapsed_seconds}.'
-        )
+        raise ValueError(f'elapsed_seconds must be non-negative, got {elapsed_seconds}')
     return min(capacity, current_tokens + elapsed_seconds * refill_rate_per_second)
 
 

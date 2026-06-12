@@ -1,7 +1,7 @@
 # src/fleetpull/network/contract/classifiers/samsara.py
-"""
-Samsara response classifier (sources: S1 capture, June 2026; rate-limit
-contract from official Samsara documentation).
+"""Samsara response classifier (sources: scrubbed provider-behavior
+verification, June 2026; rate-limit contract from official Samsara
+documentation).
 
 Classification reads status codes and structured fields, never
 human-readable message text; ``detail`` carries messages for humans,
@@ -19,8 +19,7 @@ from fleetpull.network.contract.classifier import (
     SUCCESS_STATUS_RANGE,
     ResponseClassifier,
     body_snippet,
-    find_header,
-    parse_retry_after_seconds,
+    retry_after_seconds_from_headers,
 )
 from fleetpull.network.contract.outcome import ClassifiedResponse, ResponseCategory
 from fleetpull.network.contract.request import JsonValue
@@ -58,14 +57,9 @@ class SamsaraResponseClassifier(ResponseClassifier):
             case HTTPStatus.TOO_MANY_REQUESTS:
                 # Retry-After is documented as fractional seconds
                 # (e.g. 0.40235).
-                retry_after_header: str | None = find_header(headers, 'Retry-After')
                 return ClassifiedResponse(
                     category=ResponseCategory.RATE_LIMITED,
-                    retry_after_seconds=(
-                        parse_retry_after_seconds(retry_after_header)
-                        if retry_after_header is not None
-                        else None
-                    ),
+                    retry_after_seconds=retry_after_seconds_from_headers(headers),
                 )
             case HTTPStatus.UNAUTHORIZED | HTTPStatus.FORBIDDEN:
                 return ClassifiedResponse(

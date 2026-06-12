@@ -1,6 +1,5 @@
 # src/fleetpull/network/contract/classifier.py
-"""
-ResponseClassifier ABC and the shared helpers every classifier uses.
+"""ResponseClassifier ABC and the shared helpers every classifier uses.
 
 This module is the only one in the contract package allowed to import
 httpx: the shared transport-exception mapping must name real exception
@@ -21,8 +20,7 @@ __all__: list[str] = [
     'SUCCESS_STATUS_RANGE',
     'ResponseClassifier',
     'body_snippet',
-    'find_header',
-    'parse_retry_after_seconds',
+    'retry_after_seconds_from_headers',
 ]
 
 # Cap on body text carried into ClassifiedResponse.detail. Every
@@ -43,7 +41,7 @@ SUCCESS_STATUS_RANGE: Final[range] = range(200, 300)
 SERVER_ERROR_FLOOR: Final[int] = 500
 
 
-def find_header(headers: Mapping[str, str], name: str) -> str | None:
+def _find_header(headers: Mapping[str, str], name: str) -> str | None:
     """
     Case-insensitive header lookup.
 
@@ -65,7 +63,7 @@ def find_header(headers: Mapping[str, str], name: str) -> str | None:
     return None
 
 
-def parse_retry_after_seconds(value: str) -> float | None:
+def _parse_retry_after_seconds(value: str) -> float | None:
     """
     Parse the numeric-seconds form of a Retry-After value.
 
@@ -91,6 +89,27 @@ def parse_retry_after_seconds(value: str) -> float | None:
     if not math.isfinite(seconds) or seconds <= 0:
         return None
     return seconds
+
+
+def retry_after_seconds_from_headers(headers: Mapping[str, str]) -> float | None:
+    """
+    Extract and parse the ``Retry-After`` header's numeric-seconds form.
+
+    Composes the module's header-lookup and seconds-parsing helpers —
+    the composition is HTTP protocol semantics shared by every provider,
+    not provider behavior, so it lives in the base module.
+
+    Args:
+        headers: The response headers.
+
+    Returns:
+        The positive, finite seconds value, or None when the header is
+        absent or unusable (the client then applies its fallback penalty).
+    """
+    retry_after_value: str | None = _find_header(headers, 'Retry-After')
+    if retry_after_value is None:
+        return None
+    return _parse_retry_after_seconds(retry_after_value)
 
 
 def body_snippet(body_text: str) -> str:

@@ -1,6 +1,5 @@
 # src/fleetpull/network/auth/manager.py
-"""
-GeoTab session lifecycle manager.
+"""GeoTab session lifecycle manager.
 
 GeoTab authenticates by session: an ``Authenticate`` call returns a
 session id and a resolved host; the session lives ~14 days but can die

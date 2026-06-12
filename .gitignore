@@ -57,6 +57,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+# uv.lock can embed machine-local absolute wheel-source paths; never commit
 uv.lock
 
 # IDE
@@ -80,7 +81,7 @@ dmypy.json
 copilot-instructions.md
 copilot_instructions_raw.*
 
-# pyholman runtime output
-pyholman_data/
+# fleetpull runtime output — data output is never committed (test
+# fixtures are synthetic and inline, never parquet files)
 logs/
 *.parquet

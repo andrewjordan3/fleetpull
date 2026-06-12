@@ -44,7 +44,6 @@ dependencies = [
     "polars>=1.0.0",
     "pydantic>=2.7.0",
     "pyyaml>=6.0.0",
-    "tenacity>=8.3.0",
     "truststore>=0.9.0",
 ]
 
@@ -77,10 +76,6 @@ dev = [
     "types-pyyaml",
 ]
 
-# Console entry points
-[project.scripts]
-fleetpull = "fleetpull.cli:main"
-
 # Project URLs
 [project.urls]
 Homepage = "https://github.com/andrewjordan3/fleetpull"
@@ -92,9 +87,6 @@ Issues = "https://github.com/andrewjordan3/fleetpull/issues"
 ###############################################################################
 [tool.setuptools.package-dir]
 "" = "src"
-
-[tool.setuptools]
-zip-safe = false
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -132,6 +124,10 @@ select = [
     "UP",   # pyupgrade
     "B",    # flake8-bugbear
     "C4",   # flake8-comprehensions
+    "D100", # pydocstyle: missing module docstring
+    "D101", # pydocstyle: missing class docstring
+    "D102", # pydocstyle: missing method docstring
+    "D103", # pydocstyle: missing function docstring
     "DTZ",  # flake8-datetimez (no naive datetimes — all event time is UTC)
     "T10",  # flake8-debugger
     "T20",  # flake8-print (no print in production code)
@@ -160,7 +156,9 @@ combine-as-imports = true
 # Requiring named constants for every one of those would obscure intent
 # without improving correctness — the standard pytest convention.
 # Asserts are the pytest mechanism, so S101 lifts in tests only.
-"tests/**" = ["PLR2004", "S101"]
+# Docstring presence (D) is enforced in src/ only: test names are the
+# documentation convention there.
+"tests/**" = ["PLR2004", "S101", "D"]
 
 [tool.ruff.format]
 quote-style = "single"
@@ -185,8 +183,6 @@ warn_unused_ignores = true
 warn_no_return = true
 warn_unreachable = true
 strict_equality = true
-
-exclude = ["tests/"]
 
 ###############################################################################
 # PYRIGHT - FOR VS CODE PYLANCE
@@ -226,6 +222,5 @@ exclude_lines = [
     "raise AssertionError",
     "raise NotImplementedError",
     "if __name__ == .__main__.:",
-    "if TYPE_CHECKING:",
     "@abstractmethod",
 ]

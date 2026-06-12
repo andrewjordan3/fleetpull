@@ -1,13 +1,12 @@
-"""Tests for the Motive response classifier (fixtures: M1 capture, June 2026)."""
+"""Tests for the Motive response classifier (fixtures: scrubbed
+provider-behavior verification, June 2026)."""
 
 import pytest
 
 from fleetpull.network.contract.classifiers.motive import MotiveResponseClassifier
 from fleetpull.network.contract.outcome import ResponseCategory
 
-__all__: list[str] = []
-
-# Motive — invalid key (M1; HTTP 401):
+# Captured: invalid API key (HTTP 401):
 MOTIVE_INVALID_KEY_BODY = '{"error_message": "invalid API key"}'
 
 
@@ -20,6 +19,9 @@ class TestMotiveClassifier:
     def test_2xx_is_success(self, classifier: MotiveResponseClassifier) -> None:
         outcome = classifier.classify_response(200, {}, '{"vehicles": []}')
         assert outcome.category is ResponseCategory.SUCCESS
+        # Motive classifies by status alone, so no parse is handed
+        # forward; the client parses.
+        assert outcome.parsed_body is None
 
     def test_429_with_retry_after_header(
         self, classifier: MotiveResponseClassifier
