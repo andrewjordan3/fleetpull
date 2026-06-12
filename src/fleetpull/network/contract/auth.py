@@ -1,6 +1,5 @@
 # src/fleetpull/network/contract/auth.py
-"""
-Auth strategies: credential injection decoupled from the client.
+"""Auth strategies: credential injection decoupled from the client.
 
 Provider names appear only at the composition root that constructs
 strategies; the client and everything downstream is provider-blind.
@@ -134,12 +133,15 @@ class GeotabSessionAuth:
                 body's ``params`` exists but is not a mapping — both
                 are programming errors in the endpoint layer.
         """
-        session: GeotabSession = self._manager.get_session()
+        # Validate before the session fetch: a body-less spec is a
+        # programming error and must not trigger a real Authenticate
+        # call (which would burn sessions against GeoTab's LRU cap).
         if spec.json_body is None:
             raise ValueError(
                 'GeoTab requests require a JSON-RPC body; '
-                'a body-less spec reaching GeoTab auth is a programming error.'
+                'a body-less spec reaching GeoTab auth is a programming error'
             )
+        session: GeotabSession = self._manager.get_session()
 
         # The strategy is the sole authority on credentials: an existing
         # 'credentials' key left by a caller is overwritten, never kept.
@@ -188,7 +190,7 @@ class GeotabSessionAuth:
         failed_session: GeotabSession | None = self._thread_local.last_prepared
         if failed_session is None:
             raise RuntimeError(
-                'on_auth_failure called before any prepare on this thread.'
+                'on_auth_failure called before any prepare on this thread'
             )
         self._manager.invalidate(failed_session)
         return True

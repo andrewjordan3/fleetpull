@@ -1,21 +1,22 @@
-"""Tests for the GeoTab response classifier (fixtures: G1-G5 captures,
-June 2026; constructed fixtures marked)."""
+"""Tests for the GeoTab response classifier (fixtures: scrubbed
+provider-behavior verification, June 2026; constructed fixtures
+marked)."""
+
+import json
 
 import pytest
 
 from fleetpull.network.contract.classifiers.geotab import GeotabResponseClassifier
 from fleetpull.network.contract.outcome import ResponseCategory
 
-__all__: list[str] = []
-
-# GeoTab — Authenticate success (G1):
+# Captured: Authenticate success:
 GEOTAB_AUTHENTICATE_SUCCESS = (
     '{"result": {"credentials": {"database": "exampledb", "sessionId":'
     ' "SyntheticSessionId000001", "userName": "user@example.com"},'
     ' "path": "ThisServer"}, "jsonrpc": "2.0"}'
 )
 
-# GeoTab — invalid session on a data call (G2; HTTP status was 200):
+# Captured: invalid session on a data call (HTTP status was 200):
 GEOTAB_INVALID_SESSION = (
     '{"error": {"message": "Invalid session @ \'exampledb\'", "code": -32000,'
     ' "data": {"id": "00000000-0000-0000-0000-000000000001",'
@@ -25,9 +26,9 @@ GEOTAB_INVALID_SESSION = (
     ' "jsonrpc": "2.0", "requestIndex": 0}'
 )
 
-# GeoTab — bad credentials on Authenticate (G3; HTTP 200; SAME type as
-# G2, different message — which is exactly why decisions never read
-# messages):
+# Captured: bad credentials on Authenticate (HTTP 200; SAME type as
+# the invalid-session capture, different message — which is exactly
+# why decisions never read messages):
 GEOTAB_BAD_CREDENTIALS = (
     '{"error": {"message": "Incorrect login credentials", "code": -32000,'
     ' "data": {"id": "00000000-0000-0000-0000-000000000002",'
@@ -37,7 +38,7 @@ GEOTAB_BAD_CREDENTIALS = (
     ' "jsonrpc": "2.0", "requestIndex": 0}'
 )
 
-# GeoTab — over limit (G4; HTTP 200; paired header retry-after: 56):
+# Captured: over limit (HTTP 200; paired header retry-after: 56):
 GEOTAB_OVER_LIMIT = (
     '{"error": {"message": "API calls quota exceeded. Maximum admitted 10 per'
     ' 1m.", "code": -32000, "data": {"id":'
@@ -47,7 +48,7 @@ GEOTAB_OVER_LIMIT = (
     ' "OverLimitException"}]}, "jsonrpc": "2.0", "requestIndex": 0}'
 )
 
-# GeoTab — GetFeed success (G5, trimmed):
+# Captured: GetFeed success (trimmed):
 GEOTAB_GETFEED_SUCCESS = (
     '{"result": {"data": [], "toVersion": "00000000034561f1"}, "jsonrpc": "2.0"}'
 )
@@ -72,8 +73,8 @@ GEOTAB_UNKNOWN_EXCEPTION = (
     ' "jsonrpc": "2.0", "requestIndex": 0}'
 )
 
-# GeoTab — load-balancer HTML page (captured shape, trimmed; arrives
-# with a 4xx status):
+# Captured: load-balancer HTML page (shape trimmed; arrives with a
+# 4xx status):
 GEOTAB_HTML_ERROR_PAGE = (
     '<html><head><title>400 Bad Request</title></head>\n'
     '<body><h1>Error: Bad Request</h1></body></html>'
@@ -104,6 +105,14 @@ class TestGeotabSuccess:
     ) -> None:
         outcome = classifier.classify_response(200, {}, GEOTAB_GETFEED_SUCCESS)
         assert outcome.category is ResponseCategory.SUCCESS
+
+    def test_success_hands_the_classification_parse_forward(
+        self, classifier: GeotabResponseClassifier
+    ) -> None:
+        # The classifier parsed the body to classify; the client must
+        # never have to parse it again.
+        outcome = classifier.classify_response(200, {}, GEOTAB_GETFEED_SUCCESS)
+        assert outcome.parsed_body == json.loads(GEOTAB_GETFEED_SUCCESS)
 
 
 class TestGeotabErrorEnvelopes:

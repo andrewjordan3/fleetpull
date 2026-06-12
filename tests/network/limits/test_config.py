@@ -5,8 +5,6 @@ from pydantic import ValidationError
 
 from fleetpull.network.limits.config import RateLimitConfig
 
-__all__: list[str] = []
-
 
 @pytest.fixture
 def valid_config() -> RateLimitConfig:
@@ -40,7 +38,7 @@ class TestFieldValidation:
             field_name: invalid_value,
         }
         with pytest.raises(ValidationError):
-            RateLimitConfig(**config_kwargs)  # type: ignore[arg-type]
+            RateLimitConfig(**config_kwargs)
 
     def test_rejects_unknown_field(self) -> None:
         with pytest.raises(ValidationError):

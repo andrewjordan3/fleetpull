@@ -159,7 +159,7 @@ Functions over ~50 lines should be split. Orchestrators orchestrate — they cal
 
 - Underscore prefix = file-private. Production code never exports or imports underscore-prefixed names outside their defining module. Tests may import underscore-prefixed names from production modules to exercise private helpers directly — keeping direct coverage of non-trivial internal functions outweighs the boundary rule for test code.
 - Imports organized to ruff standards (`isort`-compatible).
-- `__all__: list[str]` in every module.
+- `__all__: list[str]` in every module under `src/`. Test modules are never imported as an API; they carry no `__all__`.
 
 ## Data Hygiene
 

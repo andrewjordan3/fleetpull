@@ -1,13 +1,15 @@
 # src/fleetpull/network/contract/classifiers/geotab.py
-"""
-GeoTab response classifier (sources: G1-G5 captures, June 2026).
+"""GeoTab response classifier (sources: scrubbed provider-behavior
+verification, June 2026).
 
 GeoTab is JSON-RPC: every application-level failure arrives inside
 HTTP 200, so this classifier is envelope-driven — a status-code-only
 client cannot see failure. The discriminator is ``error.data.type``
 (observed present in every captured failure); classification never
 reads human-readable message text. ``detail`` carries
-``error['message']`` for humans, decisions never read it.
+``error['message']`` for humans, decisions never read it. Branch logic
+deliberately resembles sibling classifiers without sharing code:
+provider classifiers evolve independently (blast-radius over DRY).
 """
 
 import json
@@ -17,8 +19,7 @@ from fleetpull.network.contract.classifier import (
     SERVER_ERROR_FLOOR,
     ResponseClassifier,
     body_snippet,
-    find_header,
-    parse_retry_after_seconds,
+    retry_after_seconds_from_headers,
 )
 from fleetpull.network.contract.outcome import ClassifiedResponse, ResponseCategory
 from fleetpull.network.contract.request import JsonValue
@@ -60,14 +61,9 @@ def _classify_error_envelope(
 
     match error_type:
         case 'OverLimitException':
-            retry_after_header: str | None = find_header(headers, 'Retry-After')
             return ClassifiedResponse(
                 category=ResponseCategory.RATE_LIMITED,
-                retry_after_seconds=(
-                    parse_retry_after_seconds(retry_after_header)
-                    if retry_after_header is not None
-                    else None
-                ),
+                retry_after_seconds=retry_after_seconds_from_headers(headers),
                 detail=error_message,
             )
         case 'InvalidUserException':
@@ -117,10 +113,6 @@ class GeotabResponseClassifier(ResponseClassifier):
                 detail=f'HTTP {status_code}: {body_snippet(body_text)}',
             )
 
-        # Known, accepted cost: this parse is for classification only;
-        # on SUCCESS the client parses the body again to extract
-        # records. Page sizes are bounded by resultsLimit; revisit only
-        # if profiling ever shows it matters.
         try:
             parsed_body: JsonValue = json.loads(body_text)
         except json.JSONDecodeError:
@@ -138,7 +130,11 @@ class GeotabResponseClassifier(ResponseClassifier):
             if 'error' in parsed_body:
                 return _classify_error_envelope(parsed_body['error'], headers)
             if 'result' in parsed_body:
-                return ClassifiedResponse(category=ResponseCategory.SUCCESS)
+                # The parse already paid for classification is handed
+                # forward; the client must not parse the body again.
+                return ClassifiedResponse(
+                    category=ResponseCategory.SUCCESS, parsed_body=parsed_body
+                )
 
         return ClassifiedResponse(
             category=ResponseCategory.FATAL,
