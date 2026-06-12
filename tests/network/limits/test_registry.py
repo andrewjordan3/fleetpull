@@ -38,6 +38,15 @@ class TestRateLimiterRegistry:
         with pytest.raises(UnknownQuotaScopeError, match='geotab'):
             registry.get('geotab')
 
+    def test_unknown_scope_error_lists_the_configured_scopes(
+        self, registry: RateLimiterRegistry
+    ) -> None:
+        # The consumer action is "fix your config"; the message must
+        # show what the config actually contains.
+        with pytest.raises(UnknownQuotaScopeError) as exception_info:
+            registry.get('geotab')
+        assert 'configured scopes: motive, samsara' in str(exception_info.value)
+
     def test_concurrent_get_creates_exactly_one_instance(
         self, registry: RateLimiterRegistry
     ) -> None:

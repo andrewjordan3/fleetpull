@@ -60,7 +60,11 @@ class RateLimiterRegistry:
                 return existing_limiter
             scope_config: RateLimitConfig | None = self._rate_limits.get(quota_scope)
             if scope_config is None:
-                raise UnknownQuotaScopeError(quota_scope)
+                configured_scopes: str = ', '.join(sorted(self._rate_limits)) or 'none'
+                raise UnknownQuotaScopeError(
+                    quota_scope,
+                    detail=f'configured scopes: {configured_scopes}',
+                )
             new_limiter = QuotaScopeLimiter(quota_scope, scope_config, self._clock)
             self._limiters[quota_scope] = new_limiter
             return new_limiter
