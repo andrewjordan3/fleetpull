@@ -4,12 +4,10 @@ import threading
 
 import pytest
 
+from fleetpull.exceptions import UnknownQuotaScopeError
 from fleetpull.network.limits.config import RateLimitConfig
 from fleetpull.network.limits.limiter import QuotaScopeLimiter
-from fleetpull.network.limits.registry import (
-    RateLimiterRegistry,
-    UnknownQuotaScopeError,
-)
+from fleetpull.network.limits.registry import RateLimiterRegistry
 
 
 def build_config() -> RateLimitConfig:

@@ -1,7 +1,7 @@
 # fleetpull — Design Document
 
 **Status:** Design settled through module layout; implementation underway (see §14 for build progress).
-**Working name:** `fleetpull` (PyPI availability confirmed 2026-06-10 for `fleetpull`, `fleetloader`, `telematics`, `telematics-io`; `fleetpull` selected — describes exactly what the package does and nothing more).
+**Name:** `fleetpull` — final. Describes exactly what the package does and nothing more (PyPI availability confirmed 2026-06-10).
 **Relationship to fleet-telemetry-hub:** New package, not a rewrite. fleet-telemetry-hub remains in production untouched while fleetpull is built.
 
 ---
@@ -27,9 +27,9 @@ the raw API responses as is reasonable.
 - Unified cross-provider schema
 - Any assumed end use; downstream processing is the consumer's concern
 - Semantic / event-id deduplication (payload-variant collapsing belongs to consumers)
-- Loading into warehouses (no L; BigQuery et al. consume the parquet externally)
+- Loading into warehouses — the package extracts and lightly transforms; it never performs a load step. Downstream systems (BigQuery et al.) consume the parquet externally.
 
-**Salvaged from fleet-telemetry-hub** (the well-designed Tier 2 layer):
+**Salvaged from fleet-telemetry-hub** — the provider-API abstraction layer (endpoint definitions, HTTP client patterns, response models), not the predecessor's orchestration or schema-unification layers, which the "Dropped" list below covers:
 
 - `EndpointDefinition` abstraction (self-describing endpoints: auth, pagination, request building, response parsing)
 - Provider-agnostic HTTP client patterns (retry/backoff, pagination transparency, proxy/SSL handling)
@@ -47,7 +47,7 @@ orchestrators.
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| DataFrame engine | **Polars** (not pandas, not DuckDB) | Strict per-column schemas derivable from Pydantic models; clean parquet writer with no pandas-metadata problem (eliminates the canonical-reader issue); native list/struct columns. DuckDB's strength is querying/merging existing parquet — out of scope. Consumers may use DuckDB on our output. Both engines do not ship in the package. |
+| DataFrame engine | **Polars** (not pandas, not DuckDB) | Strict per-column schemas derivable from Pydantic models; clean parquet writer with no pandas-metadata problem (eliminates the canonical-reader issue); native list/struct columns. DuckDB's strength is querying/merging existing parquet — out of scope. Consumers may use DuckDB on our output. pandas and DuckDB do not ship in the package; polars is a core dependency. |
 | Concurrency | **Threads** (`ThreadPoolExecutor`), not asyncio | Work is IO-bound HTTP; async infects every consumer-facing signature. Threads keep per-fetch code synchronous and simple. |
 | Validation/config | Pydantic 2.x, `frozen=True`, `extra='forbid'`, `validate_default=True` | House standard. |
 | Operational state | **SQLite** (WAL mode), single db at dataset root | Source of truth for watermarks/cursors, run ledger, work units. See §5. |
@@ -228,7 +228,7 @@ protects the invariant for any caller outside the orchestrator.
 
 ### Implementation notes
 
-- One `threading.Condition` per limiter guards both `pause_until` and the token count. `request_slot()` loops: `while paused or tokens < 1: cond.wait(timeout=min(time_until_unpause, time_until_next_token))`, recomputing on every wake (spurious wakeups harmless by construction). `Condition.wait()` releases the lock while waiting — this is the sanctioned way to "sleep"; a plain `time.sleep()` while holding a `Lock` is a bug.
+- One `threading.Condition` per limiter guards both `pause_until` and the token count. `request_slot()` loops on the condition under two invariants that must not regress: every wake recomputes its wait from scratch (spurious wakeups harmless by construction), and the penalty is waited out before any token is consumed. `Condition.wait()` releases the lock while waiting — this is the sanctioned way to "sleep"; a plain `time.sleep()` while holding a `Lock` is a bug.
 - `penalize()` extends `pause_until` and calls `notify_all()` so waiters recompute against the new penalty instead of firing into a paused scope when their token math says go.
 
 Interface:
@@ -306,13 +306,48 @@ shared substance** (`ResponseClassifier`). Implemented in
 `network/contract/`: `outcome.py`, `classifier.py`, and per-provider
 classifiers in `classifiers/`.
 
-**Specific codes by name, bands by constant (P7):** provider classifiers
+**Specific codes by name, bands by constant:** provider classifiers
 compare specific well-known statuses against `http.HTTPStatus` members
 (`TOO_MANY_REQUESTS`, `UNAUTHORIZED`, `FORBIDDEN`); band membership uses the
 shared `SUCCESS_STATUS_RANGE` / `SERVER_ERROR_FLOOR` constants. Never
 construct `HTTPStatus` from an arbitrary code — `HTTPStatus(code)` raises
 `ValueError` on nonstandard statuses (e.g. 522) and a classifier must
 classify every status, not crash on one.
+
+### The exception hierarchy (implemented: `exceptions.py`)
+
+The operational errors consumers catch, mirroring the classification
+vocabulary and inheriting its closure invariant: **a new exception type is
+admissible only if it demands a distinct consumer action.** Programming
+errors (caller bugs) stay stdlib `ValueError`/`RuntimeError` — a hierarchy
+that absorbs caller bugs invites broad `except` clauses that silence them.
+
+```
+FleetpullError
+├── ConfigurationError
+│   └── UnknownQuotaScopeError
+├── AuthenticationError
+├── ProviderResponseError
+└── RetriesExhaustedError
+```
+
+| Exception | Consumer action |
+|---|---|
+| `ConfigurationError` | Fix local config/wiring before rerunning. |
+| `AuthenticationError` | Fix credentials / account access. |
+| `ProviderResponseError` | Provider response was non-retryable or contract-violating; do not blindly rerun. |
+| `RetriesExhaustedError` | The transient/rate-limit budget ran out; rerunning later is reasonable. |
+
+Members are plain data carriers: typed fields for programmatic handling, a
+composed human message for `str()`. Instances never carry raw request or
+response material (headers, bodies, request specs, credentials-adjacent
+values) — every instance is safe to log. Pickling is deliberately
+unsupported (keyword-only fields break `BaseException`'s positional-args
+reconstruction): fleetpull concurrency is threads, and exceptions never
+cross a process boundary in this package. The client prompt wires the raise
+sites: FATAL classifications → `ProviderResponseError`, exhausted retry
+budgets → `RetriesExhaustedError`, failed auth paths →
+`AuthenticationError`.
 
 ### Observed provider behaviors (verified June 2026)
 
@@ -321,6 +356,7 @@ classify every status, not crash on one.
 | GeoTab | Application errors arrive inside HTTP 200; `error.data.type` is the authoritative discriminator (present in every captured failure). |
 | GeoTab | `InvalidUserException` covers BOTH bad credentials and dead sessions — distinguished only by message text; context disambiguates (data call → invalidate + one retry; Authenticate itself → fatal). |
 | GeoTab | `OverLimitException` pairs with an integer `Retry-After` header (e.g. `56`). |
+| GeoTab | Success responses carry `X-Rate-Limit-*` budget headers; deliberately unconsumed — the reactive control loop (configured budgets plus the 429 penalty) is the v1 design, and a second feed-forward loop is rejected. Re-litigate on sustained 429 churn on GeoTab in production. |
 | GeoTab | `toVersion` is a string cursor; `GetFeed` with `search.fromDate` supports historical bootstrap (feeds the state design). |
 | Samsara | 429 with fractional `Retry-After` (e.g. `0.40235`); 401 body is `{"message": ...}`; 5xx bodies are plain strings, never JSON. |
 | Motive | 401 body is `{"error_message": ...}`; the documented /vehicle_locations limit was not observed to enforce — generic 429 posture. |
@@ -372,19 +408,22 @@ public internal contract, not a later retrofit.
 
 ```
 fleetpull/
-  client.py        # HTTP transport, retry policy, limiter consultation, pagination iterator
+  exceptions.py    # package exception hierarchy (§8) — user-facing: consumers catch these
   config/          # Pydantic models for user-provided YAML, one module per section; the YAML loader joins in a later prompt
     logger.py      # LoggerConfig
     geotab.py      # GeotabAuthConfig
   logger/
     setup.py       # package logging setup (setup_logger), driven by LoggerConfig
   network/
+    client.py      # HTTP transport, retry policy, limiter consultation; consumes the pagination abstraction
     truststore_context.py  # SSLContext factory backed by the OS trust store (Zscaler-class proxies)
     auth/
       models.py    # AuthenticationResult, GeotabSession (frozen dataclasses)
       manager.py   # GeotabSessionManager — single-flight session lifecycle (§8)
     contract/
-      request.py   # HttpMethod, RequestSpec, JSON type aliases
+      request.py   # HttpMethod, RequestSpec, JSON type aliases; params is
+                   #   single-valued by design — widen to accept sequences when
+                   #   a real endpoint demands repeated query keys
       outcome.py   # ResponseCategory, ClassifiedResponse
       classifier.py  # ResponseClassifier ABC + shared transport-exception mapping
       auth.py      # AuthStrategy protocol, StaticHeaderAuth, GeotabSessionAuth
@@ -403,10 +442,10 @@ fleetpull/
     samsara.py
     geotab.py      # stub until access lands
   models/          # response Pydantic models per provider (largely ported from fleet-telemetry-hub)
-  records.py       # flattening; Pydantic → Polars schema derivation + overrides + validation
-  storage.py       # Polars merge/write: delete-by-window + append; single vs partitioned
-  state.py         # SQLite: watermarks/cursors, run ledger, work units
-  orchestrator.py  # sync planner: builds work units, per-provider executors, per-endpoint writer threads
+  records/         # flattening; Pydantic → Polars schema derivation + overrides + validation
+  storage/         # Polars merge/write: delete-by-window + append; single vs partitioned
+  state/           # SQLite: watermarks/cursors, run ledger, work units
+  orchestrator/    # sync planner: builds work units, per-provider executors, per-endpoint writer threads
   cli.py           # fetch, sync
 ```
 
@@ -414,15 +453,20 @@ The package root holds user-facing modules only; internal code lives in
 subpackages. Settled: ALL Pydantic models parsing user-provided YAML
 centralize in `config/` — including `RateLimitConfig`, which currently lives
 in `network/limits/config.py` and migrates to `config/` in the prompt that
-builds the YAML loader. Open question: the flat placement of the remaining
-internal modules (`client.py`, `records.py`, `storage.py`, `state.py`,
-`orchestrator.py`) predates the root rule and needs restructuring or an
-explicit exemption (`limits` is settled: it lives at `network/limits/`).
+builds the YAML loader. Placement for everything else is settled the same
+way: the client is transport plumbing and lives at `network/client.py`,
+alongside the limiter, contract, and auth it consumes; `records`, `storage`,
+`state`, and `orchestrator` are internal by the same test (consumers call
+the public API, never these) and each receives its own subpackage home when
+its prompt builds it — a single-module subpackage is the blessed shape.
+`exceptions.py` and `cli.py` are user-facing and stay at the root: consumers
+catch the exceptions and invoke the CLI. The hierarchy itself — members,
+consumer actions, and stances — is recorded in §8.
 
 Boundary rules:
 
-- `storage.py` knows nothing about state; `state.py` knows nothing about parquet. The orchestrator sequences them (parquet-then-watermark ordering, §5).
-- `client.py` owns the pagination iterator, because pagination, retry, and limiter consultation are interleaved per-request concerns; splitting them across modules is how the token-per-attempt / token-per-page rules get violated.
+- `storage` knows nothing about state; `state` knows nothing about parquet. The orchestrator sequences them (parquet-then-watermark ordering, §5).
+- `network/client.py` consumes the pagination abstraction (whose module home is an open question, §13). Retry and limiter consultation stay interleaved per-request concerns inside the client — splitting them away from the request loop is how the token-per-attempt / token-per-page rules get violated.
 - The orchestrator never touches the limiter (§7).
 
 ---
@@ -446,11 +490,11 @@ Boundary rules:
 - Real rate-limit values for Motive/Samsara (YAML numbers above are placeholders)
 - Whether any endpoint actually warrants the flattening opt-out
 - Per-endpoint quota scopes for Samsara (config-only change when needed)
-- Final name confirmation before repo creation (`fleetpull` is the working selection)
+- The pagination abstraction's module home: `network/contract/` (as part of the contract) versus `endpoints/`. Settled in the pagination design prompt, before the client prompt.
 
 ## 14. Next Steps
 
 1. Review/amend this document
-2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → `client.py` → `endpoints/base.py` → `records.py` → `storage.py` → `state.py` → `orchestrator.py` → `cli.py`
+2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → pagination abstraction (module home open, §13) → `network/client.py` → `endpoints/base.py` → `records` → `storage` → `state` → `orchestrator` → `cli.py`
 3. Port Motive/Samsara models and endpoint definitions onto the new base
 4. GeoTab integration when access lands

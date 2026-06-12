@@ -4,18 +4,12 @@
 import threading
 from collections.abc import Mapping
 
+from fleetpull.exceptions import UnknownQuotaScopeError
 from fleetpull.network.limits.config import RateLimitConfig
 from fleetpull.network.limits.limiter import QuotaScopeLimiter
 from fleetpull.timing.clock import Clock, SystemClock
 
-__all__: list[str] = ['RateLimiterRegistry', 'UnknownQuotaScopeError']
-
-
-class UnknownQuotaScopeError(Exception):
-    """Raised when an endpoint declares a quota scope nobody configured.
-
-    This is a configuration bug — no defaults, no fallbacks.
-    """
+__all__: list[str] = ['RateLimiterRegistry']
 
 
 class RateLimiterRegistry:
@@ -66,11 +60,7 @@ class RateLimiterRegistry:
                 return existing_limiter
             scope_config: RateLimitConfig | None = self._rate_limits.get(quota_scope)
             if scope_config is None:
-                configured_scopes: str = ', '.join(sorted(self._rate_limits)) or 'none'
-                raise UnknownQuotaScopeError(
-                    f'No rate limits configured for quota scope {quota_scope!r}. '
-                    f'Configured scopes: {configured_scopes}'
-                )
+                raise UnknownQuotaScopeError(quota_scope)
             new_limiter = QuotaScopeLimiter(quota_scope, scope_config, self._clock)
             self._limiters[quota_scope] = new_limiter
             return new_limiter
