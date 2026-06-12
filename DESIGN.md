@@ -256,8 +256,14 @@ A provider-agnostic `AuthStrategy` protocol:
 
 Provider names appear ONLY at the composition root that constructs
 strategies; the client and everything downstream is provider-blind.
-*(Design-only as of the auth-manager prompt; implemented with the request
-contract.)*
+Implemented in `network/contract/auth.py`: `StaticHeaderAuth`
+(Motive/Samsara) and `GeotabSessionAuth`, which injects session
+credentials into the JSON-RPC body, retargets the URL to the session's
+resolved host, and pins the last-prepared session in a `threading.local`
+slot so a failure on one worker thread invalidates the session that
+actually failed, never a fresher one another thread just prepared with.
+`prepare()` is called fresh for every HTTP attempt — every page, every
+retry — symmetric with token-per-attempt.
 
 ### GeoTab session lifecycle (implemented: `network/auth/`)
 
@@ -293,8 +299,20 @@ The producer is a per-provider `ResponseClassifier` ABC:
 The classifier is the SOLE producer of the vocabulary; the client only
 consumes, dispatching on category. House rule this establishes:
 **Protocol for pure shape** (`AuthStrategy` — zero shared code), **ABC for
-shared substance** (`ResponseClassifier`). *(Design-only as of the
-auth-manager prompt; implemented with the request contract.)*
+shared substance** (`ResponseClassifier`). Implemented in
+`network/contract/`: `outcome.py`, `classifier.py`, and per-provider
+classifiers in `classifiers/`.
+
+### Observed provider behaviors (verified June 2026)
+
+| Provider | Behavior |
+|---|---|
+| GeoTab | Application errors arrive inside HTTP 200; `error.data.type` is the authoritative discriminator (present in every captured failure). |
+| GeoTab | `InvalidUserException` covers BOTH bad credentials and dead sessions — distinguished only by message text; context disambiguates (data call → invalidate + one retry; Authenticate itself → fatal). |
+| GeoTab | `OverLimitException` pairs with an integer `Retry-After` header (e.g. `56`). |
+| GeoTab | `toVersion` is a string cursor; `GetFeed` with `search.fromDate` supports historical bootstrap (feeds the state design). |
+| Samsara | 429 with fractional `Retry-After` (e.g. `0.40235`); 401 body is `{"message": ...}`; 5xx bodies are plain strings, never JSON. |
+| Motive | 401 body is `{"error_message": ...}`; the documented /vehicle_locations limit was not observed to enforce — generic 429 posture. |
 
 ---
 
@@ -354,6 +372,12 @@ fleetpull/
     auth/
       models.py    # AuthenticationResult, GeotabSession (frozen dataclasses)
       manager.py   # GeotabSessionManager — single-flight session lifecycle (§8)
+    contract/
+      request.py   # HttpMethod, RequestSpec, JSON type aliases
+      outcome.py   # ResponseCategory, ClassifiedResponse
+      classifier.py  # ResponseClassifier ABC + shared transport-exception mapping
+      auth.py      # AuthStrategy protocol, StaticHeaderAuth, GeotabSessionAuth
+      classifiers/ # per-provider classifiers: motive.py, samsara.py, geotab.py
     limits/
       config.py        # RateLimitConfig (frozen Pydantic)
       bucket_math.py   # pure token-bucket arithmetic (stateless functions)
@@ -416,6 +440,6 @@ Boundary rules:
 ## 14. Next Steps
 
 1. Review/amend this document
-2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (`RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`, likely a `ProviderProfile` bundle) → `client.py` → `endpoints/base.py` → `records.py` → `storage.py` → `state.py` → `orchestrator.py` → `cli.py`
+2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → `client.py` → `endpoints/base.py` → `records.py` → `storage.py` → `state.py` → `orchestrator.py` → `cli.py`
 3. Port Motive/Samsara models and endpoint definitions onto the new base
 4. GeoTab integration when access lands
