@@ -243,6 +243,47 @@ class QuotaScopeLimiter:
 The clock is injected (`fleetpull.timing.Clock`) so limiter tests are
 deterministic.
 
+### Retry policy (implemented: `config/retry.py`, `network/retry/decision.py`)
+
+Pure policy the client consults after each retryable failure — no loop, no
+sleep, no state. The answer travels as a frozen `RetryDecision`
+(`should_retry`; `local_delay_seconds`, inert at 0.0 when not retrying)
+rather than an overloaded `float | None` — the None-versus-0.0 distinction
+is exactly the kind of subtle contract retry bugs breed in.
+
+- **Who sleeps:** the limiter owns ALL rate-limit waiting — a 429 penalizes
+  the shared quota scope and the next `request_slot()` waits it out, so
+  RATE_LIMITED decisions never carry a local delay. Local sleeping exists
+  only for TRANSIENT backoff: the policy computes the delay, the client
+  performs the sleep.
+- **Failure counts** are one-based within the current retryable category
+  and independent per category — a RATE_LIMITED failure neither resets nor
+  advances the TRANSIENT count. The comparison is
+  `failure_count > max_failures`, so `max_failures = N` retries failures
+  1..N and exhausts on the (N+1)th: at most N + 1 requests. On exhaustion
+  the client raises `RetriesExhaustedError` with the terminal failure count
+  as `attempt_count` — equal by definition (every attempt failed), so the
+  two vocabularies never drift.
+- **TRANSIENT backoff is full-jitter:** a delay drawn uniformly from
+  `[0, min(cap, base * 2 ** (n - 1)))`. Jitter randomness enters through a
+  single-method `RandomFractionGenerator` protocol that `random.Random`
+  satisfies structurally — the Clock precedent applied to jitter; tests
+  stub it for exact arithmetic.
+- **`fallback_penalty_seconds`:** when a rate-limited response carries no
+  usable Retry-After, the client passes this value to the limiter's
+  `penalize()`, logging the raw header value to keep the case diagnosable.
+  It errs long because it fires only when a provider is already misbehaving.
+
+Defaults (`RetryConfig`, frozen Pydantic in `config/`):
+
+| Field | Default |
+|---|---|
+| `transient_max_failures` | 3 |
+| `transient_backoff_base_seconds` | 1.0 |
+| `transient_backoff_cap_seconds` | 30.0 |
+| `rate_limited_max_failures` | 10 — a circuit breaker against 429 storms, not a pacer |
+| `fallback_penalty_seconds` | 60.0 |
+
 ---
 
 ## 8. Authentication and Response Classification
@@ -412,6 +453,7 @@ fleetpull/
   config/          # Pydantic models for user-provided YAML, one module per section; the YAML loader joins in a later prompt
     logger.py      # LoggerConfig
     geotab.py      # GeotabAuthConfig
+    retry.py       # RetryConfig — attempt budgets, backoff shape, fallback penalty (§7)
   logger/
     setup.py       # package logging setup (setup_logger), driven by LoggerConfig
   network/
@@ -432,7 +474,9 @@ fleetpull/
       config.py        # RateLimitConfig (frozen Pydantic)
       bucket_math.py   # pure token-bucket arithmetic (stateless functions)
       limiter.py       # QuotaScopeLimiter
-      registry.py      # RateLimiterRegistry, UnknownQuotaScopeError
+      registry.py      # RateLimiterRegistry
+    retry/
+      decision.py  # RetryDecision, RandomFractionGenerator, decide_retry — pure retry policy (§7)
   timing/
     clock.py       # injectable Clock Protocol; SystemClock and FrozenClock implementations
   endpoints/
@@ -495,6 +539,6 @@ Boundary rules:
 ## 14. Next Steps
 
 1. Review/amend this document
-2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → pagination abstraction (module home open, §13) → `network/client.py` → `endpoints/base.py` → `records` → `storage` → `state` → `orchestrator` → `cli.py`
+2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → retry policy (done, `config/retry.py` + `network/retry/`) → pagination abstraction (module home open, §13) → `network/client.py` → `endpoints/base.py` → `records` → `storage` → `state` → `orchestrator` → `cli.py`
 3. Port Motive/Samsara models and endpoint definitions onto the new base
 4. GeoTab integration when access lands

@@ -2,5 +2,6 @@
 
 from fleetpull.config.geotab import GeotabAuthConfig
 from fleetpull.config.logger import LoggerConfig
+from fleetpull.config.retry import RetryConfig
 
-__all__: list[str] = ['GeotabAuthConfig', 'LoggerConfig']
+__all__: list[str] = ['GeotabAuthConfig', 'LoggerConfig', 'RetryConfig']
