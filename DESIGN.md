@@ -303,6 +303,14 @@ shared substance** (`ResponseClassifier`). Implemented in
 `network/contract/`: `outcome.py`, `classifier.py`, and per-provider
 classifiers in `classifiers/`.
 
+**Specific codes by name, bands by constant (P7):** provider classifiers
+compare specific well-known statuses against `http.HTTPStatus` members
+(`TOO_MANY_REQUESTS`, `UNAUTHORIZED`, `FORBIDDEN`); band membership uses the
+shared `SUCCESS_STATUS_RANGE` / `SERVER_ERROR_FLOOR` constants. Never
+construct `HTTPStatus` from an arbitrary code — `HTTPStatus(code)` raises
+`ValueError` on nonstandard statuses (e.g. 522) and a classifier must
+classify every status, not crash on one.
+
 ### Observed provider behaviors (verified June 2026)
 
 | Provider | Behavior |
