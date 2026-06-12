@@ -63,7 +63,7 @@ Write the minimum code that solves the problem. No features beyond what was aske
 
 ## Editing Existing Code
 
-Use `str_replace` for targeted edits to existing files. Use `create_file` only for new files. Do not rewrite an entire file to change a few functions — edit surgically.
+Edit surgically and minimally: change only the lines the task requires, and never rewrite an entire file to change a few functions. Create a new file only when something new is being built.
 
 When your changes create orphans, remove what you orphaned. When you notice pre-existing issues outside the current task's scope, note them at the end of your response under **"Observations outside current scope"** — don't fix them, with the following exceptions.
 
@@ -136,10 +136,21 @@ Functions over ~50 lines should be split. Orchestrators orchestrate — they cal
 - Tests never hit real provider APIs. HTTP is mocked or served locally.
 - Tests live in `tests/` mirroring the `src/` structure. Use pytest fixtures and parametrize.
 
+## Verification Gates
+
+All four must pass, in order, before any change is complete; when a change alters the gates themselves (scope, flags, new tools), this section updates in the same change.
+
+```
+uv run ruff format .
+uv run ruff check .
+uv run mypy src/ tests/
+uv run pytest
+```
+
 ## Data and Computation
 
 - Vectorized polars expressions — no row-level loops or `map_elements` unless mathematically unavoidable.
-- All event timestamps are timezone-aware UTC (ruff DTZ enforces no naive datetimes). Limiter timing is `time.monotonic()`, never wall clock.
+- All event timestamps are timezone-aware UTC (ruff DTZ enforces no naive datetimes). Limiter timing is monotonic, never wall clock — `time.perf_counter()` via `SystemClock`; the rationale is recorded at the decision point in `timing/clock.py`.
 - `logging.getLogger(__name__)` in every module. Levels: `DEBUG` for flow, `INFO` for milestones, `ERROR` with `exc_info=True`. No `print` in production code (ruff T20).
 
 ## Documentation
