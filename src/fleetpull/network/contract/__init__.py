@@ -7,6 +7,11 @@ from fleetpull.network.contract.auth import (
 )
 from fleetpull.network.contract.classifier import ResponseClassifier
 from fleetpull.network.contract.outcome import ClassifiedResponse, ResponseCategory
+from fleetpull.network.contract.pagination import (
+    PageAdvance,
+    PaginationStrategy,
+    validate_pagination_envelope,
+)
 from fleetpull.network.contract.request import (
     HttpMethod,
     JsonScalar,
@@ -21,8 +26,11 @@ __all__: list[str] = [
     'HttpMethod',
     'JsonScalar',
     'JsonValue',
+    'PageAdvance',
+    'PaginationStrategy',
     'RequestSpec',
     'ResponseCategory',
     'ResponseClassifier',
     'StaticHeaderAuth',
+    'validate_pagination_envelope',
 ]

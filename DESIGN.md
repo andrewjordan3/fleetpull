@@ -355,6 +355,67 @@ construct `HTTPStatus` from an arbitrary code — `HTTPStatus(code)` raises
 `ValueError` on nonstandard statuses (e.g. 522) and a classifier must
 classify every status, not crash on one.
 
+### Pagination contract (implemented: `network/contract/pagination.py`, `paginators/`)
+
+The client is pagination-blind the way it is auth-blind and
+classification-blind: one loop shape for every provider and for
+unpaginated endpoints alike. A per-provider `PaginationStrategy`
+(Protocol — the implementations share zero concrete behavior) supplies
+`first_request(spec)` (decorate the base spec for page one) and
+`advance(sent, envelope) -> PageAdvance` (the verdict for the page just
+received). Strategies are frozen dataclasses holding configuration
+fields only; the client threads the loop, the strategy computes.
+Implemented strategies: `SinglePageStrategy` (unpaginated endpoints —
+replaces any is-paginated flag), `MotivePagination` (page-numbered),
+`SamsaraPagination` (cursor), `GeotabFeedPagination` (GetFeed
+`toVersion` feed).
+
+**Verdict versus raise:** components return verdicts when the consumer
+must choose among actions; they raise when only one action exists.
+`advance` returns a verdict (continue/complete — the client
+dispatches). A structurally violating pagination envelope has exactly
+one action — raise `ProviderResponseError` ("contract-violating"
+covers it) — so strategies raise it directly. A malformed SENT request
+reaching a strategy is a caller bug and stays stdlib `ValueError`.
+Samsara's continuation-without-cursor is the canonical single-action
+case: silently finishing would truncate data, the one failure mode a
+fetch library must never have.
+
+**Durable progress:** `PageAdvance.durable_progress` carries cursor
+progress that must outlive the fetch — GeoTab's `toVersion`, the state
+layer's FeedToken commit value — on EVERY page including the terminal
+one (the terminal page's value is the resume point; per-page progress
+is what makes a crash mid-feed resumable). None for providers whose
+cursors are fetch-private (Motive, Samsara).
+
+**Envelope-slice models:** pagination metadata is an API contract, so
+it is validated by Pydantic models — private, per-paginator, frozen,
+`extra='ignore'`. The `extra='forbid'` house default is for schemas WE
+own (config); these are slices of provider-owned envelopes, where
+additive provider changes must pass through untouched. The models
+validate the whole envelope (a two-level slice locating the metadata),
+so no naked envelope-walking or `isinstance` ladders exist in the
+layer; the shared validate-then-raise composition is
+`validate_pagination_envelope`. These private slices are not endpoint
+mirrors and do not belong in `models/`.
+
+**Wire tokens are constants, not enums:** wire-protocol tokens
+(`'fromVersion'`, `'page_no'`, `'after'`) are module-private
+`Final[str]` constants. Enums model closed sets that code dispatches
+over (`ResponseCategory`); nothing dispatches over a wire token.
+Constants are per-provider and deliberately unshared — token
+coincidence across providers is accident, not shared semantics (the
+classifier blast-radius reasoning applied to tokens).
+
+Provider mechanics worth recording: Motive termination recomputes
+`page_no * per_page >= total` from each page's freshly echoed values,
+so mid-pagination drift in `total` self-corrects — which is why no
+empty-page guard exists. GeoTab advances send `fromVersion` with
+`search` stripped (verified: the API accepts `fromVersion` alone, and
+tolerates both being sent — the strategy always strips);
+`resultsLimit` is read from the sent body, so strategy-versus-endpoint
+divergence is structurally impossible.
+
 ### The exception hierarchy (implemented: `exceptions.py`)
 
 The operational errors consumers catch, mirroring the classification
@@ -470,6 +531,8 @@ fleetpull/
       classifier.py  # ResponseClassifier ABC + shared transport-exception mapping
       auth.py      # AuthStrategy protocol, StaticHeaderAuth, GeotabSessionAuth
       classifiers/ # per-provider classifiers: motive.py, samsara.py, geotab.py
+      pagination.py  # PageAdvance, PaginationStrategy, validate_pagination_envelope (§8)
+      paginators/  # per-provider strategies: single_page.py, motive.py, samsara.py, geotab.py
     limits/
       config.py        # RateLimitConfig (frozen Pydantic)
       bucket_math.py   # pure token-bucket arithmetic (stateless functions)
@@ -510,7 +573,7 @@ consumer actions, and stances — is recorded in §8.
 Boundary rules:
 
 - `storage` knows nothing about state; `state` knows nothing about parquet. The orchestrator sequences them (parquet-then-watermark ordering, §5).
-- `network/client.py` consumes the pagination abstraction (whose module home is an open question, §13). Retry and limiter consultation stay interleaved per-request concerns inside the client — splitting them away from the request loop is how the token-per-attempt / token-per-page rules get violated.
+- `network/client.py` consumes the pagination abstraction (`network/contract/pagination.py`). Retry and limiter consultation stay interleaved per-request concerns inside the client — splitting them away from the request loop is how the token-per-attempt / token-per-page rules get violated.
 - The orchestrator never touches the limiter (§7).
 
 ---
@@ -534,11 +597,10 @@ Boundary rules:
 - Real rate-limit values for Motive/Samsara (YAML numbers above are placeholders)
 - Whether any endpoint actually warrants the flattening opt-out
 - Per-endpoint quota scopes for Samsara (config-only change when needed)
-- The pagination abstraction's module home: `network/contract/` (as part of the contract) versus `endpoints/`. Settled in the pagination design prompt, before the client prompt.
 
 ## 14. Next Steps
 
 1. Review/amend this document
-2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → retry policy (done, `config/retry.py` + `network/retry/`) → pagination abstraction (module home open, §13) → `network/client.py` → `endpoints/base.py` → `records` → `storage` → `state` → `orchestrator` → `cli.py`
+2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → retry policy (done, `config/retry.py` + `network/retry/`) → pagination abstraction (done, `network/contract/pagination.py` + `paginators/`) → `network/client.py` → `endpoints/base.py` → `records` → `storage` → `state` → `orchestrator` → `cli.py`
 3. Port Motive/Samsara models and endpoint definitions onto the new base
 4. GeoTab integration when access lands
