@@ -70,3 +70,28 @@ class RequestSpec:
             field is preserved.
         """
         return replace(self, headers={**self.headers, **extra})
+
+    def with_merged_params(self, overrides: Mapping[str, str]) -> Self:
+        """
+        Copy of this spec with ``overrides`` merged into ``params``
+        (add-or-replace per key; existing keys not named are kept).
+
+        Args:
+            overrides: Query parameters to add or replace.
+
+        Returns:
+            The new spec; ``self`` is unchanged.
+        """
+        return replace(self, params={**(self.params or {}), **overrides})
+
+    def with_json_body(self, json_body: Mapping[str, JsonValue]) -> Self:
+        """
+        Copy of this spec with ``json_body`` replaced wholesale.
+
+        Args:
+            json_body: The replacement body.
+
+        Returns:
+            The new spec; ``self`` is unchanged.
+        """
+        return replace(self, json_body=json_body)
