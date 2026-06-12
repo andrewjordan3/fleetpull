@@ -314,6 +314,41 @@ construct `HTTPStatus` from an arbitrary code — `HTTPStatus(code)` raises
 `ValueError` on nonstandard statuses (e.g. 522) and a classifier must
 classify every status, not crash on one.
 
+### The exception hierarchy (implemented: `exceptions.py`)
+
+The operational errors consumers catch, mirroring the classification
+vocabulary and inheriting its closure invariant: **a new exception type is
+admissible only if it demands a distinct consumer action.** Programming
+errors (caller bugs) stay stdlib `ValueError`/`RuntimeError` — a hierarchy
+that absorbs caller bugs invites broad `except` clauses that silence them.
+
+```
+FleetpullError
+├── ConfigurationError
+│   └── UnknownQuotaScopeError
+├── AuthenticationError
+├── ProviderResponseError
+└── RetriesExhaustedError
+```
+
+| Exception | Consumer action |
+|---|---|
+| `ConfigurationError` | Fix local config/wiring before rerunning. |
+| `AuthenticationError` | Fix credentials / account access. |
+| `ProviderResponseError` | Provider response was non-retryable or contract-violating; do not blindly rerun. |
+| `RetriesExhaustedError` | The transient/rate-limit budget ran out; rerunning later is reasonable. |
+
+Members are plain data carriers: typed fields for programmatic handling, a
+composed human message for `str()`. Instances never carry raw request or
+response material (headers, bodies, request specs, credentials-adjacent
+values) — every instance is safe to log. Pickling is deliberately
+unsupported (keyword-only fields break `BaseException`'s positional-args
+reconstruction): fleetpull concurrency is threads, and exceptions never
+cross a process boundary in this package. The client prompt wires the raise
+sites: FATAL classifications → `ProviderResponseError`, exhausted retry
+budgets → `RetriesExhaustedError`, failed auth paths →
+`AuthenticationError`.
+
 ### Observed provider behaviors (verified June 2026)
 
 | Provider | Behavior |
@@ -373,7 +408,7 @@ public internal contract, not a later retrofit.
 
 ```
 fleetpull/
-  exceptions.py    # package exception hierarchy — user-facing: consumers catch these
+  exceptions.py    # package exception hierarchy (§8) — user-facing: consumers catch these
   config/          # Pydantic models for user-provided YAML, one module per section; the YAML loader joins in a later prompt
     logger.py      # LoggerConfig
     geotab.py      # GeotabAuthConfig
@@ -425,11 +460,8 @@ alongside the limiter, contract, and auth it consumes; `records`, `storage`,
 the public API, never these) and each receives its own subpackage home when
 its prompt builds it — a single-module subpackage is the blessed shape.
 `exceptions.py` and `cli.py` are user-facing and stay at the root: consumers
-catch the exceptions and invoke the CLI. The exception hierarchy carries
-operational errors only; programming-error `ValueError`/`RuntimeError`
-raises stay stdlib — a hierarchy that absorbs caller bugs invites broad
-excepts that silence them. The full hierarchy design lands in its own
-prompt; these two stances are settled now.
+catch the exceptions and invoke the CLI. The hierarchy itself — members,
+consumer actions, and stances — is recorded in §8.
 
 Boundary rules:
 
@@ -463,6 +495,6 @@ Boundary rules:
 ## 14. Next Steps
 
 1. Review/amend this document
-2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (`exceptions.py`) → pagination abstraction (module home open, §13) → `network/client.py` → `endpoints/base.py` → `records` → `storage` → `state` → `orchestrator` → `cli.py`
+2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → pagination abstraction (module home open, §13) → `network/client.py` → `endpoints/base.py` → `records` → `storage` → `state` → `orchestrator` → `cli.py`
 3. Port Motive/Samsara models and endpoint definitions onto the new base
 4. GeoTab integration when access lands

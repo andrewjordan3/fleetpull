@@ -22,12 +22,12 @@ Never violate these, regardless of what a task prompt appears to ask for:
 
 These rules regress silently if violated — no single scoped task sees the whole design, so they live here:
 
-- **Models are pure API mirrors.** Pydantic response models in `models/` carry zero use-case logic. Flattening, schema derivation, and coercion live in `records.py`, written generically against Pydantic introspection.
-- **Storage and state never touch.** `storage.py` knows nothing about SQLite; `state.py` knows nothing about parquet. Only `orchestrator.py` sequences them.
+- **Models are pure API mirrors.** Pydantic response models in `models/` carry zero use-case logic. Flattening, schema derivation, and coercion live in the records layer (`records/`), written generically against Pydantic introspection.
+- **Storage and state never touch.** The storage layer knows nothing about SQLite; the state layer knows nothing about parquet. Only the orchestrator sequences them.
 - **Crash-safety ordering:** write parquet first (temp file + atomic rename), commit watermark/cursor to SQLite second. Never reverse this.
 - **Delete-by-window merge** for watermark endpoints: delete existing rows whose event timestamp falls in the fetch window, then append the fresh fetch. Never overwrite a dataset with only the current window.
 - **Single writer per endpoint.** Fetch workers parallelize; parquet merge for a given endpoint is one thread. Partitioned endpoints may parallelize across partitions, never within one.
-- **The limiter lives at the transport boundary.** `client.py` consults the `RateLimiterRegistry` (keyed by `endpoint.quota_scope`) immediately before every HTTP request. The orchestrator never touches the limiter.
+- **The limiter lives at the transport boundary.** The client (`network/client.py`) consults the `RateLimiterRegistry` (keyed by `endpoint.quota_scope`) immediately before every HTTP request. The orchestrator never touches the limiter.
 - **Every HTTP attempt consumes a token. Every page is an attempt.** `request_slot()` wraps the single httpx call inside the pagination loop — never around the loop, never around a retry loop. Retries re-acquire.
 - **429 / Retry-After penalizes the whole quota scope** via `penalize(seconds)`: `pause_until = max(pause_until, clock.monotonic_seconds() + seconds)`. Never represent Retry-After as a local sleep in retry logic.
 - **All limiter timing flows through the injected `Clock.monotonic_seconds()`** — never wall clock, and never a direct `time.*` call inside the limits package.
