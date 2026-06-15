@@ -1,34 +1,17 @@
 # src/fleetpull/network/contract/outcome.py
-"""The closed response-classification vocabulary and its carrier.
+"""The carrier for a classifier's verdict on one response.
 
 Produced exclusively by ``ResponseClassifier`` implementations;
-consumed by the client, which dispatches on category.
+consumed by the client, which dispatches on ``category`` (the
+``ResponseCategory`` vocabulary lives in ``fleetpull.vocabulary``).
 """
 
 from dataclasses import dataclass, field
-from enum import StrEnum
 
 from fleetpull.network.contract.request import JsonValue
+from fleetpull.vocabulary import ResponseCategory
 
-__all__: list[str] = ['ClassifiedResponse', 'ResponseCategory']
-
-
-class ResponseCategory(StrEnum):
-    """
-    Closed vocabulary of "what the client does next."
-
-    Each member earns its slot by demanding a distinct client action.
-    Closure invariant (DESIGN.md §8): a new category is admissible only
-    if it arrives with a new client action.
-    """
-
-    SUCCESS = 'success'  # parse and yield records
-    TRANSIENT = 'transient'  # retry with backoff
-    RATE_LIMITED = 'rate_limited'  # penalize the shared quota scope, then retry
-    AUTH_FAILURE = (
-        'auth_failure'  # ask the auth strategy whether one retry is worthwhile
-    )
-    FATAL = 'fatal'  # raise
+__all__: list[str] = ['ClassifiedResponse']
 
 
 @dataclass(frozen=True, slots=True)
