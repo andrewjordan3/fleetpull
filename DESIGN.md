@@ -343,12 +343,25 @@ action (parse / retry / penalize-shared-scope-then-retry / ask the auth
 strategy / raise). **Closure invariant: a new category is admissible only
 if it arrives with a new client action.**
 
+`ResponseCategory` is dependency-free package vocabulary, homed in the leaf
+`fleetpull/vocabulary/` (importing nothing internal) and spoken by three
+layers at once: the classification layer produces it, the retry layer takes
+it as input, and the exception hierarchy carries it on the public
+`RetriesExhaustedError.category`. Shared vocabulary depended on by a
+user-facing layer cannot live transport-deep without inverting the
+dependency direction — siting it under `network/contract/` is what formed
+the former `exceptions` → `contract` import cycle, so it lives in the leaf
+instead.
+
 Classification results travel as a frozen `ClassifiedResponse` (category;
 `retry_after_seconds: float | None`; `detail: str | None`;
-`parsed_body: JsonValue | None` — fields inert outside their category).
-Classifiers that parse the body to classify (GeoTab) hand the parse forward
-in `parsed_body`; the client parses only when `parsed_body` is None, and
-never re-parses when it is populated.
+`parsed_body: JsonValue | None` — fields inert outside their category). The
+carrier `ClassifiedResponse` is transport-internal and stays in
+`network/contract/outcome.py` (consumed only within `network/contract/`);
+only the vocabulary it references is in the leaf. Classifiers that parse the
+body to classify (GeoTab) hand the parse forward in `parsed_body`; the
+client parses only when `parsed_body` is None, and never re-parses when it
+is populated.
 
 The producer is a per-provider `ResponseClassifier` ABC:
 
@@ -359,8 +372,9 @@ The classifier is the SOLE producer of the vocabulary; the client only
 consumes, dispatching on category. House rule this establishes:
 **Protocol for pure shape** (`AuthStrategy` — zero shared code), **ABC for
 shared substance** (`ResponseClassifier`). Implemented in
-`network/contract/`: `outcome.py`, `classifier.py`, and per-provider
-classifiers in `classifiers/`.
+`network/contract/`: `outcome.py` (the `ClassifiedResponse` carrier),
+`classifier.py`, and per-provider classifiers in `classifiers/`; the
+`ResponseCategory` vocabulary they all speak lives in `fleetpull/vocabulary/`.
 
 **Specific codes by name, bands by constant:** provider classifiers
 compare specific well-known statuses against `http.HTTPStatus` members
@@ -541,6 +555,8 @@ public internal contract, not a later retrofit.
 ```
 fleetpull/
   exceptions.py    # package exception hierarchy (§8) — user-facing: consumers catch these
+  vocabulary/      # shared, dependency-free package vocabulary (imports nothing internal)
+    response_category.py  # ResponseCategory (§8) — spoken by exceptions, retry, classification
   config/          # Pydantic models for user-provided YAML, one module per section; the YAML loader joins in a later prompt
     logger.py      # LoggerConfig
     geotab.py      # GeotabAuthConfig (server validated as a bare hostname, §8)
@@ -559,7 +575,7 @@ fleetpull/
       request.py   # HttpMethod, RequestSpec, JSON type aliases; params is
                    #   single-valued by design — widen to accept sequences when
                    #   a real endpoint demands repeated query keys
-      outcome.py   # ResponseCategory, ClassifiedResponse
+      outcome.py   # ClassifiedResponse (the carrier; ResponseCategory lives in vocabulary/)
       classifier.py  # ResponseClassifier ABC + shared transport-exception mapping
       auth.py      # AuthStrategy protocol, StaticHeaderAuth, GeotabSessionAuth
       classifiers/ # per-provider classifiers: motive.py, samsara.py, geotab.py

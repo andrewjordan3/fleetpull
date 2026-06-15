@@ -11,8 +11,8 @@ import random
 import pytest
 
 from fleetpull.config.retry import RetryConfig
-from fleetpull.network.contract.outcome import ResponseCategory
 from fleetpull.network.retry.decision import RetryDecision, decide_retry
+from fleetpull.vocabulary import ResponseCategory
 
 # Closest float below 1.0 the stub can feed: pins the half-open upper
 # bound of the delay interval.

@@ -21,8 +21,9 @@ from fleetpull.network.contract.classifier import (
     body_snippet,
     retry_after_seconds_from_headers,
 )
-from fleetpull.network.contract.outcome import ClassifiedResponse, ResponseCategory
+from fleetpull.network.contract.outcome import ClassifiedResponse
 from fleetpull.network.contract.request import JsonValue
+from fleetpull.vocabulary import ResponseCategory
 
 __all__: list[str] = ['SamsaraResponseClassifier']
 

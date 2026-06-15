@@ -4,31 +4,8 @@ import dataclasses
 
 import pytest
 
-from fleetpull.network.contract.outcome import ClassifiedResponse, ResponseCategory
-
-
-class TestResponseCategory:
-    def test_membership_is_the_closed_vocabulary(self) -> None:
-        assert [category.name for category in ResponseCategory] == [
-            'SUCCESS',
-            'TRANSIENT',
-            'RATE_LIMITED',
-            'AUTH_FAILURE',
-            'FATAL',
-        ]
-
-    @pytest.mark.parametrize(
-        ('member', 'expected_value'),
-        [
-            (ResponseCategory.SUCCESS, 'success'),
-            (ResponseCategory.TRANSIENT, 'transient'),
-            (ResponseCategory.RATE_LIMITED, 'rate_limited'),
-            (ResponseCategory.AUTH_FAILURE, 'auth_failure'),
-            (ResponseCategory.FATAL, 'fatal'),
-        ],
-    )
-    def test_values(self, member: ResponseCategory, expected_value: str) -> None:
-        assert member.value == expected_value
+from fleetpull.network.contract.outcome import ClassifiedResponse
+from fleetpull.vocabulary import ResponseCategory
 
 
 class TestClassifiedResponse:

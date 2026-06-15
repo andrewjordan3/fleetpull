@@ -4,7 +4,7 @@ provider-behavior verification, June 2026)."""
 import pytest
 
 from fleetpull.network.contract.classifiers.motive import MotiveResponseClassifier
-from fleetpull.network.contract.outcome import ResponseCategory
+from fleetpull.vocabulary import ResponseCategory
 
 # Captured: invalid API key (HTTP 401):
 MOTIVE_INVALID_KEY_BODY = '{"error_message": "invalid API key"}'

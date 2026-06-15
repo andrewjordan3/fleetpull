@@ -7,7 +7,7 @@ import json
 import pytest
 
 from fleetpull.network.contract.classifiers.geotab import GeotabResponseClassifier
-from fleetpull.network.contract.outcome import ResponseCategory
+from fleetpull.vocabulary import ResponseCategory
 
 # Captured: Authenticate success:
 GEOTAB_AUTHENTICATE_SUCCESS = (

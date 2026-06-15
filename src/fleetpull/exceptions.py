@@ -16,7 +16,7 @@ specs, credentials-adjacent values) — every instance is safe to log.
 
 import logging
 
-from fleetpull.network.contract.outcome import ResponseCategory
+from fleetpull.vocabulary import ResponseCategory
 
 __all__: list[str] = [
     'AuthenticationError',
