@@ -1,4 +1,4 @@
-"""Tests for fleetpull.network.contract.paginators.motive.
+"""Tests for fleetpull.network.paginators.motive.
 
 Fixtures are synthetic, constructed in the verified envelope shape:
 a top-level ``pagination`` echo beside the records key.
@@ -8,8 +8,8 @@ import pytest
 
 from fleetpull.exceptions import ProviderResponseError
 from fleetpull.network.contract.pagination import PaginationStrategy
-from fleetpull.network.contract.paginators.motive import MotivePagination
 from fleetpull.network.contract.request import HttpMethod, JsonValue, RequestSpec
+from fleetpull.network.paginators.motive import MotivePagination
 
 
 def build_spec() -> RequestSpec:

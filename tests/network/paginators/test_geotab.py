@@ -1,4 +1,4 @@
-"""Tests for fleetpull.network.contract.paginators.geotab.
+"""Tests for fleetpull.network.paginators.geotab.
 
 Fixtures are synthetic, constructed in the verified GetFeed shapes:
 zeroed-pattern version strings, scrubbed ids, real camelCase keys.
@@ -8,8 +8,8 @@ import pytest
 
 from fleetpull.exceptions import ProviderResponseError
 from fleetpull.network.contract.pagination import PaginationStrategy
-from fleetpull.network.contract.paginators.geotab import GeotabFeedPagination
 from fleetpull.network.contract.request import HttpMethod, JsonValue, RequestSpec
+from fleetpull.network.paginators.geotab import GeotabFeedPagination
 
 BOOTSTRAP_SEARCH: dict[str, JsonValue] = {'fromDate': '2026-06-01T00:00:00Z'}
 

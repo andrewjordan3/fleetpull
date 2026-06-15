@@ -1,4 +1,4 @@
-"""Tests for fleetpull.network.contract.paginators.samsara.
+"""Tests for fleetpull.network.paginators.samsara.
 
 Fixtures are synthetic, constructed in the verified envelope shape
 with the API's real camelCase keys — the alias handling is part of
@@ -9,8 +9,8 @@ import pytest
 
 from fleetpull.exceptions import ProviderResponseError
 from fleetpull.network.contract.pagination import PaginationStrategy
-from fleetpull.network.contract.paginators.samsara import SamsaraPagination
 from fleetpull.network.contract.request import HttpMethod, JsonValue, RequestSpec
+from fleetpull.network.paginators.samsara import SamsaraPagination
 
 
 def build_spec() -> RequestSpec:

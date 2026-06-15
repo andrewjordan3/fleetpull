@@ -28,7 +28,7 @@ import sys
 import time
 from typing import Final, TextIO
 
-from fleetpull.config.logger import LoggerConfig
+from fleetpull.config import LoggerConfig
 
 __all__: list[str] = ['setup_logger']
 
