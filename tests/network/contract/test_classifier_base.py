@@ -11,7 +11,8 @@ from fleetpull.network.contract.classifier import (
     body_snippet,
     retry_after_seconds_from_headers,
 )
-from fleetpull.network.contract.outcome import ClassifiedResponse, ResponseCategory
+from fleetpull.network.contract.outcome import ClassifiedResponse
+from fleetpull.vocabulary import ResponseCategory
 
 
 class MinimalClassifier(ResponseClassifier):
