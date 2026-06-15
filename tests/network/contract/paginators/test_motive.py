@@ -97,6 +97,15 @@ class TestMotivePagination:
                 },
                 'total',
             ),
+            # Type drift the slice model is strict about: a stringified
+            # number does not coerce to int — it rejects.
+            (
+                {
+                    'pagination': {'page_no': '2', 'per_page': 100, 'total': 250},
+                    'vehicles': [],
+                },
+                'page_no',
+            ),
         ],
     )
     def test_malformed_echo_raises_naming_the_offending_field(
