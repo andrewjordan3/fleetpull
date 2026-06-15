@@ -1,4 +1,4 @@
-"""Tests for fleetpull.network.contract.auth."""
+"""Tests for fleetpull.network.auth.strategies."""
 
 import threading
 from datetime import UTC, datetime
@@ -7,7 +7,7 @@ import pytest
 from pydantic import SecretStr
 
 from fleetpull.network.auth.models import GeotabSession
-from fleetpull.network.contract.auth import GeotabSessionAuth, StaticHeaderAuth
+from fleetpull.network.auth.strategies import GeotabSessionAuth, StaticHeaderAuth
 from fleetpull.network.contract.request import HttpMethod, RequestSpec
 
 SYNTHETIC_TOKEN = 'synthetic-token-plaintext'
