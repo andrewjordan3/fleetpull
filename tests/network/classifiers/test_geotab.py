@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from fleetpull.network.contract.classifiers.geotab import GeotabResponseClassifier
+from fleetpull.network.classifiers.geotab import GeotabResponseClassifier
 from fleetpull.vocabulary import ResponseCategory
 
 # Captured: Authenticate success:

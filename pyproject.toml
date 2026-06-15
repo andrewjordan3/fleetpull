@@ -63,6 +63,7 @@ dev = [
     "mypy>=1.10.0",
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",
+    "import-linter>=2.0",
     "types-pyyaml",
 ]
 
@@ -73,6 +74,7 @@ dev = [
     "mypy>=1.10.0",
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",
+    "import-linter>=2.0",
     "types-pyyaml",
 ]
 
@@ -224,3 +226,50 @@ exclude_lines = [
     "if __name__ == .__main__.:",
     "@abstractmethod",
 ]
+
+###############################################################################
+# IMPORT-LINTER - IMPORT-DISCIPLINE GUARD (the carve's layering; clauses
+# 1/3/4 are enforced tree-wide by tests/test_import_discipline.py)
+###############################################################################
+[tool.importlinter]
+root_package = "fleetpull"
+
+[[tool.importlinter.contracts]]
+name = "Contract surface sits below its implementations, vocabulary below it"
+type = "layers"
+layers = [
+    "fleetpull.network.classifiers | fleetpull.network.paginators",
+    "fleetpull.network.contract",
+    "fleetpull.vocabulary",
+]
+
+[[tool.importlinter.contracts]]
+name = "Contract surface is independent of the auth package"
+type = "forbidden"
+source_modules = ["fleetpull.network.contract"]
+forbidden_modules = ["fleetpull.network.auth"]
+
+[[tool.importlinter.contracts]]
+name = "Provider classifiers are independent of each other"
+type = "independence"
+modules = [
+    "fleetpull.network.classifiers.geotab",
+    "fleetpull.network.classifiers.motive",
+    "fleetpull.network.classifiers.samsara",
+]
+
+[[tool.importlinter.contracts]]
+name = "Provider paginators are independent of each other"
+type = "independence"
+modules = [
+    "fleetpull.network.paginators.geotab",
+    "fleetpull.network.paginators.motive",
+    "fleetpull.network.paginators.samsara",
+    "fleetpull.network.paginators.single_page",
+]
+
+[[tool.importlinter.contracts]]
+name = "Root vocabulary and exceptions import nothing from network"
+type = "forbidden"
+source_modules = ["fleetpull.vocabulary", "fleetpull.exceptions"]
+forbidden_modules = ["fleetpull.network"]

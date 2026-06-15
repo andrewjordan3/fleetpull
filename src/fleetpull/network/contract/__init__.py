@@ -1,15 +1,40 @@
-"""Provider-agnostic request contract: specs, auth, classification, pagination.
+# src/fleetpull/network/contract/__init__.py
+"""The request/response contract: the shared vocabulary and protocols
+every network layer speaks. Provider implementations (classifiers,
+paginators, auth strategies) live in sibling packages and import this
+surface through this face."""
 
-Deliberately still an empty face: callers currently import the
-submodules directly (``from fleetpull.network.contract.request import
-RequestSpec``). Populating this ``__init__`` to its consumed surface
-(house convention) is the next prompt's tree-wide topology correction,
-done alongside every other face in one pass. It is safe to populate now
-that ``ResponseCategory`` lives in ``fleetpull.vocabulary`` — the
-foundational ``exceptions`` module no longer reaches into this package,
-so a populated face can no longer re-form the former
-``exceptions`` -> ``contract.__init__`` -> ``envelopes`` -> ``exceptions``
-cycle.
-"""
+from fleetpull.network.contract.auth import AuthStrategy
+from fleetpull.network.contract.classifier import (
+    SERVER_ERROR_FLOOR,
+    SUCCESS_STATUS_RANGE,
+    ResponseClassifier,
+    body_snippet,
+    retry_after_seconds_from_headers,
+)
+from fleetpull.network.contract.envelopes import validated_envelope_slice
+from fleetpull.network.contract.outcome import ClassifiedResponse
+from fleetpull.network.contract.pagination import PageAdvance, PaginationStrategy
+from fleetpull.network.contract.request import (
+    HttpMethod,
+    JsonScalar,
+    JsonValue,
+    RequestSpec,
+)
 
-__all__: list[str] = []
+__all__: list[str] = [
+    'SERVER_ERROR_FLOOR',
+    'SUCCESS_STATUS_RANGE',
+    'AuthStrategy',
+    'ClassifiedResponse',
+    'HttpMethod',
+    'JsonScalar',
+    'JsonValue',
+    'PageAdvance',
+    'PaginationStrategy',
+    'RequestSpec',
+    'ResponseClassifier',
+    'body_snippet',
+    'retry_after_seconds_from_headers',
+    'validated_envelope_slice',
+]

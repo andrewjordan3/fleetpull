@@ -1,8 +1,8 @@
-"""Tests for fleetpull.network.contract.paginators.single_page."""
+"""Tests for fleetpull.network.paginators.single_page."""
 
 from fleetpull.network.contract.pagination import PageAdvance, PaginationStrategy
-from fleetpull.network.contract.paginators.single_page import SinglePageStrategy
 from fleetpull.network.contract.request import HttpMethod, JsonValue, RequestSpec
+from fleetpull.network.paginators.single_page import SinglePageStrategy
 
 
 def build_spec() -> RequestSpec:
