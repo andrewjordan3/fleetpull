@@ -609,6 +609,7 @@ fleetpull/
       decision.py  # RetryDecision, RandomFractionGenerator, decide_retry — pure retry policy (§7)
   timing/
     clock.py       # injectable Clock Protocol; SystemClock and FrozenClock implementations
+    sleeper.py     # injectable Sleeper Protocol; SystemSleeper backing TRANSIENT backoff waits
   endpoints/
     base.py        # EndpointDefinition ABC: auth, pagination style, quota_scope,
                    #   incremental strategy (watermark | feed_token), storage strategy
