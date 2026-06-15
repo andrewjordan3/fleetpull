@@ -1,5 +1,9 @@
-"""Transport-layer internals: SSL context construction and HTTP plumbing."""
+"""Transport layer: an organizational namespace.
 
-from fleetpull.network.truststore_context import build_truststore_ssl_context
+Carries no aggregated surface of its own — the transport machinery lives
+in its subpackages (``auth/``, ``contract/``, ``limits/``, ``retry/``,
+``tls/``), each with its own face. Callers import from those subpackages
+directly.
+"""
 
-__all__: list[str] = ['build_truststore_ssl_context']
+__all__: list[str] = []

@@ -296,15 +296,22 @@ A provider-agnostic `AuthStrategy` protocol:
 - `on_auth_failure() -> bool` — answers "did I fix anything worth one retry?" Static keys: False — a rejected API key cannot be fixed by retrying. Sessions: invalidate + refresh, True.
 
 Provider names appear ONLY at the composition root that constructs
-strategies; the client and everything downstream is provider-blind.
-Implemented in `network/contract/auth.py`: `StaticHeaderAuth`
-(Motive/Samsara) and `GeotabSessionAuth`, which injects session
-credentials into the JSON-RPC body, retargets the URL to the session's
-resolved host, and pins the last-prepared session in a `threading.local`
-slot so a failure on one worker thread invalidates the session that
-actually failed, never a fresher one another thread just prepared with.
-`prepare()` is called fresh for every HTTP attempt — every page, every
-retry — symmetric with token-per-attempt.
+strategies; the client and everything downstream is provider-blind. The
+`AuthStrategy` **protocol** lives in the contract surface
+(`network/contract/auth.py`); its **implementations** live in
+`network/auth/strategies.py`, beside the session manager. The split is
+structural: `GeotabSessionAuth` wraps the `GeotabSessionManager`, so
+homing it in the contract surface would make the surface depend on
+`network/auth` — the dependency that re-forms the import cycle once the
+contract face is populated. The protocol depends only on `RequestSpec`,
+so it stays. Implemented: `StaticHeaderAuth` (Motive/Samsara) and
+`GeotabSessionAuth`, which injects session credentials into the JSON-RPC
+body, retargets the URL to the session's resolved host, and pins the
+last-prepared session in a `threading.local` slot so a failure on one
+worker thread invalidates the session that actually failed, never a
+fresher one another thread just prepared with. `prepare()` is called
+fresh for every HTTP attempt — every page, every retry — symmetric with
+token-per-attempt.
 
 ### GeoTab session lifecycle (implemented: `network/auth/`)
 
@@ -564,20 +571,22 @@ fleetpull/
     http.py        # HttpConfig — connect/read timeouts, truststore opt-in
   logger/
     setup.py       # package logging setup (setup_logger), driven by LoggerConfig
-  network/
+  network/         # organizational namespace; the surfaces live in the subpackages
     client.py      # HTTP transport, retry policy, limiter consultation; consumes the pagination abstraction
-    truststore_context.py  # SSLContext factory backed by the OS trust store (Zscaler-class proxies)
+    tls/           # SSL-context construction
+      truststore_context.py  # SSLContext factory backed by the OS trust store (Zscaler-class proxies)
     auth/
       models.py    # AuthenticationResult, GeotabSession (frozen dataclasses)
       manager.py   # GeotabSessionManager — single-flight session lifecycle (§8)
       authenticate.py  # build_geotab_authenticator — the real Authenticate call (§8); the one network/auth/ module that imports httpx
+      strategies.py  # StaticHeaderAuth, GeotabSessionAuth — the AuthStrategy implementations (§8)
     contract/
       request.py   # HttpMethod, RequestSpec, JSON type aliases; params is
                    #   single-valued by design — widen to accept sequences when
                    #   a real endpoint demands repeated query keys
       outcome.py   # ClassifiedResponse (the carrier; ResponseCategory lives in vocabulary/)
       classifier.py  # ResponseClassifier ABC + shared transport-exception mapping
-      auth.py      # AuthStrategy protocol, StaticHeaderAuth, GeotabSessionAuth
+      auth.py      # AuthStrategy protocol only (implementations live in network/auth/strategies.py)
       classifiers/ # per-provider classifiers: motive.py, samsara.py, geotab.py
       envelopes.py   # validated_envelope_slice — shared validate-or-raise for wire slices (§8)
       pagination.py  # PageAdvance, PaginationStrategy (§8)
