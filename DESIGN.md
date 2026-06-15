@@ -96,6 +96,11 @@ tagged union:
 - `DateWatermark` — Motive/Samsara style: resume from `watermark - lookback`.
 - `FeedToken` — GeoTab `GetFeed` style: resume from `fromVersion`/`toVersion` token. No date windows exist for these endpoints.
 
+These two carriers live in `incremental/` — a pure, dependency-free leaf, so
+an endpoint can name a strategy without importing the SQLite layer.
+Serialization of a cursor to its SQLite form is owned by `state/`, not the
+cursor.
+
 Each endpoint definition declares which strategy it uses. This is the single
 biggest architectural improvement over fleet-telemetry-hub, whose
 `latest_data_date - lookback` assumption cannot represent GeoTab.
@@ -616,6 +621,8 @@ fleetpull/
     clock.py       # injectable Clock Protocol; SystemClock and FrozenClock implementations
     sleeper.py     # injectable Sleeper Protocol; SystemSleeper backing TRANSIENT backoff waits
     codec.py       # pure UTC datetime <-> ISO-8601/date-string conversions (stdlib-only leaf)
+  incremental/     # per-endpoint resume cursors; pure dependency-free leaf (§4)
+    cursor.py      # DateWatermark, FeedToken, IncrementalCursor tagged union
   endpoints/
     base.py        # EndpointDefinition ABC: auth, pagination style, quota_scope,
                    #   incremental strategy (watermark | feed_token), storage strategy
