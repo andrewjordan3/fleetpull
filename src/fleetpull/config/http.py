@@ -22,8 +22,8 @@ class HttpConfig(BaseModel):
         connect_timeout_seconds: Timeout for establishing a connection.
         read_timeout_seconds: Timeout for reading a response.
         use_truststore: Build SSL contexts from the operating system's
-            trust store (``network/truststore_context.py``) — required
-            behind TLS-intercepting corporate proxies. Default False:
+            trust store (``network/tls/``) — required behind
+            TLS-intercepting corporate proxies. Default False:
             unproxied environments (production deployment targets) use
             httpx's bundled CA store; the trust-store path is opt-in
             where the proxy is the exception, not the rule.

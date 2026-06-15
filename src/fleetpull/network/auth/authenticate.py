@@ -37,7 +37,7 @@ from fleetpull.network.contract.classifier import body_snippet
 from fleetpull.network.contract.envelopes import validated_envelope_slice
 from fleetpull.network.contract.request import JsonValue
 from fleetpull.network.limits.registry import RateLimiterRegistry
-from fleetpull.network.truststore_context import build_truststore_ssl_context
+from fleetpull.network.tls import build_truststore_ssl_context
 
 __all__: list[str] = ['build_geotab_authenticator']
 
