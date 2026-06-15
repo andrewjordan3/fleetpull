@@ -75,8 +75,10 @@ class GeotabSessionManager:
         Args:
             config: Validated GeoTab authentication configuration.
             authenticate_fn: Performs the actual ``Authenticate`` call
-                and resolves the returned host. Injected so this package
-                never imports httpx; in tests it is a stub.
+                and resolves the returned host. Injected so the manager
+                stays pure state and choreography (the real
+                implementation in ``network/auth/authenticate.py`` is the
+                one place httpx is imported); in tests it is a stub.
             clock: Time source; injected so tests can be deterministic.
         """
         self._config: GeotabAuthConfig = config
@@ -98,8 +100,14 @@ class GeotabSessionManager:
             proactive refresh threshold.
 
         Raises:
-            Exception: Whatever ``authenticate_fn`` raises; cached
-                state is untouched when it does.
+            AuthenticationError: Bad credentials (from the real
+                ``authenticate_fn``).
+            ProviderResponseError: A malformed or non-200 Authenticate
+                response.
+            UnknownQuotaScopeError: The Authenticate quota scope is
+                unconfigured.
+            httpx.TransportError: A transport failure during
+                authentication. Cached state is untouched on any raise.
 
         Side Effects:
             May call ``authenticate_fn`` (blocking other threads on the
@@ -150,8 +158,14 @@ class GeotabSessionManager:
             one another thread already obtained.
 
         Raises:
-            Exception: Whatever ``authenticate_fn`` raises; cached
-                state is untouched when it does.
+            AuthenticationError: Bad credentials (from the real
+                ``authenticate_fn``).
+            ProviderResponseError: A malformed or non-200 Authenticate
+                response.
+            UnknownQuotaScopeError: The Authenticate quota scope is
+                unconfigured.
+            httpx.TransportError: A transport failure during
+                authentication. Cached state is untouched on any raise.
 
         Side Effects:
             May call ``authenticate_fn`` and replace the cached

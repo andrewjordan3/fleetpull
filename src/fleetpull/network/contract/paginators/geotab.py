@@ -17,10 +17,8 @@ from typing import Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from fleetpull.network.contract.pagination import (
-    PageAdvance,
-    validate_pagination_envelope,
-)
+from fleetpull.network.contract.envelopes import validated_envelope_slice
+from fleetpull.network.contract.pagination import PageAdvance
 from fleetpull.network.contract.request import JsonValue, RequestSpec
 
 __all__: list[str] = ['GeotabFeedPagination']
@@ -36,7 +34,8 @@ _FROM_VERSION_KEY: Final[str] = 'fromVersion'
 class _GeotabFeedResult(BaseModel):
     """GetFeed's result: the records and the durable cursor."""
 
-    model_config = ConfigDict(frozen=True, extra='ignore')
+    # strict=True / extra='ignore' rationale: see motive.py's _MotivePageEcho.
+    model_config = ConfigDict(frozen=True, extra='ignore', strict=True)
 
     data: list[JsonValue]
     to_version: str = Field(alias='toVersion')
@@ -45,7 +44,7 @@ class _GeotabFeedResult(BaseModel):
 class _GeotabFeedEnvelope(BaseModel):
     """Envelope slice: locates the feed result."""
 
-    model_config = ConfigDict(frozen=True, extra='ignore')
+    model_config = ConfigDict(frozen=True, extra='ignore', strict=True)
 
     result: _GeotabFeedResult
 
@@ -130,7 +129,7 @@ class GeotabFeedPagination:
             raise ValueError('GeoTab feed requests require a JSON-RPC body')
         sent_body: Mapping[str, JsonValue] = sent.json_body
         sent_params, results_limit = _feed_params_from_body(sent_body)
-        feed = validate_pagination_envelope(_GeotabFeedEnvelope, envelope).result
+        feed = validated_envelope_slice(_GeotabFeedEnvelope, envelope).result
         if len(feed.data) < results_limit:
             # The terminal page still carries the resume point.
             return PageAdvance(next_spec=None, durable_progress=feed.to_version)

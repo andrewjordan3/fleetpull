@@ -15,10 +15,8 @@ from typing import Final
 from pydantic import BaseModel, ConfigDict, Field
 
 from fleetpull.exceptions import ProviderResponseError
-from fleetpull.network.contract.pagination import (
-    PageAdvance,
-    validate_pagination_envelope,
-)
+from fleetpull.network.contract.envelopes import validated_envelope_slice
+from fleetpull.network.contract.pagination import PageAdvance
 from fleetpull.network.contract.request import JsonValue, RequestSpec
 
 __all__: list[str] = ['SamsaraPagination']
@@ -31,7 +29,8 @@ _AFTER_PARAM: Final[str] = 'after'
 class _SamsaraPageEcho(BaseModel):
     """The pagination block Samsara returns on every page."""
 
-    model_config = ConfigDict(frozen=True, extra='ignore')
+    # strict=True / extra='ignore' rationale: see motive.py's _MotivePageEcho.
+    model_config = ConfigDict(frozen=True, extra='ignore', strict=True)
 
     has_next_page: bool = Field(alias='hasNextPage')
     end_cursor: str | None = Field(default=None, alias='endCursor')
@@ -40,7 +39,7 @@ class _SamsaraPageEcho(BaseModel):
 class _SamsaraEnvelope(BaseModel):
     """Envelope slice: locates the echo; records key ignored."""
 
-    model_config = ConfigDict(frozen=True, extra='ignore')
+    model_config = ConfigDict(frozen=True, extra='ignore', strict=True)
 
     pagination: _SamsaraPageEcho
 
@@ -70,7 +69,7 @@ class SamsaraPagination:
                 structurally violating, including continuation promised
                 without a cursor.
         """
-        echo = validate_pagination_envelope(_SamsaraEnvelope, envelope).pagination
+        echo = validated_envelope_slice(_SamsaraEnvelope, envelope).pagination
         if not echo.has_next_page:
             return PageAdvance(next_spec=None, durable_progress=None)
         if echo.end_cursor is None or echo.end_cursor == '':

@@ -1,36 +1,13 @@
-"""Provider-agnostic request contract: specs, auth strategies, classification."""
+"""Provider-agnostic request contract: specs, auth, classification, pagination.
 
-from fleetpull.network.contract.auth import (
-    AuthStrategy,
-    GeotabSessionAuth,
-    StaticHeaderAuth,
-)
-from fleetpull.network.contract.classifier import ResponseClassifier
-from fleetpull.network.contract.outcome import ClassifiedResponse, ResponseCategory
-from fleetpull.network.contract.pagination import (
-    PageAdvance,
-    PaginationStrategy,
-    validate_pagination_envelope,
-)
-from fleetpull.network.contract.request import (
-    HttpMethod,
-    JsonScalar,
-    JsonValue,
-    RequestSpec,
-)
+This package intentionally aggregates no surface — callers import the
+submodules directly (``from fleetpull.network.contract.request import
+RequestSpec``), the convention used everywhere in the tree. Keeping the
+package ``__init__`` free of eager re-exports also keeps the
+foundational ``fleetpull.exceptions`` module able to import
+``ResponseCategory`` from ``contract.outcome`` without a package-init
+import cycle (``exceptions`` -> ``contract.__init__`` ->
+``envelopes``/``pagination`` -> ``exceptions``).
+"""
 
-__all__: list[str] = [
-    'AuthStrategy',
-    'ClassifiedResponse',
-    'GeotabSessionAuth',
-    'HttpMethod',
-    'JsonScalar',
-    'JsonValue',
-    'PageAdvance',
-    'PaginationStrategy',
-    'RequestSpec',
-    'ResponseCategory',
-    'ResponseClassifier',
-    'StaticHeaderAuth',
-    'validate_pagination_envelope',
-]
+__all__: list[str] = []
