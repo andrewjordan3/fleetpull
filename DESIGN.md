@@ -579,6 +579,8 @@ fleetpull/
   exceptions.py    # package exception hierarchy (§8) — user-facing: consumers catch these
   vocabulary/      # shared, dependency-free package vocabulary (imports nothing internal)
     response_category.py  # ResponseCategory (§8) — spoken by exceptions, retry, classification
+    provider.py    # Provider (§8) — the second vocabulary enum; provider identity, homed in the
+                   #   leaf for the same cycle-free reason as ResponseCategory
   config/          # Pydantic models for user-provided YAML, one module per section; the YAML loader joins in a later prompt
     logger.py      # LoggerConfig
     geotab.py      # GeotabAuthConfig (server validated as a bare hostname, §8)
