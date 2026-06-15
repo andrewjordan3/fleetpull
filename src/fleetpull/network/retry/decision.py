@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from fleetpull.config.retry import RetryConfig
-from fleetpull.network.contract.outcome import ResponseCategory
+from fleetpull.vocabulary import ResponseCategory
 
 __all__: list[str] = [
     'RandomFractionGenerator',

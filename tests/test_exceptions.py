@@ -10,7 +10,7 @@ from fleetpull.exceptions import (
     RetriesExhaustedError,
     UnknownQuotaScopeError,
 )
-from fleetpull.network.contract.outcome import ResponseCategory
+from fleetpull.vocabulary import ResponseCategory
 
 # One instance per leaf class, for hierarchy-wide parametrization.
 LEAF_INSTANCES: list[FleetpullError] = [

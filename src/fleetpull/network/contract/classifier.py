@@ -13,7 +13,8 @@ from typing import Final
 
 import httpx
 
-from fleetpull.network.contract.outcome import ClassifiedResponse, ResponseCategory
+from fleetpull.network.contract.outcome import ClassifiedResponse
+from fleetpull.vocabulary import ResponseCategory
 
 __all__: list[str] = [
     'SERVER_ERROR_FLOOR',
