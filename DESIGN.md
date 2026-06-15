@@ -615,6 +615,7 @@ fleetpull/
   timing/
     clock.py       # injectable Clock Protocol; SystemClock and FrozenClock implementations
     sleeper.py     # injectable Sleeper Protocol; SystemSleeper backing TRANSIENT backoff waits
+    codec.py       # pure UTC datetime <-> ISO-8601/date-string conversions (stdlib-only leaf)
   endpoints/
     base.py        # EndpointDefinition ABC: auth, pagination style, quota_scope,
                    #   incremental strategy (watermark | feed_token), storage strategy
