@@ -364,9 +364,10 @@ Classification results travel as a frozen `ClassifiedResponse` (category;
 `retry_after_seconds: float | None`; `detail: str | None`;
 `parsed_body: JsonValue | None` — fields inert outside their category). The
 carrier `ClassifiedResponse` is transport-internal and stays in
-`network/contract/outcome.py` (consumed only within `network/contract/`);
-only the vocabulary it references is in the leaf. Classifiers that parse the
-body to classify (GeoTab) hand the parse forward in `parsed_body`; the
+`network/contract/outcome.py` (produced by the classifiers, consumed by
+the client in `network/client/`); only the vocabulary it references is in
+the leaf. Classifiers that parse the body to classify (GeoTab) hand the
+parse forward in `parsed_body`; the
 client parses only when `parsed_body` is None, and never re-parses when it
 is populated.
 
@@ -581,7 +582,11 @@ fleetpull/
   logger/
     setup.py       # package logging setup (setup_logger), driven by LoggerConfig
   network/         # organizational namespace; the surfaces live in the subpackages
-    client.py      # HTTP transport, retry policy, limiter consultation; consumes the pagination abstraction
+    client/        # HTTP transport, retry policy, limiter consultation; consumes the pagination abstraction
+      transport.py   # TransportClient — the assembled fetch loop and per-attempt pipeline
+      profile.py     # ProviderProfile — per-provider auth + classifier bundle
+      runtime.py     # ClientRuntime — process-global configs, limiter registry, jitter, sleeper
+      page.py        # FetchedPage — the emit type (envelope + durable_progress)
     tls/           # SSL-context construction
       truststore_context.py  # SSLContext factory backed by the OS trust store (Zscaler-class proxies)
     auth/
@@ -629,7 +634,7 @@ subpackages. Settled: ALL Pydantic models parsing user-provided YAML
 centralize in `config/` — including `RateLimitConfig`, which currently lives
 in `network/limits/config.py` and migrates to `config/` in the prompt that
 builds the YAML loader. Placement for everything else is settled the same
-way: the client is transport plumbing and lives at `network/client.py`,
+way: the client is transport plumbing and lives at `network/client/`,
 alongside the limiter, contract, and auth it consumes; `records`, `storage`,
 `state`, and `orchestrator` are internal by the same test (consumers call
 the public API, never these) and each receives its own subpackage home when
@@ -641,7 +646,7 @@ consumer actions, and stances — is recorded in §8.
 Boundary rules:
 
 - `storage` knows nothing about state; `state` knows nothing about parquet. The orchestrator sequences them (parquet-then-watermark ordering, §5).
-- `network/client.py` consumes the pagination abstraction (`network/contract/pagination.py`). Retry and limiter consultation stay interleaved per-request concerns inside the client — splitting them away from the request loop is how the token-per-attempt / token-per-page rules get violated.
+- `network/client/` consumes the pagination abstraction (`network/contract/pagination.py`). Retry and limiter consultation stay interleaved per-request concerns inside the client — splitting them away from the request loop is how the token-per-attempt / token-per-page rules get violated.
 - The orchestrator never touches the limiter (§7).
 
 ---
@@ -669,15 +674,16 @@ Boundary rules:
 ## 14. Next Steps
 
 1. Review/amend this document
-2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → retry policy (done, `config/retry.py` + `network/retry/`) → pagination abstraction (done, `network/contract/pagination.py` + `paginators/`) → HTTP config + the real GeoTab authenticator (done, `config/http.py` + `network/auth/authenticate.py`) → `network/client.py` → `endpoints/base.py` → `records` → `storage` → `state` → `orchestrator` → `cli.py`
+2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → retry policy (done, `config/retry.py` + `network/retry/`) → pagination abstraction (done, `network/contract/pagination.py` + `paginators/`) → HTTP config + the real GeoTab authenticator (done, `config/http.py` + `network/auth/authenticate.py`) → `network/client/` (done) → `endpoints/base.py` → `records` → `storage` → `state` → `orchestrator` → `cli.py`
 
-The `network/client.py` step inherits a recorded agenda: classify
+The `network/client/` step inherits a recorded agenda: classify
 prepare-time transport exceptions (the authenticator propagates
 `httpx.TransportError` raw and loop-free by design — whether a transport
 failure during auth/prepare is retried is the client's call), wire the
 exception-hierarchy raise sites (FATAL → `ProviderResponseError`, exhausted
 budgets → `RetriesExhaustedError`, auth paths → `AuthenticationError`), and
-bundle the now-three traveling per-provider dependencies (auth strategy,
-classifier, pagination strategy) into `ProviderProfile`.
+bundle the two per-provider dependencies that share a session lifetime
+(auth strategy, classifier) into `ProviderProfile`, leaving the per-endpoint
+pagination strategy and quota scope to arrive on each `fetch_pages` call.
 3. Port Motive/Samsara models and endpoint definitions onto the new base
 4. GeoTab integration when access lands

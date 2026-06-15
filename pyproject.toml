@@ -238,7 +238,7 @@ root_package = "fleetpull"
 name = "Contract surface sits below its implementations, vocabulary below it"
 type = "layers"
 layers = [
-    "fleetpull.network.classifiers | fleetpull.network.paginators",
+    "fleetpull.network.classifiers | fleetpull.network.paginators | fleetpull.network.client",
     "fleetpull.network.contract",
     "fleetpull.vocabulary",
 ]
