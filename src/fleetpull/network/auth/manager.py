@@ -21,9 +21,9 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Final
 
-from fleetpull.config.geotab import GeotabAuthConfig
+from fleetpull.config import GeotabAuthConfig
 from fleetpull.network.auth.models import AuthenticationResult, GeotabSession
-from fleetpull.timing.clock import Clock, SystemClock
+from fleetpull.timing import Clock, SystemClock
 
 __all__: list[str] = ['GeotabSessionManager']
 

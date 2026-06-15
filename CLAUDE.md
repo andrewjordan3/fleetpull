@@ -138,14 +138,17 @@ Functions over ~50 lines should be split. Orchestrators orchestrate — they cal
 
 ## Verification Gates
 
-All four must pass, in order, before any change is complete; when a change alters the gates themselves (scope, flags, new tools), this section updates in the same change.
+All five must pass, in order, before any change is complete; when a change alters the gates themselves (scope, flags, new tools), this section updates in the same change.
 
 ```
 uv run ruff format .
 uv run ruff check .
 uv run mypy src/ tests/
+uv run lint-imports
 uv run pytest
 ```
+
+`lint-imports` enforces the carve's layering (the contract surface below its provider implementations; the auth package independent of the surface). The four-clause import rule itself — cross-directory imports route through package faces, no child imports an ancestor, no foreign re-export — is enforced tree-wide by `tests/test_import_discipline.py`, which rides the `pytest` gate.
 
 ## Data and Computation
 

@@ -1,4 +1,4 @@
-# src/fleetpull/network/contract/paginators/single_page.py
+# src/fleetpull/network/paginators/single_page.py
 """The strategy for unpaginated endpoints: exactly one page, always.
 
 This replaces any is-paginated flag: unpaginated endpoints (e.g.
@@ -8,8 +8,7 @@ loop never branches.
 
 from dataclasses import dataclass
 
-from fleetpull.network.contract.pagination import PageAdvance
-from fleetpull.network.contract.request import JsonValue, RequestSpec
+from fleetpull.network.contract import JsonValue, PageAdvance, RequestSpec
 
 __all__: list[str] = ['SinglePageStrategy']
 

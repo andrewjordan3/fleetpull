@@ -1,4 +1,4 @@
-# src/fleetpull/network/contract/classifiers/geotab.py
+# src/fleetpull/network/classifiers/geotab.py
 """GeoTab response classifier (sources: scrubbed provider-behavior
 verification, June 2026).
 
@@ -15,14 +15,14 @@ provider classifiers evolve independently (blast-radius over DRY).
 import json
 from collections.abc import Mapping
 
-from fleetpull.network.contract.classifier import (
+from fleetpull.network.contract import (
     SERVER_ERROR_FLOOR,
+    ClassifiedResponse,
+    JsonValue,
     ResponseClassifier,
     body_snippet,
     retry_after_seconds_from_headers,
 )
-from fleetpull.network.contract.outcome import ClassifiedResponse
-from fleetpull.network.contract.request import JsonValue
 from fleetpull.vocabulary import ResponseCategory
 
 __all__: list[str] = ['GeotabResponseClassifier']

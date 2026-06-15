@@ -3,7 +3,7 @@ provider-behavior verification, June 2026)."""
 
 import pytest
 
-from fleetpull.network.contract.classifiers.motive import MotiveResponseClassifier
+from fleetpull.network.classifiers.motive import MotiveResponseClassifier
 from fleetpull.vocabulary import ResponseCategory
 
 # Captured: invalid API key (HTTP 401):
