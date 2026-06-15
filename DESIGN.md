@@ -378,10 +378,19 @@ The producer is a per-provider `ResponseClassifier` ABC:
 The classifier is the SOLE producer of the vocabulary; the client only
 consumes, dispatching on category. House rule this establishes:
 **Protocol for pure shape** (`AuthStrategy` — zero shared code), **ABC for
-shared substance** (`ResponseClassifier`). Implemented in
+shared substance** (`ResponseClassifier`). The contract surface lives in
 `network/contract/`: `outcome.py` (the `ClassifiedResponse` carrier),
-`classifier.py`, and per-provider classifiers in `classifiers/`; the
-`ResponseCategory` vocabulary they all speak lives in `fleetpull/vocabulary/`.
+`classifier.py` (the ABC), `auth.py` (the protocol), `pagination.py`,
+`envelopes.py`, `request.py`; the `ResponseCategory` vocabulary they all
+speak lives in `fleetpull/vocabulary/`. The **provider implementations** —
+the classifiers, the paginators, the auth strategies — are **peers** of the
+contract surface (`network/classifiers/`, `network/paginators/`,
+`network/auth/strategies.py`), not children of it, and import the surface
+through its `__init__` face. The protocol/implementation boundary is thus a
+package boundary the import guard enforces: the surface may never import an
+implementation, and an implementation reaches the surface only through the
+face — the structure that keeps the surface free of the `network/auth`
+dependency that would re-form the import cycle.
 
 **Specific codes by name, bands by constant:** provider classifiers
 compare specific well-known statuses against `http.HTTPStatus` members
@@ -587,10 +596,10 @@ fleetpull/
       outcome.py   # ClassifiedResponse (the carrier; ResponseCategory lives in vocabulary/)
       classifier.py  # ResponseClassifier ABC + shared transport-exception mapping
       auth.py      # AuthStrategy protocol only (implementations live in network/auth/strategies.py)
-      classifiers/ # per-provider classifiers: motive.py, samsara.py, geotab.py
       envelopes.py   # validated_envelope_slice — shared validate-or-raise for wire slices (§8)
       pagination.py  # PageAdvance, PaginationStrategy (§8)
-      paginators/  # per-provider strategies: single_page.py, motive.py, samsara.py, geotab.py
+    classifiers/   # per-provider classifiers (peers of contract/; import its face): motive.py, samsara.py, geotab.py
+    paginators/    # per-provider strategies (peers of contract/; import its face): single_page.py, motive.py, samsara.py, geotab.py
     limits/
       config.py        # RateLimitConfig (frozen Pydantic)
       bucket_math.py   # pure token-bucket arithmetic (stateless functions)

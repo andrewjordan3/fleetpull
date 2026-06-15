@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from fleetpull.exceptions import UnknownQuotaScopeError
 from fleetpull.network.limits.config import RateLimitConfig
 from fleetpull.network.limits.limiter import QuotaScopeLimiter
-from fleetpull.timing.clock import Clock, SystemClock
+from fleetpull.timing import Clock, SystemClock
 
 __all__: list[str] = ['RateLimiterRegistry']
 

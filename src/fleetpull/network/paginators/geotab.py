@@ -1,4 +1,4 @@
-# src/fleetpull/network/contract/paginators/geotab.py
+# src/fleetpull/network/paginators/geotab.py
 """GeoTab GetFeed pagination strategy (sources: scrubbed
 provider-behavior verification, June 2026).
 
@@ -17,9 +17,12 @@ from typing import Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from fleetpull.network.contract.envelopes import validated_envelope_slice
-from fleetpull.network.contract.pagination import PageAdvance
-from fleetpull.network.contract.request import JsonValue, RequestSpec
+from fleetpull.network.contract import (
+    JsonValue,
+    PageAdvance,
+    RequestSpec,
+    validated_envelope_slice,
+)
 
 __all__: list[str] = ['GeotabFeedPagination']
 

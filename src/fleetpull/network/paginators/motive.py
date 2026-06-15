@@ -1,4 +1,4 @@
-# src/fleetpull/network/contract/paginators/motive.py
+# src/fleetpull/network/paginators/motive.py
 """Motive pagination strategy (sources: scrubbed provider-behavior
 verification, June 2026; page-size cap from provider documentation).
 
@@ -14,9 +14,12 @@ from typing import Final
 
 from pydantic import BaseModel, ConfigDict
 
-from fleetpull.network.contract.envelopes import validated_envelope_slice
-from fleetpull.network.contract.pagination import PageAdvance
-from fleetpull.network.contract.request import JsonValue, RequestSpec
+from fleetpull.network.contract import (
+    JsonValue,
+    PageAdvance,
+    RequestSpec,
+    validated_envelope_slice,
+)
 
 __all__: list[str] = ['MotivePagination']
 

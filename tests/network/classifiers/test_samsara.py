@@ -4,7 +4,7 @@ official documentation)."""
 
 import pytest
 
-from fleetpull.network.contract.classifiers.samsara import SamsaraResponseClassifier
+from fleetpull.network.classifiers.samsara import SamsaraResponseClassifier
 from fleetpull.vocabulary import ResponseCategory
 
 # Captured: invalid token (HTTP 401):

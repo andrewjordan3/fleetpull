@@ -29,14 +29,15 @@ from typing import Final, NoReturn
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from fleetpull.config.geotab import GeotabAuthConfig
-from fleetpull.config.http import HttpConfig
+from fleetpull.config import GeotabAuthConfig, HttpConfig
 from fleetpull.exceptions import AuthenticationError, ProviderResponseError
 from fleetpull.network.auth.models import AuthenticationResult
-from fleetpull.network.contract.classifier import body_snippet
-from fleetpull.network.contract.envelopes import validated_envelope_slice
-from fleetpull.network.contract.request import JsonValue
-from fleetpull.network.limits.registry import RateLimiterRegistry
+from fleetpull.network.contract import (
+    JsonValue,
+    body_snippet,
+    validated_envelope_slice,
+)
+from fleetpull.network.limits import RateLimiterRegistry
 from fleetpull.network.tls import build_truststore_ssl_context
 
 __all__: list[str] = ['build_geotab_authenticator']

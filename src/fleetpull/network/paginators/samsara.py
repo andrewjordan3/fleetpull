@@ -1,4 +1,4 @@
-# src/fleetpull/network/contract/paginators/samsara.py
+# src/fleetpull/network/paginators/samsara.py
 """Samsara pagination strategy (sources: scrubbed provider-behavior
 verification, June 2026; cursor contract from provider documentation).
 
@@ -15,9 +15,12 @@ from typing import Final
 from pydantic import BaseModel, ConfigDict, Field
 
 from fleetpull.exceptions import ProviderResponseError
-from fleetpull.network.contract.envelopes import validated_envelope_slice
-from fleetpull.network.contract.pagination import PageAdvance
-from fleetpull.network.contract.request import JsonValue, RequestSpec
+from fleetpull.network.contract import (
+    JsonValue,
+    PageAdvance,
+    RequestSpec,
+    validated_envelope_slice,
+)
 
 __all__: list[str] = ['SamsaraPagination']
 

@@ -14,7 +14,7 @@ from contextlib import contextmanager
 
 from fleetpull.network.limits.bucket_math import refill_tokens, seconds_until_available
 from fleetpull.network.limits.config import RateLimitConfig
-from fleetpull.timing.clock import Clock, SystemClock
+from fleetpull.timing import Clock, SystemClock
 
 __all__: list[str] = ['QuotaScopeLimiter']
 

@@ -18,7 +18,7 @@ import logging
 from dataclasses import dataclass
 from typing import Protocol
 
-from fleetpull.config.retry import RetryConfig
+from fleetpull.config import RetryConfig
 from fleetpull.vocabulary import ResponseCategory
 
 __all__: list[str] = [

@@ -22,7 +22,7 @@ from pydantic import SecretStr
 
 from fleetpull.network.auth.manager import GeotabSessionManager
 from fleetpull.network.auth.models import GeotabSession
-from fleetpull.network.contract.request import JsonValue, RequestSpec
+from fleetpull.network.contract import JsonValue, RequestSpec
 
 __all__: list[str] = ['GeotabSessionAuth', 'StaticHeaderAuth']
 
