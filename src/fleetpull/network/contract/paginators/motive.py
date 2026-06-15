@@ -14,10 +14,8 @@ from typing import Final
 
 from pydantic import BaseModel, ConfigDict
 
-from fleetpull.network.contract.pagination import (
-    PageAdvance,
-    validate_pagination_envelope,
-)
+from fleetpull.network.contract.envelopes import validated_envelope_slice
+from fleetpull.network.contract.pagination import PageAdvance
 from fleetpull.network.contract.request import JsonValue, RequestSpec
 
 __all__: list[str] = ['MotivePagination']
@@ -31,7 +29,14 @@ _PER_PAGE_PARAM: Final[str] = 'per_page'
 class _MotivePageEcho(BaseModel):
     """The pagination block Motive echoes beside every page's records."""
 
-    model_config = ConfigDict(frozen=True, extra='ignore')
+    # extra='ignore' tolerates ADDITIONS to provider-owned envelopes,
+    # which are semantically safe; strict=True refuses TYPE DRIFT on the
+    # fields we act on (a stringified page_no, a bool-ish string), which
+    # is a changed contract being silently adapted to — the failure mode
+    # this layer exists to make loud. Crash, investigate, widen only if a
+    # drift proves benign. (The same config governs every slice model in
+    # this package.)
+    model_config = ConfigDict(frozen=True, extra='ignore', strict=True)
 
     page_no: int
     per_page: int
@@ -42,7 +47,7 @@ class _MotiveEnvelope(BaseModel):
     """Envelope slice: locates the echo; the records key (and anything
     provider-additive) is deliberately ignored."""
 
-    model_config = ConfigDict(frozen=True, extra='ignore')
+    model_config = ConfigDict(frozen=True, extra='ignore', strict=True)
 
     pagination: _MotivePageEcho
 
@@ -82,7 +87,7 @@ class MotivePagination:
             ProviderResponseError: When the echo is structurally
                 violating.
         """
-        echo = validate_pagination_envelope(_MotiveEnvelope, envelope).pagination
+        echo = validated_envelope_slice(_MotiveEnvelope, envelope).pagination
         # page_no * per_page >= total is the ceil comparison
         # page_no >= ceil(total / per_page) without the division.
         if echo.page_no * echo.per_page >= echo.total:

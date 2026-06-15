@@ -315,9 +315,24 @@ change; a 100-concurrent-session LRU cap per account).
 - One session per process, shared by all threads.
 - **Single-flight refresh:** one lock, held ACROSS the authenticate call, with a generation counter as the staleness/stampede guard — ten workers hitting expiry simultaneously produce one `Authenticate` call, not ten. (Deliberately the opposite of the SQLite never-hold-a-transaction-across-HTTP rule; the blocking is the point.)
 - **Reactive invalidation is primary; proactive refresh is insurance:** 14-day assumed lifetime, 1-day margin, pessimistic timestamping (the session is stamped before the network call, so latency counts against the lifetime rather than extending it).
-- `authenticate_fn` is injected so `network/auth/` never imports httpx. The real implementation is an HTTP attempt and passes through the rate limiter — no exceptions to token-per-attempt.
+- `authenticate_fn` is injected so the **session manager** stays pure state and choreography — it never imports httpx. The real implementation (`network/auth/authenticate.py`) IS the HTTP attempt: it is the one module in `network/auth/` that imports httpx, and it passes through the rate limiter — no exceptions to token-per-attempt.
 - **No disk persistence:** a session id is a bearer-equivalent secret, and at one process per scheduled run the steady-state session count stays far below GeoTab's 100-session cap.
 - Passwords are `SecretStr`, extracted only inside the real `authenticate_fn`; the manager never reads the secret and never logs session ids.
+
+### The real authenticator (implemented: `network/auth/authenticate.py`)
+
+A single-concern, single-shot, loop-free function behind a factory
+(`build_geotab_authenticator(http_config, limiter_registry, quota_scope)`)
+that closes the transport dependencies over a named inner function matching
+the manager's single-arg injectable type. The quota scope arrives as a
+parameter — the composition root names it — so even GeoTab-specific
+machinery honors the names-at-composition-root rule.
+
+- **Two actions only**, and the classifier is deliberately NOT reused: the classifier's `ResponseCategory` encodes the CLIENT's dispatch (five outcomes), but Authenticate has exactly two — fix credentials (`AuthenticationError`) or fail loud (`ProviderResponseError`). Reusing the classifier would map categories only to re-map them. `InvalidUserException` on Authenticate is bad credentials (`AuthenticationError`) — the context-disambiguation principle (the same type on a data call is a dead session, the auth strategy's concern, not this function's). Any other error type, a non-200 status, a non-JSON body, or an envelope with neither result nor error is `ProviderResponseError`.
+- **v1 postures, with re-litigation triggers:** Authenticate outcomes arrive in HTTP 200 per verification, so a non-200 is the API not speaking its protocol — loud-and-typed beats a retry loop against the 10/min auth quota (trigger: first observed Authenticate 5xx in production). An unknown error type fails loud rather than guessing retryability (trigger: `OverLimitException` seen here despite the local limiter).
+- **`ThisServer` resolution:** the result's `path` is either the literal `ThisServer` (use the host we called — `config.server`) or an alternate host (use it, logged at INFO as a redirect — handled-not-assumed, since no capture shows one). `ThisServer` is a GeoTab protocol sentinel held as a module `Final[str]`, never user config — no operator should set it.
+- **Dedicated Authenticate quota scope:** Authenticate is rate-limited at a fixed 10/min, outside the per-provider tiering; the composition root configures a dedicated scope in the registry, and an unconfigured scope propagates `UnknownQuotaScopeError` naturally (no catching).
+- **Boundary seam:** the `_Authenticate*` Pydantic models validate the inbound wire response (`strict=True`, `extra='ignore'`); the function returns the existing frozen `AuthenticationResult` dataclass built from the validated fields. Pydantic at the boundary, dataclass within — a Pydantic model is never returned into the program's interior. Every inbound read flows through a slice model (the Prompt-12 structural rule); transport exceptions propagate raw and untyped (the client owns prepare-time transport-failure classification).
 
 ### Response classification, single-producer
 
@@ -388,24 +403,39 @@ one (the terminal page's value is the resume point; per-page progress
 is what makes a crash mid-feed resumable). None for providers whose
 cursors are fetch-private (Motive, Samsara).
 
-**Envelope-slice models:** pagination metadata is an API contract, so
-it is validated by Pydantic models — private, per-paginator, frozen,
-`extra='ignore'`. The `extra='forbid'` house default is for schemas WE
-own (config); these are slices of provider-owned envelopes, where
-additive provider changes must pass through untouched. The models
+**Envelope-slice models:** wire metadata is an API contract, so it is
+validated by Pydantic models — private, per-consumer, frozen,
+`extra='ignore'`, `strict=True`. The two config flags are deliberately
+opposed and each earns its place: `extra='ignore'` tolerates ADDITIONS
+to provider-owned envelopes (semantically safe — the `extra='forbid'`
+house default is only for schemas WE own, i.e. config); `strict=True`
+refuses TYPE DRIFT on the fields we act on (a stringified number, a
+bool-ish string), because coercing drift is a changed contract being
+silently adapted to — the failure mode this layer exists to make loud.
+Crash, investigate, widen only if a drift proves benign. The models
 validate the whole envelope (a two-level slice locating the metadata),
 so no naked envelope-walking or `isinstance` ladders exist in the
 layer; the shared validate-then-raise composition is
-`validate_pagination_envelope`. These private slices are not endpoint
-mirrors and do not belong in `models/`.
+`validated_envelope_slice` (`network/contract/envelopes.py`), relocated
+out of `pagination.py` at its second consumer — the GeoTab
+authenticator — because the composition is contract-layer semantics,
+not pagination semantics. These private slices are not endpoint mirrors
+and do not belong in `models/`.
 
 **Wire tokens are constants, not enums:** wire-protocol tokens
-(`'fromVersion'`, `'page_no'`, `'after'`) are module-private
-`Final[str]` constants. Enums model closed sets that code dispatches
-over (`ResponseCategory`); nothing dispatches over a wire token.
-Constants are per-provider and deliberately unshared — token
-coincidence across providers is accident, not shared semantics (the
-classifier blast-radius reasoning applied to tokens).
+(`'fromVersion'`, `'page_no'`, `'after'`, the Authenticate body keys)
+are module-private `Final[str]` constants. Enums model closed sets that
+code dispatches over (`ResponseCategory`); nothing dispatches over a
+wire token. **Constants-scope precedent** (it governs the endpoint
+prompts): wire-token constants are colocated with their consuming logic
+at the tightest scope that genuinely shares them — module-private
+within a provider (a token used by both `first_request` and `advance`
+is one constant), never centralized across providers. Token coincidence
+across providers is accident, not shared semantics; a shared registry
+would couple providers through a file none owns, against
+blast-radius-over-DRY at provider boundaries. Envelope keys are never
+constants at all — they are consumed via the slice models' fields and
+aliases, never walked.
 
 Provider mechanics worth recording: Motive termination recomputes
 `page_no * per_page >= total` from each page's freshly echoed values,
@@ -513,8 +543,9 @@ fleetpull/
   exceptions.py    # package exception hierarchy (§8) — user-facing: consumers catch these
   config/          # Pydantic models for user-provided YAML, one module per section; the YAML loader joins in a later prompt
     logger.py      # LoggerConfig
-    geotab.py      # GeotabAuthConfig
+    geotab.py      # GeotabAuthConfig (server validated as a bare hostname, §8)
     retry.py       # RetryConfig — attempt budgets, backoff shape, fallback penalty (§7)
+    http.py        # HttpConfig — connect/read timeouts, truststore opt-in
   logger/
     setup.py       # package logging setup (setup_logger), driven by LoggerConfig
   network/
@@ -523,6 +554,7 @@ fleetpull/
     auth/
       models.py    # AuthenticationResult, GeotabSession (frozen dataclasses)
       manager.py   # GeotabSessionManager — single-flight session lifecycle (§8)
+      authenticate.py  # build_geotab_authenticator — the real Authenticate call (§8); the one network/auth/ module that imports httpx
     contract/
       request.py   # HttpMethod, RequestSpec, JSON type aliases; params is
                    #   single-valued by design — widen to accept sequences when
@@ -531,7 +563,8 @@ fleetpull/
       classifier.py  # ResponseClassifier ABC + shared transport-exception mapping
       auth.py      # AuthStrategy protocol, StaticHeaderAuth, GeotabSessionAuth
       classifiers/ # per-provider classifiers: motive.py, samsara.py, geotab.py
-      pagination.py  # PageAdvance, PaginationStrategy, validate_pagination_envelope (§8)
+      envelopes.py   # validated_envelope_slice — shared validate-or-raise for wire slices (§8)
+      pagination.py  # PageAdvance, PaginationStrategy (§8)
       paginators/  # per-provider strategies: single_page.py, motive.py, samsara.py, geotab.py
     limits/
       config.py        # RateLimitConfig (frozen Pydantic)
@@ -601,6 +634,15 @@ Boundary rules:
 ## 14. Next Steps
 
 1. Review/amend this document
-2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → retry policy (done, `config/retry.py` + `network/retry/`) → pagination abstraction (done, `network/contract/pagination.py` + `paginators/`) → `network/client.py` → `endpoints/base.py` → `records` → `storage` → `state` → `orchestrator` → `cli.py`
+2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → retry policy (done, `config/retry.py` + `network/retry/`) → pagination abstraction (done, `network/contract/pagination.py` + `paginators/`) → HTTP config + the real GeoTab authenticator (done, `config/http.py` + `network/auth/authenticate.py`) → `network/client.py` → `endpoints/base.py` → `records` → `storage` → `state` → `orchestrator` → `cli.py`
+
+The `network/client.py` step inherits a recorded agenda: classify
+prepare-time transport exceptions (the authenticator propagates
+`httpx.TransportError` raw and loop-free by design — whether a transport
+failure during auth/prepare is retried is the client's call), wire the
+exception-hierarchy raise sites (FATAL → `ProviderResponseError`, exhausted
+budgets → `RetriesExhaustedError`, auth paths → `AuthenticationError`), and
+bundle the now-three traveling per-provider dependencies (auth strategy,
+classifier, pagination strategy) into `ProviderProfile`.
 3. Port Motive/Samsara models and endpoint definitions onto the new base
 4. GeoTab integration when access lands

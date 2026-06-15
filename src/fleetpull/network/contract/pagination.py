@@ -14,15 +14,11 @@ import logging
 from dataclasses import dataclass
 from typing import Protocol
 
-from pydantic import BaseModel, ValidationError
-
-from fleetpull.exceptions import ProviderResponseError
 from fleetpull.network.contract.request import JsonValue, RequestSpec
 
 __all__: list[str] = [
     'PageAdvance',
     'PaginationStrategy',
-    'validate_pagination_envelope',
 ]
 
 logger = logging.getLogger(__name__)
@@ -48,37 +44,6 @@ class PageAdvance:
     durable_progress: str | None
 
 
-def validate_pagination_envelope[ModelT: BaseModel](
-    model_type: type[ModelT], envelope: JsonValue
-) -> ModelT:
-    """
-    Validate a response envelope against a paginator's private slice
-    model, translating failure into the contract's single-action raise.
-
-    Shared here rather than per-paginator because the composition —
-    validate, and on failure raise ``ProviderResponseError`` carrying
-    Pydantic's complaint — is layer semantics, not provider behavior.
-
-    Args:
-        model_type: The paginator's private envelope-slice model.
-        envelope: The parsed response body (any shape; a non-dict
-            fails validation like any other malformation).
-
-    Returns:
-        The validated slice.
-
-    Raises:
-        ProviderResponseError: When the envelope does not satisfy the
-            slice model.
-    """
-    try:
-        return model_type.model_validate(envelope)
-    except ValidationError as error:
-        raise ProviderResponseError(
-            detail=f'malformed pagination metadata: {error}'
-        ) from error
-
-
 class PaginationStrategy(Protocol):
     """
     Per-provider pagination mechanics, stateless: the client threads
@@ -86,7 +51,7 @@ class PaginationStrategy(Protocol):
     provider implementations share zero concrete behavior
     (total-arithmetic, flag-check, and count-comparison respectively);
     the one shared composition lives in
-    ``validate_pagination_envelope``.
+    ``validated_envelope_slice`` (``network/contract/envelopes.py``).
     """
 
     def first_request(self, spec: RequestSpec) -> RequestSpec:

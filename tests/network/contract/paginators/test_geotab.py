@@ -113,7 +113,7 @@ class TestGeotabFeedPagination:
         ],
     )
     def test_malformed_envelope_raises(self, envelope: JsonValue) -> None:
-        with pytest.raises(ProviderResponseError, match='malformed pagination'):
+        with pytest.raises(ProviderResponseError, match='malformed response envelope'):
             GeotabFeedPagination().advance(build_feed_spec(), envelope)
 
     @pytest.mark.parametrize(

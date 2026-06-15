@@ -75,12 +75,14 @@ class TestSamsaraPagination:
         [
             {'data': []},  # pagination block missing entirely
             {'pagination': {'endCursor': 'cursor-0001'}, 'data': []},  # no flag
-            # Mistyped flag. Deliberately NOT 'yes'/'true': Pydantic's
-            # lax mode coerces bool-ish strings, so only a genuinely
-            # uncoercible value exercises the rejection.
-            {'pagination': {'hasNextPage': 'maybe'}, 'data': []},
+            # Type drift on the flag we act on. The slice models are
+            # strict=True, so a bool-ish string and an int both reject
+            # rather than coerce — the failure mode this layer exists to
+            # make loud.
+            {'pagination': {'hasNextPage': 'true'}, 'data': []},
+            {'pagination': {'hasNextPage': 1}, 'data': []},
         ],
     )
     def test_malformed_metadata_raises(self, envelope: JsonValue) -> None:
-        with pytest.raises(ProviderResponseError, match='malformed pagination'):
+        with pytest.raises(ProviderResponseError, match='malformed response envelope'):
             SamsaraPagination().advance(build_spec(), envelope)
