@@ -1,8 +1,8 @@
-"""Tests for fleetpull.network.truststore_context."""
+"""Tests for fleetpull.network.tls.truststore_context."""
 
 import ssl
 
-from fleetpull.network.truststore_context import build_truststore_ssl_context
+from fleetpull.network.tls import build_truststore_ssl_context
 
 
 def test_returns_ssl_context_instance() -> None:
