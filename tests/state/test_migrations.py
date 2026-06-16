@@ -30,6 +30,23 @@ def _set_user_version(database_path: Path, version: int) -> None:
         connection.close()
 
 
+def _expect_runs_insert_rejected(
+    tmp_path: Path, columns: str, values: tuple[object, ...]
+) -> None:
+    """Migrate a fresh database, then assert a raw runs INSERT trips a CHECK."""
+    database = StateDatabase(_database_path(tmp_path))
+    database.initialize()
+    migrate_to_head(database)
+    placeholders = ', '.join('?' * len(values))
+    with (
+        database.connect() as connection,
+        pytest.raises(sqlite3.IntegrityError, match='CHECK'),
+    ):
+        connection.execute(
+            f'INSERT INTO runs {columns} VALUES ({placeholders})', values
+        )
+
+
 @pytest.fixture
 def autocommit_connection() -> Iterator[sqlite3.Connection]:
     """A bare in-memory connection in manual-transaction mode, as _transaction requires."""
@@ -78,6 +95,110 @@ class TestMigrateToHead:
                 'INSERT INTO cursors VALUES (?, ?, ?, ?, ?)',
                 ('motive', 'vehicles', 'not_a_kind', 'v', '2026-06-16T00:00:00Z'),
             )
+
+    def test_creates_the_runs_table(self, tmp_path: Path) -> None:
+        database = StateDatabase(_database_path(tmp_path))
+        database.initialize()
+
+        migrate_to_head(database)
+
+        with database.connect() as connection:
+            columns = {
+                row[1]
+                for row in connection.execute('PRAGMA table_info(runs)').fetchall()
+            }
+        assert columns == {
+            'run_id',
+            'provider',
+            'endpoint',
+            'status',
+            'window_start',
+            'window_end',
+            'from_version',
+            'to_version',
+            'row_count',
+            'started_at',
+            'ended_at',
+            'error_detail',
+        }
+
+    def test_runs_table_rejects_an_unknown_status(self, tmp_path: Path) -> None:
+        _expect_runs_insert_rejected(
+            tmp_path,
+            '(provider, endpoint, status, window_start, window_end, started_at)',
+            (
+                'samsara',
+                'trips',
+                'bogus',
+                '2026-06-01T00:00:00Z',
+                '2026-06-02T00:00:00Z',
+                '2026-06-16T00:00:00Z',
+            ),
+        )
+
+    def test_runs_table_rejects_both_arms(self, tmp_path: Path) -> None:
+        _expect_runs_insert_rejected(
+            tmp_path,
+            '(provider, endpoint, status, window_start, window_end, '
+            'from_version, started_at)',
+            (
+                'samsara',
+                'trips',
+                'running',
+                '2026-06-01T00:00:00Z',
+                '2026-06-02T00:00:00Z',
+                'v0',
+                '2026-06-16T00:00:00Z',
+            ),
+        )
+
+    def test_runs_table_rejects_to_version_on_a_watermark_run(
+        self, tmp_path: Path
+    ) -> None:
+        _expect_runs_insert_rejected(
+            tmp_path,
+            '(provider, endpoint, status, window_start, window_end, '
+            'to_version, started_at)',
+            (
+                'samsara',
+                'trips',
+                'succeeded',
+                '2026-06-01T00:00:00Z',
+                '2026-06-02T00:00:00Z',
+                'v9',
+                '2026-06-16T00:00:00Z',
+            ),
+        )
+
+    def test_runs_table_rejects_a_negative_row_count(self, tmp_path: Path) -> None:
+        _expect_runs_insert_rejected(
+            tmp_path,
+            '(provider, endpoint, status, window_start, window_end, '
+            'row_count, started_at)',
+            (
+                'samsara',
+                'trips',
+                'succeeded',
+                '2026-06-01T00:00:00Z',
+                '2026-06-02T00:00:00Z',
+                -1,
+                '2026-06-16T00:00:00Z',
+            ),
+        )
+
+    def test_runs_table_rejects_an_inverted_window(self, tmp_path: Path) -> None:
+        _expect_runs_insert_rejected(
+            tmp_path,
+            '(provider, endpoint, status, window_start, window_end, started_at)',
+            (
+                'samsara',
+                'trips',
+                'succeeded',
+                '2026-06-02T00:00:00Z',
+                '2026-06-01T00:00:00Z',
+                '2026-06-16T00:00:00Z',
+            ),
+        )
 
     def test_is_idempotent(self, tmp_path: Path) -> None:
         database = StateDatabase(_database_path(tmp_path))
