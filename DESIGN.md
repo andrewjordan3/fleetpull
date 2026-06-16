@@ -117,6 +117,30 @@ payload-drift updates (providers have been observed returning the same event
 with end timestamps drifting by milliseconds-to-seconds across fetches) with
 no event-id logic.
 
+**Precondition — the incoming frame must be anchored to the window on the same
+field the delete keys on.** Delete-by-window is idempotent and dup-free only
+when the rows appended for a window are exactly the rows the delete would remove
+on the next run. For a **start-anchored** provider (the API returns only records
+whose anchor falls in `[start, end]`) this holds automatically. For an
+**overlap-anchored** provider it does not: Samsara `/v1/fleet/trips` returns any
+trip *intersecting* the window, including trips that started before `start`
+(verified by live probes). Appended as-is, those pre-`start` trips are never
+deleted on a later run — their prior copy lives under the earlier window that
+owns their start — so they accumulate as leading-edge duplicates, and exact
+dedup cannot remove them because the re-emitted copy carries drifted timestamps
+(the same payload drift noted above). The fix is **start-anchored
+normalization**: filter the incoming frame to records whose start falls in the
+window before appending, so each cross-boundary event is anchored to the single
+window that owns its start and is never double-counted at a window's leading
+edge. This is the mechanism carried over from fleet-telemetry-hub.
+
+**Consequence — coverage may bleed slightly before `start`.** A trip that
+started before `start` but was returned by an overlap fetch is dropped from the
+incoming frame, because its one authoritative copy already lives under the
+earlier window that owns its start. File coverage therefore extends slightly
+before a given window's `start`. This is intended. Do **not** "fix" it by
+clamping start times to the window — that would discard the authoritative copy.
+
 **Merge semantics (feed-token endpoints): append-only + exact dedup.** No
 window exists to delete; the token stream is the unit of truth, and only
 byte-identical rows (from our own pagination or a crash refetch) are dropped.
