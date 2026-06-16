@@ -46,6 +46,7 @@ from typing import Final
 from fleetpull.exceptions import ConfigurationError
 
 __all__: list[str] = [
+    'SqliteScalar',
     'StateDatabase',
     'apply_connection_pragmas',
     'enable_wal',
@@ -59,7 +60,7 @@ logger = logging.getLogger(__name__)
 # A single column value as SQLite returns it through the DBAPI: the storage
 # classes map to exactly these Python types. Used to type the raw scalar read
 # below precisely, rather than falling back to ``object``.
-type _SqliteScalar = int | float | str | bytes | None
+type SqliteScalar = int | float | str | bytes | None
 
 # Stamped into the SQLite header's application_id field at creation and verified
 # on every initialization: a fixed nonzero magic marking a file as fleetpull's
@@ -74,7 +75,7 @@ _APPLICATION_ID: Final[int] = 0x666C706C
 _DEFAULT_BUSY_TIMEOUT_MS: Final[int] = 5000
 
 
-def fetch_scalar(connection: sqlite3.Connection, statement: str) -> _SqliteScalar:
+def fetch_scalar(connection: sqlite3.Connection, statement: str) -> SqliteScalar:
     """
     Execute a single-row, single-column statement and return its raw value.
 
@@ -96,7 +97,7 @@ def fetch_scalar(connection: sqlite3.Connection, statement: str) -> _SqliteScala
     Side Effects:
         Executes ``statement`` on ``connection``.
     """
-    row: tuple[_SqliteScalar, ...] | None = connection.execute(statement).fetchone()
+    row: tuple[SqliteScalar, ...] | None = connection.execute(statement).fetchone()
     if row is None:
         raise RuntimeError(f'expected one row from {statement!r}, got none')
     return row[0]
@@ -147,7 +148,7 @@ def stamp_or_verify_application_id(
     Side Effects:
         Sets ``application_id`` in the file header on a fresh database.
     """
-    current_id: _SqliteScalar = fetch_scalar(connection, 'PRAGMA application_id')
+    current_id: SqliteScalar = fetch_scalar(connection, 'PRAGMA application_id')
     if not isinstance(current_id, int):
         raise RuntimeError(f'expected an integer application_id, got {current_id!r}')
     if current_id == 0:
@@ -186,7 +187,7 @@ def enable_wal(connection: sqlite3.Connection, database_path: Path) -> None:
     Side Effects:
         May convert the database's journal mode (persists in the header).
     """
-    active_mode: _SqliteScalar = fetch_scalar(connection, 'PRAGMA journal_mode = WAL')
+    active_mode: SqliteScalar = fetch_scalar(connection, 'PRAGMA journal_mode = WAL')
     if not isinstance(active_mode, str):
         raise RuntimeError(f'expected a text journal_mode, got {active_mode!r}')
     if active_mode.lower() != 'wal':
@@ -220,7 +221,7 @@ def verify_quick_check(connection: sqlite3.Connection, database_path: Path) -> N
     Side Effects:
         None beyond reading the database.
     """
-    result: _SqliteScalar = fetch_scalar(connection, 'PRAGMA quick_check')
+    result: SqliteScalar = fetch_scalar(connection, 'PRAGMA quick_check')
     if not isinstance(result, str):
         raise RuntimeError(f'expected a text quick_check result, got {result!r}')
     if result.lower() != 'ok':
