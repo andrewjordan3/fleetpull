@@ -118,7 +118,27 @@ with end timestamps drifting by milliseconds-to-seconds across fetches) with
 no event-id logic.
 
 **Merge semantics (feed-token endpoints): append-only + exact dedup.** No
-window exists to delete.
+window exists to delete; the token stream is the unit of truth, and only
+byte-identical rows (from our own pagination or a crash refetch) are dropped.
+
+GeoTab `GetFeed` entities are *active* or *calculated* (the provider's terms).
+Active feeds (e.g. `LogRecord`, `StatusData`) emit only new, static records —
+append-only is trivially complete. Calculated feeds (`Trip`, `ExceptionEvent`,
+`FillUp`, `FuelUsed`, `FuelAndEnergyUsed`, `FuelTaxDetail`, `ChargeEvent`)
+re-emit past records on reprocessing: the same `id` reappears with a higher
+`version` and changed fields. Append-only therefore stores *every emitted
+version*. This is deliberate and consistent with §6 — collapsing versions to the
+latest is same-key-different-payload dedup, the consumer's concern, not ours; the
+consumer reconciles by `(id, max version)`.
+
+*Open question (resolve empirically against the live feed — access is
+available):* calculated records can also be removed by the system. Whether the
+feed signals a removal as an emitted record (a tombstone the consumer can act on)
+or simply stops re-emitting it is unconfirmed. If removals are unsignaled, a
+removed record persists in append-only storage until the consumer reconciles
+against the live system — handling it any other way would require the event-id
+logic §6 places out of scope. Confirm the removal mechanism empirically before
+building the GeoTab merge.
 
 **Never** overwrite storage with only the current window. Incremental means the
 dataset stays complete and current.
@@ -139,16 +159,26 @@ Rules:
 - SQLite is local-disk only; not designed for network filesystems.
 
 **Crash-safety ordering:** write parquet first (temp file + atomic rename),
-commit watermark/cursor second. A crash between the two causes a refetch of the
-window on the next run, and delete-by-window merge makes that refetch
-idempotent. At-least-once fetching + idempotent merge = exactly-once data,
-with no transactional coupling between SQLite and the filesystem.
+commit watermark/cursor second. A crash between the two causes a refetch on the
+next run. For watermark endpoints, delete-by-window merge makes that refetch
+idempotent. For feed-token endpoints, resuming from the last-committed token
+refetches from there and exact dedup drops the byte-identical rows — and a
+calculated record reprocessed in the interim simply reappears as a new version,
+a normal §4 update rather than a duplication. At-least-once fetching + idempotent
+merge = exactly-once data, with no transactional coupling between SQLite and the
+filesystem.
 
 **Writer discipline:** fetch workers run in parallel, but parquet merge per
 endpoint is **single-writer**. Fetch workers produce record batches into a
 queue; one writer per endpoint drains and merges. Date-partitioned endpoints
 may parallelize writes *across* partitions (each partition is an independent
 file), never within one.
+
+**Schema versioning:** the database schema is versioned with SQLite's
+`user_version`. A forward-only migration runner (`state/migrations.py`) brings a
+database to head at startup, after `initialize`, applying each step's DDL and its
+version bump in one atomic transaction; a database at a version newer than the
+running code is refused. Today head is v1: the cursors table.
 
 ---
 
@@ -630,7 +660,7 @@ fleetpull/
                    #   incremental strategy (watermark | feed_token), storage strategy
     motive.py
     samsara.py
-    geotab.py      # stub until access lands
+    geotab.py      # stub until the endpoints layer (base.py) is built
   models/          # response Pydantic models per provider (largely ported from fleet-telemetry-hub)
   records/         # flattening; Pydantic → Polars schema derivation + overrides + validation
   storage/         # Polars merge/write: delete-by-window + append; single vs partitioned
