@@ -127,7 +127,7 @@ dataset stays complete and current.
 
 ## 5. SQLite Operational State
 
-One database at the dataset root. WAL mode. Short `busy_timeout`. Owns:
+One SQLite database lives at the resolved state database path — runtime config resolves it from `state.database_path`, defaulting to `<dataset_root>/.fleetpull/state.sqlite3`. Keeping it separable from `storage.dataset_root` lets SQLite stay on local disk when parquet sits on a network filesystem (WAL requires local disk). WAL mode. Short `busy_timeout`. Owns:
 
 - **Watermarks/cursors** per (provider, endpoint) — the tagged-union state from §4
 - **Run ledger** — run id, provider, endpoint, window/cursor range, status, row counts, duration
@@ -634,7 +634,9 @@ fleetpull/
   models/          # response Pydantic models per provider (largely ported from fleet-telemetry-hub)
   records/         # flattening; Pydantic → Polars schema derivation + overrides + validation
   storage/         # Polars merge/write: delete-by-window + append; single vs partitioned
-  state/           # SQLite: watermarks/cursors, run ledger, work units
+  state/           # SQLite operational state (§5)
+    database.py    # StateDatabase shell + DB primitives (connect, verify, WAL)
+                   #   (substrate; schema/tables land in later prompts)
   orchestrator/    # sync planner: builds work units, per-provider executors, per-endpoint writer threads
   cli.py           # fetch, sync
 ```
