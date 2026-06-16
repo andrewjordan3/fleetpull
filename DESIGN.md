@@ -637,6 +637,7 @@ fleetpull/
   state/           # SQLite operational state (§5)
     database.py    # StateDatabase shell + DB primitives (connect, verify, WAL)
                    #   (substrate; schema/tables land in later prompts)
+    migrations.py  # schema migration runner (user_version); v1 = cursors table
   orchestrator/    # sync planner: builds work units, per-provider executors, per-endpoint writer threads
   cli.py           # fetch, sync
 ```
