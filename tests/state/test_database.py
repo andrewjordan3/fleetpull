@@ -12,8 +12,8 @@ from fleetpull.exceptions import ConfigurationError
 from fleetpull.state.database import (
     _APPLICATION_ID,
     _DEFAULT_BUSY_TIMEOUT_MS,
+    SqliteScalar,
     StateDatabase,
-    _SqliteScalar,
     apply_connection_pragmas,
     enable_wal,
     fetch_scalar,
@@ -41,11 +41,11 @@ def _database_path(directory: Path) -> Path:
     return directory / 'state.sqlite3'
 
 
-def _read_pragma(database_path: Path, pragma: str) -> _SqliteScalar:
+def _read_pragma(database_path: Path, pragma: str) -> SqliteScalar:
     """Open the database file, read a single-value PRAGMA, and return it."""
     connection = sqlite3.connect(database_path)
     try:
-        row: tuple[_SqliteScalar, ...] | None = connection.execute(
+        row: tuple[SqliteScalar, ...] | None = connection.execute(
             f'PRAGMA {pragma}'
         ).fetchone()
     finally:
