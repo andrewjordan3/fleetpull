@@ -117,6 +117,30 @@ payload-drift updates (providers have been observed returning the same event
 with end timestamps drifting by milliseconds-to-seconds across fetches) with
 no event-id logic.
 
+**Precondition — the incoming frame must be anchored to the window on the same
+field the delete keys on.** Delete-by-window is idempotent and dup-free only
+when the rows appended for a window are exactly the rows the delete would remove
+on the next run. For a **start-anchored** provider (the API returns only records
+whose anchor falls in `[start, end]`) this holds automatically. For an
+**overlap-anchored** provider it does not: Samsara `/v1/fleet/trips` returns any
+trip *intersecting* the window, including trips that started before `start`
+(verified by live probes). Appended as-is, those pre-`start` trips are never
+deleted on a later run — their prior copy lives under the earlier window that
+owns their start — so they accumulate as leading-edge duplicates, and exact
+dedup cannot remove them because the re-emitted copy carries drifted timestamps
+(the same payload drift noted above). The fix is **start-anchored
+normalization**: filter the incoming frame to records whose start falls in the
+window before appending, so each cross-boundary event is anchored to the single
+window that owns its start and is never double-counted at a window's leading
+edge. This is the mechanism carried over from fleet-telemetry-hub.
+
+**Consequence — coverage may bleed slightly before `start`.** A trip that
+started before `start` but was returned by an overlap fetch is dropped from the
+incoming frame, because its one authoritative copy already lives under the
+earlier window that owns its start. File coverage therefore extends slightly
+before a given window's `start`. This is intended. Do **not** "fix" it by
+clamping start times to the window — that would discard the authoritative copy.
+
 **Merge semantics (feed-token endpoints): append-only + exact dedup.** No
 window exists to delete; the token stream is the unit of truth, and only
 byte-identical rows (from our own pagination or a crash refetch) are dropped.
@@ -179,6 +203,49 @@ file), never within one.
 database to head at startup, after `initialize`, applying each step's DDL and its
 version bump in one atomic transaction; a database at a version newer than the
 running code is refused. Today head is v1: the cursors table.
+
+**Cursor persistence (the cursor store, `state/cursors.py`).** The store
+translates between the `IncrementalCursor` union (§4) and `cursors`-table rows; it
+owns the serialization the cursor leaf and the migration runner deliberately
+don't. A `DateWatermark` serializes its `watermark` to ISO-8601 UTC text via the
+timing codec; a `FeedToken` stores its opaque token verbatim (fleetpull never
+parses it). The CHECK-constrained `kind` column discriminates the arm on read;
+`updated_at` is written from the injected `Clock`. A row read with an unrecognized
+`kind`, or a `date_watermark` value that is not parseable ISO-8601, is state-store
+corruption and raises `ConfigurationError`, consistent with the other §5
+corruption stances.
+
+`get_cursor` returns `IncrementalCursor | None`; `None` means exactly "no cursor
+has been persisted for this (provider, endpoint)" — nothing more. The store never
+fabricates a cursor and never interprets absence; the resume-on-absence decision
+lives above it (see resume precedence below). `set_cursor` is an unconditional
+single-row upsert; the advance discipline lives in the caller, not the store.
+
+**Watermark semantics: observed-data-only and monotonic.** A `DateWatermark` is
+the maximum event timestamp actually seen; it is set only from observed data and
+only ever moves forward (the caller invokes `set_cursor` only when
+`current is None or new_max > current`). An empty fetch — or one returning nothing
+newer than the current watermark — writes no cursor. A watermark is never
+synthesized from a window boundary; doing so would assert coverage backed by zero
+observations and silently abandon the historical window the moment it went
+momentarily empty.
+
+**Feed-token semantics: persist on every successful fetch.** The feed token is
+provider-issued (GeoTab's `toVersion`), not fleetpull-computed; GetFeed returns a
+`toVersion` on every page, including an empty one. The caller persists it after
+every successful page-through, empty or not — versions are append-only sequential,
+so persisting the latest never skips a future record. The empty-window/no-cursor
+problem is exclusively a `DateWatermark` concern; the feed arm always has a cursor
+to write.
+
+**Resume precedence (no committed cursor).** When `get_cursor` returns `None`
+(only reachable for a watermark endpoint that has never committed a watermark),
+resume is driven by coverage, not by a synthesized cursor: (1) the data watermark,
+`- lookback`, when one exists; else (2) the high-water mark of completed coverage
+from the run ledger / work-units (max successful window-end) — a backfill chunk
+that completes empty is still completed, so this never re-scans empty history every
+run; else (3) the configured `default_start_date`. The `cursors` table only ever
+holds (1). Arm (2) lands with the run ledger.
 
 ---
 
