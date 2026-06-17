@@ -1,4 +1,3 @@
-# tests/endpoints/test_base.py
 """Tests for fleetpull.endpoints.base."""
 
 import dataclasses
@@ -10,9 +9,10 @@ import pytest
 from fleetpull.endpoints.base import (
     EndpointDefinition,
     FeedMode,
-    IncrementalMode,
     ResumeValue,
+    SnapshotMode,
     StorageKind,
+    SyncMode,
     TopLevelListExtractor,
     WatermarkMode,
 )
@@ -58,8 +58,8 @@ class _StubModel(ResponseModel):
     name: str
 
 
-def _make_endpoint(incremental: IncrementalMode) -> EndpointDefinition[_StubModel]:
-    """Build an EndpointDefinition from the stubs and a given incremental mode."""
+def _make_endpoint(sync_mode: SyncMode) -> EndpointDefinition[_StubModel]:
+    """Build an EndpointDefinition from the stubs and a given sync mode."""
     return EndpointDefinition(
         provider=Provider.SAMSARA,
         name='trips',
@@ -69,7 +69,7 @@ def _make_endpoint(incremental: IncrementalMode) -> EndpointDefinition[_StubMode
         record_extractor=_StubExtractor(),
         quota_scope=QuotaScope.SAMSARA,
         storage_kind=StorageKind.SINGLE,
-        incremental=incremental,
+        sync_mode=sync_mode,
     )
 
 
@@ -113,11 +113,15 @@ class TestEndpointDefinition:
         assert endpoint.response_model is _StubModel
         assert endpoint.quota_scope == QuotaScope.SAMSARA
         assert endpoint.storage_kind == StorageKind.SINGLE
-        assert endpoint.incremental == WatermarkMode(lookback=timedelta(days=1))
+        assert endpoint.sync_mode == WatermarkMode(lookback=timedelta(days=1))
 
     def test_accepts_a_feed_mode(self) -> None:
         endpoint = _make_endpoint(FeedMode())
-        assert endpoint.incremental == FeedMode()
+        assert endpoint.sync_mode == FeedMode()
+
+    def test_accepts_a_snapshot_mode(self) -> None:
+        endpoint = _make_endpoint(SnapshotMode())
+        assert endpoint.sync_mode == SnapshotMode()
 
     def test_is_frozen(self) -> None:
         endpoint = _make_endpoint(FeedMode())
@@ -128,7 +132,7 @@ class TestEndpointDefinition:
         assert not hasattr(_make_endpoint(FeedMode()), '__dict__')
 
 
-class TestIncrementalMode:
+class TestSyncMode:
     def test_watermark_mode_holds_lookback(self) -> None:
         assert WatermarkMode(lookback=timedelta(hours=6)).lookback == timedelta(hours=6)
 
@@ -142,6 +146,11 @@ class TestIncrementalMode:
         mode = FeedMode()
         assert not hasattr(mode, '__dict__')
         assert mode == FeedMode()
+
+    def test_snapshot_mode_is_slotted_and_equal(self) -> None:
+        mode = SnapshotMode()
+        assert not hasattr(mode, '__dict__')
+        assert mode == SnapshotMode()
 
 
 class TestStorageKind:
