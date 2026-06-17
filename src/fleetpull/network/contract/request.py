@@ -11,12 +11,21 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Self
 
-__all__: list[str] = ['HttpMethod', 'JsonScalar', 'JsonValue', 'RequestSpec']
+__all__: list[str] = [
+    'HttpMethod',
+    'JsonObject',
+    'JsonScalar',
+    'JsonValue',
+    'RequestSpec',
+]
 
 # The actual type of a JSON document, recursively. Used for JSON-RPC
 # bodies here and available to siblings.
 type JsonScalar = str | int | float | bool | None
 type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
+# A single JSON object — the shape one extracted record takes; the endpoints
+# layer types the record extractor's output as ``list[JsonObject]``.
+type JsonObject = dict[str, JsonValue]
 
 
 class HttpMethod(StrEnum):

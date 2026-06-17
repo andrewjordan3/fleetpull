@@ -1,6 +1,9 @@
-"""Pydantic response models, one module per provider.
+"""Pydantic response models: the shared config-policy base, one module per provider.
 
-Intentionally empty; modules are added as providers are implemented.
+``base.py`` holds ``ResponseModel`` (the config-policy base); per-provider model
+modules are added as providers are implemented.
 """
 
-__all__: list[str] = []
+from fleetpull.models.base import ResponseModel
+
+__all__: list[str] = ['ResponseModel']
