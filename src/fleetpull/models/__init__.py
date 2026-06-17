@@ -1,9 +1,5 @@
-"""Pydantic response models: the shared config-policy base, one module per provider.
+"""Pydantic response models, one subpackage per provider.
 
-``base.py`` holds ``ResponseModel`` (the config-policy base); per-provider model
-modules are added as providers are implemented.
+``ResponseModel`` (the config-policy base) lives in ``fleetpull.model_contract``;
+provider model packages import it from there directly.
 """
-
-from fleetpull.models.base import ResponseModel
-
-__all__: list[str] = ['ResponseModel']

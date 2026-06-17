@@ -17,7 +17,7 @@ from fleetpull.endpoints.base import (
     WatermarkMode,
 )
 from fleetpull.exceptions import ProviderResponseError
-from fleetpull.models import ResponseModel
+from fleetpull.model_contract import ResponseModel
 from fleetpull.network.contract import (
     HttpMethod,
     JsonObject,
