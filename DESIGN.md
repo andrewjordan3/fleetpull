@@ -101,6 +101,23 @@ an endpoint can name a strategy without importing the SQLite layer.
 Serialization of a cursor to its SQLite form is owned by `state/`, not the
 cursor.
 
+**Resume value vs. cursor — and the pure function between them.** The stored
+cursor (`DateWatermark` / `FeedToken`) is not what a request is built from; the
+resume value is. For a watermark endpoint that value is a `DateWindow` — the
+start–end window the spec-builder fetches — which lives in `incremental/` beside
+the carriers, so an endpoint names it without importing `state/`. For a feed
+endpoint the value is the `FeedToken` itself. The mapping is one pure function,
+`compute_resume(cursor, lookback, now) -> DateWindow | FeedToken | None`: a
+`DateWatermark` becomes `DateWindow(watermark - lookback, now)`, a `FeedToken` is
+returned unchanged, and `None` is returned unchanged. It is a pure function over
+the cursor union with no per-endpoint variation, so it is a function in
+`incremental/` — not a method on the endpoint definition and not a strategy. A
+returned `None` means only "no committed cursor"; the caller then resolves the
+start through the resume precedence below, so `compute_resume` is precedence arm
+(1) expressed as code, with arms (2)–(3) remaining the caller's. (The window's
+boundary convention — half-open vs. closed — is settled when `DateWindow` is
+built, not here.)
+
 Each endpoint definition declares which strategy it uses. This is the single
 biggest architectural improvement over fleet-telemetry-hub, whose
 `latest_data_date - lookback` assumption cannot represent GeoTab.
@@ -198,11 +215,29 @@ queue; one writer per endpoint drains and merges. Date-partitioned endpoints
 may parallelize writes *across* partitions (each partition is an independent
 file), never within one.
 
+**Per-fetch memory is bounded by the write unit, never the endpoint.** The unit
+buffered in memory and written to disk is one bounded batch — for a watermark
+backfill, one work-unit chunk (one date-chunk, optionally one partition; the
+work-units decomposition above), and for a feed sweep, one bounded run of pages —
+never a whole endpoint's accumulated window. A chunk's pages stream through the
+client and accumulate into a single Polars frame for that chunk only; that frame
+is merged (delete-by-window + append) and the chunk's state advanced, and the
+frame is released before the next chunk begins. Memory is therefore bounded by
+the chunk, and chunk size is the caller's planning lever — granular, high-volume
+data (per-vehicle breadcrumbs over months) is kept in bounds by smaller date
+windows, not by a streaming rewrite of the merge. The page loop streams; the
+write unit is the buffer boundary. Accumulating an entire endpoint's window into
+one frame before writing is forbidden: it is the unbounded-memory failure
+fleet-telemetry-hub avoided for its single-file utilization output by pushing the
+read-delete-append-write into DuckDB, and fleetpull achieves the same bound
+structurally by making the chunk the write unit.
+
 **Schema versioning:** the database schema is versioned with SQLite's
 `user_version`. A forward-only migration runner (`state/migrations.py`) brings a
 database to head at startup, after `initialize`, applying each step's DDL and its
 version bump in one atomic transaction; a database at a version newer than the
-running code is refused. Today head is v1: the cursors and runs tables.
+running code is refused. Today head is v1: the cursors, runs, and work_units
+tables.
 
 **Cursor persistence (the cursor store, `state/cursors.py`).** The store
 translates between the `IncrementalCursor` union (§4) and `cursors`-table rows; it
@@ -727,7 +762,7 @@ public internal contract, not a later retrofit.
 
 ---
 
-## 11. Module Layout
+## 11. Module Layout and the Endpoints Layer
 
 ```
 fleetpull/
@@ -780,13 +815,20 @@ fleetpull/
     codec.py       # pure UTC datetime <-> ISO-8601/date-string conversions (stdlib-only leaf)
   incremental/     # per-endpoint resume cursors; pure dependency-free leaf (§4)
     cursor.py      # DateWatermark, FeedToken, IncrementalCursor tagged union
-  endpoints/
-    base.py        # EndpointDefinition ABC: auth, pagination style, quota_scope,
-                   #   incremental strategy (watermark | feed_token), storage strategy
+  endpoints/       # per-endpoint bindings (the endpoints layer, below) — new fleetpull code
+    base.py        # EndpointDefinition: a frozen dataclass composing one strategy per axis
+                   #   (spec-builder, pagination, response model + items-path, quota_scope,
+                   #   incremental kind + lookback, storage kind + partition dim) + the
+                   #   SpecBuilder Protocol. No auth here — auth is per-provider
+                   #   (network ProviderProfile), resolved at the composition root.
+    motive.py      # Motive EndpointDefinitions + their spec-builders
+    samsara.py
+    geotab.py      # net-new; follows the GeoTab removals probe
+  models/          # pure API mirrors per provider (Motive/Samsara ported from fleet-telemetry-hub)
+    base.py        # ResponseModel config-policy base (frozen, extra=ignore, populate_by_name, strip)
     motive.py
     samsara.py
-    geotab.py      # stub until the endpoints layer (base.py) is built
-  models/          # response Pydantic models per provider (largely ported from fleet-telemetry-hub)
+    geotab.py      # net-new
   records/         # flattening; Pydantic → Polars schema derivation + overrides + validation
   storage/         # Polars merge/write: delete-by-window + append; single vs partitioned
   state/           # SQLite operational state (§5)
@@ -818,6 +860,94 @@ Boundary rules:
 - `storage` knows nothing about state; `state` knows nothing about parquet. The orchestrator sequences them (parquet-then-watermark ordering, §5).
 - `network/client/` consumes the pagination abstraction (`network/contract/pagination.py`). Retry and limiter consultation stay interleaved per-request concerns inside the client — splitting them away from the request loop is how the token-per-attempt / token-per-page rules get violated.
 - The orchestrator never touches the limiter (§7).
+
+### The endpoints layer
+
+**A thin declarative binding, not a fat base class.** fleet-telemetry-hub's
+`EndpointDefinition` carried auth, pagination, request-building, and
+response-parsing on one class hierarchy. In fleetpull the network layer already
+owns those as separate strategies — auth as a per-provider `ProviderProfile`
+(auth + classifier) resolved at the composition root, pagination as a
+`PaginationStrategy`, classification as a `ResponseClassifier`, parsing as the
+records layer over a response model — so none of that work remains on the
+endpoint. An `EndpointDefinition` is a declaration: it composes one
+implementation per behavioral axis and states the per-endpoint facts the generic
+machinery reads. It executes nothing itself except its spec-builder.
+
+**`EndpointDefinition` is a single concrete frozen dataclass; the variation lives
+in the strategies it holds.** Its fields are data — provider and name; the
+`SpecBuilder`; the `PaginationStrategy`; the response model and the items-path at
+which records sit in the envelope; the `quota_scope`; the incremental kind and
+its lookback; the storage kind and, when partitioned, its partition dimension. It
+is the single source of truth per endpoint, and each tier reads only its slice —
+the client reads spec-builder, pagination, and quota; records reads model and
+items-path; the caller reads the incremental and storage kinds. The one excluded
+concern is the records overrides (`schema_overrides` / `coercion_overrides`),
+which are the §9 records-layer contract and attach when that layer is built.
+
+**The spec-builder is the only genuine per-endpoint behavior.** A `SpecBuilder`
+is a Protocol with one method, `build_spec(resume, path_values) -> RequestSpec`,
+where `resume` is `DateWindow | FeedToken | None` (§4) and `path_values` carries
+a partition key for URL-path fan-out (for example, a per-vehicle locations
+endpoint). It builds only the first request — URL, base params, and the resume
+injection; pagination produces every request after it.
+
+**Dataclass for the binding, Protocols for the slots — and never a per-provider
+subclass.** The behavioral axes differ per provider and sometimes per endpoint,
+which is exactly why each is a Protocol with swappable implementations; the
+binding that composes them does not itself differ, which is why it is one
+concrete dataclass and not an ABC. Subclassing `EndpointDefinition` per provider
+is prohibited — it re-braids the per-provider variation back into a class
+hierarchy and recreates the predecessor's tangle. Per-provider or per-endpoint
+behavior goes into a strategy implementation — a new `SpecBuilder`, a new
+`PaginationStrategy` — never into a field the generic client branches on. The
+failure signature is an `if endpoint.name == ...` (or
+`if endpoint.provider == ...`) inside the client; the remedy is always a
+strategy, never a branch. (Reopen condition: if a per-endpoint fact ever needs to
+vary structurally and cannot be expressed as a swapped-in strategy, stop and
+revisit — none is known.)
+
+**This is composition polymorphism replacing inheritance polymorphism — more
+independent variation, not less.** The four axes now vary freely instead of being
+braided into one subclass, and the genericity of the client, records, and storage
+layers is the payoff of that isolation, not a cost paid against it: those layers
+are written once precisely because the variation is sealed in strategies. The
+discipline above is what keeps the trade real rather than a flattening of
+polymorphism into config.
+
+**Models and bindings are separate packages.** `models/` holds pure API mirrors,
+one module per provider (Motive and Samsara lifted from fleet-telemetry-hub,
+GeoTab net-new) over a shared config-policy base in `models/base.py`;
+`endpoints/` holds the bindings, one module per provider, plus
+`endpoints/base.py`. The split keeps the port a clean block-lift, keeps the
+"models are pure mirrors" invariant crisp, and lets records import the model
+package generically. Blast radius is per-provider, not per-endpoint — adequate,
+and cheaper than a directory per endpoint.
+
+**Fetch assembly: the endpoint declares, the machinery is generic, the caller
+sequences.** For one fetch the caller looks up the `EndpointDefinition`, turns the
+stored cursor into a resume value (`compute_resume`, §4) and a `path_values`,
+calls `build_spec` for the first `RequestSpec`, and hands that spec plus the
+endpoint's `PaginationStrategy`, the provider's `ProviderProfile`, and the
+`quota_scope` to the client. The client streams
+`FetchedPage(envelope, durable_progress)` — `AuthStrategy.prepare` per attempt,
+the limiter consulted per attempt by `quota_scope`, `ResponseClassifier` per
+response, `PaginationStrategy.advance` per page. The caller plucks records at the
+items-path, validates them into the response model, hands them to records for
+generic flattening to Polars, to storage for the merge, and to state for the
+advance (cursor after parquet, §5). No layer below the caller holds endpoint
+knowledge.
+
+**State is concentrated; almost everything is stateless.** Stateless: the
+`EndpointDefinition`, the `SpecBuilder`, the `PaginationStrategy` (pagination
+position rides in the spec's params, not in the strategy), the
+`ResponseClassifier`, the response models, records, storage (its "state" is files
+on disk), and the per-fetch client. Stateful, and only these: the GeoTab
+`AuthStrategy` (it wraps the session token — the one stateful strategy, forced by
+GeoTab's protocol), the `RateLimiterRegistry` (token buckets; a process-global
+injected dependency), the `state/` layer (the durable operational memory), and
+the caller (it conducts the run and owns the thread pools, but its durable state
+lives in `state/`). The per-chunk DataFrame is a value, not a stateful component.
 
 ---
 
