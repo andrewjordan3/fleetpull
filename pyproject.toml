@@ -273,3 +273,12 @@ name = "Root vocabulary and exceptions import nothing from network"
 type = "forbidden"
 source_modules = ["fleetpull.vocabulary", "fleetpull.exceptions"]
 forbidden_modules = ["fleetpull.network"]
+
+[[tool.importlinter.contracts]]
+name = "Endpoints sit above the contracts and carriers they compose"
+type = "layers"
+layers = [
+    "fleetpull.endpoints",
+    "fleetpull.models | fleetpull.network.contract | fleetpull.incremental",
+    "fleetpull.vocabulary",
+]
