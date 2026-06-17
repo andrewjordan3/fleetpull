@@ -396,8 +396,9 @@ capped at `burst`. All limiter timing flows through the injected
 A shared `RateLimiterRegistry` keyed by **quota scope string** supplied by the
 endpoint definition (`endpoint.quota_scope`, default = provider name). v1
 ships one scope per provider, but Samsara documents per-endpoint limits, so
-the key is a string from day one — future scope splits are config + one
-endpoint field, not a redesign.
+scope membership is the closed `QuotaScope` enum (a `str` subclass, so the
+registry stays string-keyed) from day one — a future scope split is a new enum
+member plus its config limits and one endpoint field, not a redesign.
 
 The **client** consults the registry immediately before every HTTP request.
 The orchestrator never touches the limiter. Quota limits are therefore
@@ -976,7 +977,7 @@ lives in `state/`). The per-chunk DataFrame is a value, not a stateful component
 - GeoTab specifics pending API access: `GetFeed` semantics in practice, real rate limits, which entities map to which storage strategies (the auth model is settled — session-based, §8)
 - Real rate-limit values for Motive/Samsara (YAML numbers above are placeholders)
 - Whether any endpoint actually warrants the flattening opt-out
-- Per-endpoint quota scopes for Samsara (config-only change when needed)
+- Per-endpoint quota scopes for Samsara: a provider metering one endpoint apart adds a `QuotaScope` member (code), while that scope's limits stay config — a code-plus-config change, not config-only.
 
 ## 14. Next Steps
 
