@@ -30,10 +30,10 @@ def _set_user_version(database_path: Path, version: int) -> None:
         connection.close()
 
 
-def _expect_runs_insert_rejected(
-    tmp_path: Path, columns: str, values: tuple[object, ...]
+def _expect_insert_rejected(
+    tmp_path: Path, table: str, columns: str, values: tuple[object, ...]
 ) -> None:
-    """Migrate a fresh database, then assert a raw runs INSERT trips a CHECK."""
+    """Migrate a fresh database, then assert a raw INSERT trips a CHECK."""
     database = StateDatabase(_database_path(tmp_path))
     database.initialize()
     migrate_to_head(database)
@@ -43,7 +43,7 @@ def _expect_runs_insert_rejected(
         pytest.raises(sqlite3.IntegrityError, match='CHECK'),
     ):
         connection.execute(
-            f'INSERT INTO runs {columns} VALUES ({placeholders})', values
+            f'INSERT INTO {table} {columns} VALUES ({placeholders})', values
         )
 
 
@@ -123,8 +123,9 @@ class TestMigrateToHead:
         }
 
     def test_runs_table_rejects_an_unknown_status(self, tmp_path: Path) -> None:
-        _expect_runs_insert_rejected(
+        _expect_insert_rejected(
             tmp_path,
+            'runs',
             '(provider, endpoint, status, window_start, window_end, started_at)',
             (
                 'samsara',
@@ -137,8 +138,9 @@ class TestMigrateToHead:
         )
 
     def test_runs_table_rejects_both_arms(self, tmp_path: Path) -> None:
-        _expect_runs_insert_rejected(
+        _expect_insert_rejected(
             tmp_path,
+            'runs',
             '(provider, endpoint, status, window_start, window_end, '
             'from_version, started_at)',
             (
@@ -155,8 +157,9 @@ class TestMigrateToHead:
     def test_runs_table_rejects_to_version_on_a_watermark_run(
         self, tmp_path: Path
     ) -> None:
-        _expect_runs_insert_rejected(
+        _expect_insert_rejected(
             tmp_path,
+            'runs',
             '(provider, endpoint, status, window_start, window_end, '
             'to_version, started_at)',
             (
@@ -171,8 +174,9 @@ class TestMigrateToHead:
         )
 
     def test_runs_table_rejects_a_negative_row_count(self, tmp_path: Path) -> None:
-        _expect_runs_insert_rejected(
+        _expect_insert_rejected(
             tmp_path,
+            'runs',
             '(provider, endpoint, status, window_start, window_end, '
             'row_count, started_at)',
             (
@@ -187,8 +191,9 @@ class TestMigrateToHead:
         )
 
     def test_runs_table_rejects_an_inverted_window(self, tmp_path: Path) -> None:
-        _expect_runs_insert_rejected(
+        _expect_insert_rejected(
             tmp_path,
+            'runs',
             '(provider, endpoint, status, window_start, window_end, started_at)',
             (
                 'samsara',
@@ -199,6 +204,146 @@ class TestMigrateToHead:
                 '2026-06-16T00:00:00Z',
             ),
         )
+
+    def test_creates_the_work_units_table(self, tmp_path: Path) -> None:
+        database = StateDatabase(_database_path(tmp_path))
+        database.initialize()
+
+        migrate_to_head(database)
+
+        with database.connect() as connection:
+            columns = {
+                row[1]
+                for row in connection.execute(
+                    'PRAGMA table_info(work_units)'
+                ).fetchall()
+            }
+        assert columns == {
+            'unit_id',
+            'provider',
+            'endpoint',
+            'partition_key',
+            'chunk_start',
+            'chunk_end',
+            'status',
+            'attempt_count',
+            'claimed_at',
+            'finished_at',
+            'last_error',
+        }
+
+    def test_work_units_rejects_an_unknown_status(self, tmp_path: Path) -> None:
+        _expect_insert_rejected(
+            tmp_path,
+            'work_units',
+            '(provider, endpoint, chunk_start, chunk_end, status)',
+            (
+                'samsara',
+                'trips',
+                '2026-06-01T00:00:00Z',
+                '2026-06-02T00:00:00Z',
+                'bogus',
+            ),
+        )
+
+    def test_work_units_rejects_a_negative_attempt_count(self, tmp_path: Path) -> None:
+        _expect_insert_rejected(
+            tmp_path,
+            'work_units',
+            '(provider, endpoint, chunk_start, chunk_end, attempt_count)',
+            (
+                'samsara',
+                'trips',
+                '2026-06-01T00:00:00Z',
+                '2026-06-02T00:00:00Z',
+                -1,
+            ),
+        )
+
+    def test_work_units_rejects_an_inverted_chunk(self, tmp_path: Path) -> None:
+        _expect_insert_rejected(
+            tmp_path,
+            'work_units',
+            '(provider, endpoint, chunk_start, chunk_end)',
+            (
+                'samsara',
+                'trips',
+                '2026-06-02T00:00:00Z',
+                '2026-06-01T00:00:00Z',
+            ),
+        )
+
+    def test_work_units_dedups_a_null_partition_key(self, tmp_path: Path) -> None:
+        database = StateDatabase(_database_path(tmp_path))
+        database.initialize()
+        migrate_to_head(database)
+        insert = (
+            'INSERT INTO work_units (provider, endpoint, chunk_start, chunk_end) '
+            'VALUES (?, ?, ?, ?)'
+        )
+        values = ('samsara', 'trips', '2026-06-01T00:00:00Z', '2026-06-02T00:00:00Z')
+        with database.connect() as connection:
+            connection.execute(insert, values)
+            with pytest.raises(sqlite3.IntegrityError, match='UNIQUE'):
+                connection.execute(insert, values)
+
+    def test_work_units_dedups_a_non_null_partition_key(self, tmp_path: Path) -> None:
+        database = StateDatabase(_database_path(tmp_path))
+        database.initialize()
+        migrate_to_head(database)
+        insert = (
+            'INSERT INTO work_units '
+            '(provider, endpoint, partition_key, chunk_start, chunk_end) '
+            'VALUES (?, ?, ?, ?, ?)'
+        )
+        values = (
+            'samsara',
+            'trips',
+            'V1',
+            '2026-06-01T00:00:00Z',
+            '2026-06-02T00:00:00Z',
+        )
+        with database.connect() as connection:
+            connection.execute(insert, values)
+            with pytest.raises(sqlite3.IntegrityError, match='UNIQUE'):
+                connection.execute(insert, values)
+
+    def test_work_units_allows_same_start_different_end(self, tmp_path: Path) -> None:
+        database = StateDatabase(_database_path(tmp_path))
+        database.initialize()
+        migrate_to_head(database)
+        insert = (
+            'INSERT INTO work_units '
+            '(provider, endpoint, partition_key, chunk_start, chunk_end) '
+            'VALUES (?, ?, ?, ?, ?)'
+        )
+        with database.connect() as connection:
+            connection.execute(
+                insert,
+                (
+                    'samsara',
+                    'trips',
+                    'V1',
+                    '2026-06-01T00:00:00Z',
+                    '2026-06-02T00:00:00Z',
+                ),
+            )
+            connection.execute(
+                insert,
+                (
+                    'samsara',
+                    'trips',
+                    'V1',
+                    '2026-06-01T00:00:00Z',
+                    '2026-06-03T00:00:00Z',
+                ),
+            )
+            connection.commit()
+            same_start_count = connection.execute(
+                'SELECT count(*) FROM work_units WHERE chunk_start = ?',
+                ('2026-06-01T00:00:00Z',),
+            ).fetchone()
+        assert same_start_count == (2,)
 
     def test_is_idempotent(self, tmp_path: Path) -> None:
         database = StateDatabase(_database_path(tmp_path))
