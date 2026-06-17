@@ -1,4 +1,4 @@
-# src/fleetpull/models/base.py
+# src/fleetpull/model_contract/response.py
 """The shared config-policy base every per-record response model extends.
 
 Carries only configuration — no fields, no methods, no schema-derivation helpers

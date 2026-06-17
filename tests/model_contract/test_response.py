@@ -1,10 +1,10 @@
-# tests/models/test_base.py
-"""Tests for fleetpull.models.base."""
+# tests/model_contract/test_response.py
+"""Tests for fleetpull.model_contract."""
 
 import pytest
 from pydantic import Field, ValidationError
 
-from fleetpull.models.base import ResponseModel
+from fleetpull.model_contract import ResponseModel
 
 
 class _SampleRecord(ResponseModel):
