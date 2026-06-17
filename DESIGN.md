@@ -276,6 +276,35 @@ state-store corruption and raises `ConfigurationError`, consistent with the othe
 resume correctness rests on the cursor and, later, work-units). Reconciling or
 reaping stale `running` rows is deferred.
 
+**Work units (`state/work_units.py`).** A backfill decomposes a
+(provider, endpoint) range into chunks — `(endpoint, chunk)`, or
+`(endpoint, partition-key, chunk)` for endpoints partitioned by an entity (a
+vehicle id, a driver id, or any per-endpoint key) — and the work-units store is
+the claim queue over them. The caller plans the decomposition (chunk size,
+range, partition list) and drives the queue; the store only persists units,
+hands them out, and records outcomes — it knows nothing about HTTP, parquet,
+chunking, or what a partition key represents (that is the endpoint definition's
+concern). The date-window dimension is intrinsic: this queue is the
+parallelizable backfill mechanism, i.e. the watermark endpoints; feed endpoints
+sweep the version-token stream sequentially and do not use it. Each unit's
+execution records a run in the run ledger, so coverage stays single-sourced
+there; per-partition completeness, however, lives here (each
+`(partition-key, chunk)` is its own unit), while the ledger's coverage frontier
+stays date-only. Enqueue is idempotent (`INSERT OR IGNORE` on the natural key,
+with partial unique indexes so a null partition key still dedups), so re-running
+a backfill plan never duplicates units. A worker claims the next unit atomically
+— a single `UPDATE ... WHERE unit_id = (SELECT ... LIMIT 1) RETURNING ...`, safe
+under concurrency because WAL serializes writers (no app-level lock) — runs it,
+and marks it `done` or `failed`. Lifecycle: `pending → claimed → done | failed`;
+`failed` units are re-served on a later pass, and `attempt_count` (incremented at
+claim, so crashes count too) caps retries at `max_attempts` so a poison unit lets
+the backfill terminate rather than loop. Crash recovery is a startup reset: a
+single `fleetpull` invocation runs the whole backfill — many endpoints, each
+optionally fanned across many partition keys — as one process, so at startup any
+`claimed` row is stale (its worker is gone) and reverts to `pending`; no lease or
+heartbeat, sound because the only constraint is not running two invocations
+against one state database at once (concurrent invocations are out of scope).
+
 ---
 
 ## 6. Deduplication Policy
@@ -762,9 +791,10 @@ fleetpull/
   storage/         # Polars merge/write: delete-by-window + append; single vs partitioned
   state/           # SQLite operational state (§5)
     database.py    # StateDatabase shell + DB primitives (connect, verify, WAL)
-    migrations.py  # forward-only migration runner (user_version); v1 = cursors + runs tables
+    migrations.py  # forward-only migration runner (user_version); v1 = cursors + runs + work_units
     cursors.py     # CursorStore + CursorKind: IncrementalCursor <-> cursors rows
     run_ledger.py  # RunLedger + RunStatus: per-run records + the coverage frontier
+    work_units.py  # WorkUnitStore: the backfill claim queue (enqueue/claim/complete/recover)
   orchestrator/    # sync planner: builds work units, per-provider executors, per-endpoint writer threads
   cli.py           # fetch, sync
 ```
