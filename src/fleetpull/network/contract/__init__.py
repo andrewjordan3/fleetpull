@@ -17,6 +17,7 @@ from fleetpull.network.contract.outcome import ClassifiedResponse
 from fleetpull.network.contract.pagination import PageAdvance, PaginationStrategy
 from fleetpull.network.contract.request import (
     HttpMethod,
+    JsonObject,
     JsonScalar,
     JsonValue,
     RequestSpec,
@@ -28,6 +29,7 @@ __all__: list[str] = [
     'AuthStrategy',
     'ClassifiedResponse',
     'HttpMethod',
+    'JsonObject',
     'JsonScalar',
     'JsonValue',
     'PageAdvance',
