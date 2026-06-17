@@ -202,7 +202,7 @@ file), never within one.
 `user_version`. A forward-only migration runner (`state/migrations.py`) brings a
 database to head at startup, after `initialize`, applying each step's DDL and its
 version bump in one atomic transaction; a database at a version newer than the
-running code is refused. Today head is v1: the cursors table.
+running code is refused. Today head is v1: the cursors and runs tables.
 
 **Cursor persistence (the cursor store, `state/cursors.py`).** The store
 translates between the `IncrementalCursor` union (§4) and `cursors`-table rows; it
@@ -245,7 +245,36 @@ resume is driven by coverage, not by a synthesized cursor: (1) the data watermar
 from the run ledger / work-units (max successful window-end) — a backfill chunk
 that completes empty is still completed, so this never re-scans empty history every
 run; else (3) the configured `default_start_date`. The `cursors` table only ever
-holds (1). Arm (2) lands with the run ledger.
+holds (1). Arm (2) is implemented by the run ledger's `coverage_frontier` (below).
+
+**Run ledger (`state/run_ledger.py`).** One row per run — one fetch of one
+(provider, endpoint) over one window (watermark arm) or version range (feed
+arm). A sync invocation produces many runs; incremental and backfill-chunk
+fetches alike record a run, so the run ledger is the single coverage source when
+work-units land — work-units add claim/lease/resume mechanics but each unit's
+execution still records a run, so no second coverage query is needed. Lifecycle
+is two-phase: `start_run` inserts a `running` row (timestamped from the injected
+`Clock`, one range arm populated); `complete_run` closes it `succeeded` with the
+row count (and, for a feed run, the end `toVersion`); `fail_run` closes it
+`failed` with an error detail. The range is polymorphic, mirroring the cursor
+union: a run carries `window_start`/`window_end` or `from_version`/`to_version`,
+never both. That invariant — plus a non-negative row count and a well-ordered
+window — is enforced both in the `RunLedger` API and by CHECK constraints on the
+table, so neither a cross-arm write nor a malformed window can persist.
+
+**Coverage frontier — resume arm (2).** `coverage_frontier(provider, endpoint)`
+returns `max(window_end)` over that endpoint's `succeeded` runs, or `None`. This
+is the implementation of resume arm (2) recorded above: a backfill chunk that
+completed empty is still `succeeded`, so its window is counted and the history is
+never re-scanned. The frontier is watermark-only — feed endpoints always hold a
+committed cursor and never reach this arm. A `window_end` that fails to parse is
+state-store corruption and raises `ConfigurationError`, consistent with the other
+§5 stances.
+
+**Stale `running` rows are diagnostic.** A run whose process crashed leaves a
+`running` row; nothing depends on it (the frontier filters `succeeded`, and
+resume correctness rests on the cursor and, later, work-units). Reconciling or
+reaping stale `running` rows is deferred.
 
 ---
 
@@ -733,8 +762,9 @@ fleetpull/
   storage/         # Polars merge/write: delete-by-window + append; single vs partitioned
   state/           # SQLite operational state (§5)
     database.py    # StateDatabase shell + DB primitives (connect, verify, WAL)
-                   #   (substrate; schema/tables land in later prompts)
-    migrations.py  # schema migration runner (user_version); v1 = cursors table
+    migrations.py  # forward-only migration runner (user_version); v1 = cursors + runs tables
+    cursors.py     # CursorStore + CursorKind: IncrementalCursor <-> cursors rows
+    run_ledger.py  # RunLedger + RunStatus: per-run records + the coverage frontier
   orchestrator/    # sync planner: builds work units, per-provider executors, per-endpoint writer threads
   cli.py           # fetch, sync
 ```

@@ -19,8 +19,9 @@ than this code's head is refused — the code is older than the file and cannot
 know the schema.
 
 This module owns schema evolution only; reading and writing the rows of any table
-(the ``cursors`` table created here, the run ledger, work units) belongs to the
-store layers built on top. Today the head is version 1: the ``cursors`` table.
+(the ``cursors`` and ``runs`` tables created here, work units later) belongs to
+the store layers built on top. Today the head is version 1: the ``cursors`` and
+``runs`` tables.
 """
 
 import logging
@@ -58,6 +59,49 @@ _CURSORS_TABLE_DDL: Final[str] = """
     ) STRICT
 """
 
+# The runs table (joins schema v1): one row per fetch of one (provider, endpoint)
+# over one window (the watermark arm) or version range (the feed arm) — the
+# operational record the run ledger reads and writes (DESIGN §5). ``run_id`` is the
+# rowid alias, auto-assigned by the INSERT. The range columns, ``row_count``,
+# ``ended_at``, and ``error_detail`` are nullable because a two-phase run fills them
+# across its lifecycle: one range arm at start, ``row_count`` (and a feed run's
+# ``to_version``) at completion, ``error_detail`` only on failure. Three CHECKs are
+# the DB-layer backstop behind the RunLedger API guards — exactly one range arm
+# (with ``to_version`` admissible only on a feed run, so a watermark row carrying
+# one is impossible), a non-negative ``row_count``, and a window ordered
+# ``window_start < window_end``. The window bounds compare lexically because
+# ``to_iso8601`` emits a fixed-width, zero-padded, Z-suffixed form, making the TEXT
+# comparison the chronological one — the same property ``coverage_frontier``'s
+# ``max()`` relies on; do not loosen the codec format without revisiting both.
+# STRICT enforces the declared column types.
+_RUNS_TABLE_DDL: Final[str] = """
+    CREATE TABLE runs (
+        run_id        INTEGER PRIMARY KEY,
+        provider      TEXT NOT NULL,
+        endpoint      TEXT NOT NULL,
+        status        TEXT NOT NULL CHECK (
+            status IN ('running', 'succeeded', 'failed')
+        ),
+        window_start  TEXT,
+        window_end    TEXT,
+        from_version  TEXT,
+        to_version    TEXT,
+        row_count     INTEGER,
+        started_at    TEXT NOT NULL,
+        ended_at      TEXT,
+        error_detail  TEXT,
+        CHECK (
+            (window_start IS NOT NULL AND window_end IS NOT NULL
+                 AND from_version IS NULL AND to_version IS NULL)
+            OR (from_version IS NOT NULL
+                 AND window_start IS NULL AND window_end IS NULL)
+        ),
+        CHECK (row_count IS NULL OR row_count >= 0),
+        CHECK (window_start IS NULL OR window_end IS NULL
+                 OR window_start < window_end)
+    ) STRICT
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class _Migration:
@@ -77,7 +121,7 @@ class _Migration:
 
 def _create_cursors_table(connection: sqlite3.Connection) -> None:
     """
-    Apply schema v1: create the ``cursors`` table.
+    Create the ``cursors`` table.
 
     Args:
         connection: An open connection, inside the migration's transaction.
@@ -88,10 +132,41 @@ def _create_cursors_table(connection: sqlite3.Connection) -> None:
     connection.execute(_CURSORS_TABLE_DDL)
 
 
+def _create_runs_table(connection: sqlite3.Connection) -> None:
+    """
+    Create the ``runs`` table.
+
+    Args:
+        connection: An open connection, inside the migration's transaction.
+
+    Side Effects:
+        Executes ``CREATE TABLE`` on ``connection``.
+    """
+    connection.execute(_RUNS_TABLE_DDL)
+
+
+def _create_initial_schema(connection: sqlite3.Connection) -> None:
+    """
+    Apply schema v1: create the initial tables, ``cursors`` and ``runs``.
+
+    Both tables form the v1 head. No state database has applied an earlier
+    cursors-only schema (none exists anywhere), so the ``runs`` table joins v1
+    here rather than arriving as a separate version bump.
+
+    Args:
+        connection: An open connection, inside the migration's transaction.
+
+    Side Effects:
+        Executes both tables' ``CREATE TABLE`` statements on ``connection``.
+    """
+    _create_cursors_table(connection)
+    _create_runs_table(connection)
+
+
 # Ordered by ascending version; the last entry's version is the head the schema
-# is migrated up to. New tables (the run ledger, work units) append new steps.
+# is migrated up to. A future table (work units) appends a new step.
 _MIGRATIONS: Final[tuple[_Migration, ...]] = (
-    _Migration(version=1, apply=_create_cursors_table),
+    _Migration(version=1, apply=_create_initial_schema),
 )
 
 
