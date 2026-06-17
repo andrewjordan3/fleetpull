@@ -19,9 +19,9 @@ than this code's head is refused — the code is older than the file and cannot
 know the schema.
 
 This module owns schema evolution only; reading and writing the rows of any table
-(the ``cursors`` and ``runs`` tables created here, work units later) belongs to
-the store layers built on top. Today the head is version 1: the ``cursors`` and
-``runs`` tables.
+(the ``cursors``, ``runs``, and ``work_units`` tables created here) belongs to
+the store layers built on top. Today the head is version 1: the ``cursors``,
+``runs``, and ``work_units`` tables.
 """
 
 import logging
@@ -102,6 +102,65 @@ _RUNS_TABLE_DDL: Final[str] = """
     ) STRICT
 """
 
+# The work_units table (joins schema v1): the backfill claim queue (DESIGN §5). One
+# row per unit — a date chunk (``chunk_start``/``chunk_end``) of one
+# (provider, endpoint), optionally with an opaque ``partition_key`` (a vehicle id,
+# a driver id, ...; NULL for an unpartitioned endpoint, which the store never
+# interprets). ``unit_id`` is the rowid alias. ``status`` defaults to ``pending``
+# and ``attempt_count`` to 0, so enqueue inserts only the identity + chunk columns;
+# ``claimed_at``/``finished_at``/``last_error`` fill across the claim lifecycle. The
+# CHECKs are the DB-layer backstop behind the WorkUnitStore guards: a closed status
+# set, a non-negative ``attempt_count``, and a chunk ordered
+# ``chunk_start < chunk_end`` (lexical = chronological under ``to_iso8601``'s
+# fixed-width Z-form). STRICT enforces the declared types.
+_WORK_UNITS_TABLE_DDL: Final[str] = """
+    CREATE TABLE work_units (
+        unit_id       INTEGER PRIMARY KEY,
+        provider      TEXT NOT NULL,
+        endpoint      TEXT NOT NULL,
+        partition_key TEXT,
+        chunk_start   TEXT NOT NULL,
+        chunk_end     TEXT NOT NULL,
+        status        TEXT NOT NULL DEFAULT 'pending' CHECK (
+            status IN ('pending', 'claimed', 'done', 'failed')
+        ),
+        attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+        claimed_at    TEXT,
+        finished_at   TEXT,
+        last_error    TEXT,
+        CHECK (chunk_start < chunk_end)
+    ) STRICT
+"""
+
+# Three indexes back the queue (all verified in-container). The two PARTIAL UNIQUE
+# indexes give idempotent enqueue (``INSERT OR IGNORE`` on the natural key): SQLite
+# treats NULL as distinct in a unique index, so one index covers the
+# ``partition_key IS NOT NULL`` arm and a second covers the NULL arm — deduping
+# unpartitioned units that a single ``UNIQUE(...)`` would miss. The natural key is
+# the full window (``chunk_start`` AND ``chunk_end``), so a same-start/different-end
+# unit is distinct — overlap/plan-consistency is the caller's concern, not the
+# store's. The third index is the PARTIAL claim index: ``(provider, endpoint,
+# unit_id)`` filtered to claimable statuses lets ``claim_next``'s ``ORDER BY
+# unit_id`` run sort-free (completed units leave the index), ~2x faster than a sort
+# over the full table at 20k units.
+_WORK_UNITS_INDEX_DDLS: Final[tuple[str, ...]] = (
+    """
+    CREATE UNIQUE INDEX ux_work_units_partitioned
+        ON work_units (provider, endpoint, partition_key, chunk_start, chunk_end)
+        WHERE partition_key IS NOT NULL
+    """,
+    """
+    CREATE UNIQUE INDEX ux_work_units_unpartitioned
+        ON work_units (provider, endpoint, chunk_start, chunk_end)
+        WHERE partition_key IS NULL
+    """,
+    """
+    CREATE INDEX ix_work_units_claimable
+        ON work_units (provider, endpoint, unit_id)
+        WHERE status IN ('pending', 'failed')
+    """,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class _Migration:
@@ -145,26 +204,44 @@ def _create_runs_table(connection: sqlite3.Connection) -> None:
     connection.execute(_RUNS_TABLE_DDL)
 
 
-def _create_initial_schema(connection: sqlite3.Connection) -> None:
+def _create_work_units_table(connection: sqlite3.Connection) -> None:
     """
-    Apply schema v1: create the initial tables, ``cursors`` and ``runs``.
-
-    Both tables form the v1 head. No state database has applied an earlier
-    cursors-only schema (none exists anywhere), so the ``runs`` table joins v1
-    here rather than arriving as a separate version bump.
+    Create the ``work_units`` table and its three indexes.
 
     Args:
         connection: An open connection, inside the migration's transaction.
 
     Side Effects:
-        Executes both tables' ``CREATE TABLE`` statements on ``connection``.
+        Executes one ``CREATE TABLE`` and three ``CREATE INDEX`` statements on
+        ``connection``.
+    """
+    connection.execute(_WORK_UNITS_TABLE_DDL)
+    for index_ddl in _WORK_UNITS_INDEX_DDLS:
+        connection.execute(index_ddl)
+
+
+def _create_initial_schema(connection: sqlite3.Connection) -> None:
+    """
+    Apply schema v1: create the initial tables — ``cursors``, ``runs``, ``work_units``.
+
+    All three tables form the v1 head. No state database has applied an earlier
+    schema (none exists anywhere), so each joins v1 here rather than arriving as a
+    separate version bump.
+
+    Args:
+        connection: An open connection, inside the migration's transaction.
+
+    Side Effects:
+        Executes each table's ``CREATE TABLE`` (and the work-units indexes) on
+        ``connection``.
     """
     _create_cursors_table(connection)
     _create_runs_table(connection)
+    _create_work_units_table(connection)
 
 
 # Ordered by ascending version; the last entry's version is the head the schema
-# is migrated up to. A future table (work units) appends a new step.
+# is migrated up to. A future schema change appends a new step.
 _MIGRATIONS: Final[tuple[_Migration, ...]] = (
     _Migration(version=1, apply=_create_initial_schema),
 )
