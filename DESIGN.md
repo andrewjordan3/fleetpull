@@ -824,11 +824,13 @@ fleetpull/
   incremental/     # per-endpoint resume cursors; pure dependency-free leaf (§4)
     cursor.py      # DateWatermark, FeedToken, IncrementalCursor tagged union
   endpoints/       # per-endpoint bindings (the endpoints layer, below) — new fleetpull code
-    base.py        # EndpointDefinition: a frozen dataclass composing one strategy per axis
-                   #   (spec-builder, pagination, response model + items-path, quota_scope,
-                   #   incremental kind + lookback, storage kind + partition dim) + the
-                   #   SpecBuilder Protocol. No auth here — auth is per-provider
-                   #   (network ProviderProfile), resolved at the composition root.
+    base.py        # EndpointDefinition: a frozen, kw-only dataclass generic over its response
+                   #   model, composing one impl per axis (spec_builder, pagination,
+                   #   response_model, record_extractor, quota_scope, incremental mode,
+                   #   storage_kind) + the SpecBuilder and RecordExtractor Protocols,
+                   #   TopLevelListExtractor, the IncrementalMode union (WatermarkMode /
+                   #   FeedMode), ResumeValue, and StorageKind. No auth here — auth is
+                   #   per-provider (network ProviderProfile), resolved at the composition root.
     motive.py      # Motive EndpointDefinitions + their spec-builders
     samsara.py
     geotab.py      # net-new; follows the GeoTab removals probe
@@ -882,20 +884,23 @@ endpoint. An `EndpointDefinition` is a declaration: it composes one
 implementation per behavioral axis and states the per-endpoint facts the generic
 machinery reads. It executes nothing itself except its spec-builder.
 
-**`EndpointDefinition` is a single concrete frozen dataclass; the variation lives
-in the strategies it holds.** Its fields are data — provider and name; the
-`SpecBuilder`; the `PaginationStrategy`; the response model and the items-path at
-which records sit in the envelope; the `quota_scope`; the incremental kind and
-its lookback; the storage kind and, when partitioned, its partition dimension. It
-is the single source of truth per endpoint, and each tier reads only its slice —
-the client reads spec-builder, pagination, and quota; records reads model and
-items-path; the caller reads the incremental and storage kinds. The one excluded
-concern is the records overrides (`schema_overrides` / `coercion_overrides`),
-which are the §9 records-layer contract and attach when that layer is built.
+**`EndpointDefinition` is a single concrete frozen dataclass, generic over its
+response model; the variation lives in the strategies it holds.** Its fields are
+data — provider and name; the `SpecBuilder`; the `PaginationStrategy`; the
+per-record response model and the `RecordExtractor` that pulls records from the
+envelope; the `quota_scope`; the `IncrementalMode` (a `WatermarkMode` carrying its
+lookback, or a marker `FeedMode`); and the storage kind. Constructed keyword-only,
+it is the single source of truth per endpoint, and each tier reads only its slice
+— the client reads spec-builder, pagination, and quota; the caller applies the
+record-extractor and reads the incremental mode and storage kind; records reads
+the model. The excluded concerns are the records overrides (`schema_overrides` /
+`coercion_overrides`, §9) and the provider-specific event-time column the watermark
+and date-partitioning read (§3/§5) — all records/state/storage contract, attaching
+when those layers are built.
 
 **The spec-builder is the only genuine per-endpoint behavior.** A `SpecBuilder`
 is a Protocol with one method, `build_spec(resume, path_values) -> RequestSpec`,
-where `resume` is `DateWindow | FeedToken | None` (§4) and `path_values` carries
+where `resume` is a `ResumeValue` (`DateWindow | FeedToken | None`, §4) and `path_values` carries
 a partition key for URL-path fan-out (for example, a per-vehicle locations
 endpoint). It builds only the first request — URL, base params, and the resume
 injection; pagination produces every request after it.
@@ -940,8 +945,9 @@ endpoint's `PaginationStrategy`, the provider's `ProviderProfile`, and the
 `quota_scope` to the client. The client streams
 `FetchedPage(envelope, durable_progress)` — `AuthStrategy.prepare` per attempt,
 the limiter consulted per attempt by `quota_scope`, `ResponseClassifier` per
-response, `PaginationStrategy.advance` per page. The caller plucks records at the
-items-path, validates them into the response model, hands them to records for
+response, `PaginationStrategy.advance` per page. The caller applies the endpoint's
+`RecordExtractor` to pull records from each envelope, validates them into the
+response model, hands them to records for
 generic flattening to Polars, to storage for the merge, and to state for the
 advance (cursor after parquet, §5). No layer below the caller holds endpoint
 knowledge.

@@ -1,6 +1,25 @@
-"""Endpoint definitions, one module per provider.
+"""The endpoints-layer face: the ``EndpointDefinition`` binding and the types it composes."""
 
-Intentionally empty; modules are added as providers are implemented.
-"""
+from fleetpull.endpoints.base import (
+    EndpointDefinition,
+    FeedMode,
+    IncrementalMode,
+    RecordExtractor,
+    ResumeValue,
+    SpecBuilder,
+    StorageKind,
+    TopLevelListExtractor,
+    WatermarkMode,
+)
 
-__all__: list[str] = []
+__all__: list[str] = [
+    'EndpointDefinition',
+    'FeedMode',
+    'IncrementalMode',
+    'RecordExtractor',
+    'ResumeValue',
+    'SpecBuilder',
+    'StorageKind',
+    'TopLevelListExtractor',
+    'WatermarkMode',
+]
