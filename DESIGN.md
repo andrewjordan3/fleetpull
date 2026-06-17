@@ -104,19 +104,23 @@ cursor.
 **Resume value vs. cursor — and the pure function between them.** The stored
 cursor (`DateWatermark` / `FeedToken`) is not what a request is built from; the
 resume value is. For a watermark endpoint that value is a `DateWindow` — the
-start–end window the spec-builder fetches — which lives in `incremental/` beside
-the carriers, so an endpoint names it without importing `state/`. For a feed
-endpoint the value is the `FeedToken` itself. The mapping is one pure function,
-`compute_resume(cursor, lookback, now) -> DateWindow | FeedToken | None`: a
-`DateWatermark` becomes `DateWindow(watermark - lookback, now)`, a `FeedToken` is
-returned unchanged, and `None` is returned unchanged. It is a pure function over
-the cursor union with no per-endpoint variation, so it is a function in
-`incremental/` — not a method on the endpoint definition and not a strategy. A
-returned `None` means only "no committed cursor"; the caller then resolves the
-start through the resume precedence below, so `compute_resume` is precedence arm
-(1) expressed as code, with arms (2)–(3) remaining the caller's. (The window's
-boundary convention — half-open vs. closed — is settled when `DateWindow` is
-built, not here.)
+half-open `[start, end)` window the spec-builder fetches, a frozen carrier in
+`incremental/` beside the cursors, so an endpoint names it without importing
+`state/`. For a feed endpoint the resume value is the stored `FeedToken` itself,
+used directly — no transformation, so the feed arm needs no function. The
+watermark arm does: `compute_resume(watermark, lookback, now) -> DateWindow | None`
+is a pure function in `incremental/` mapping a `DateWatermark` to
+`DateWindow(watermark - lookback, now)` and `None` to `None`. It is watermark-only
+by design — the feed arm has neither a lookback nor a window to compute — and pure
+(no clock; `now` is injected), so it is a function, not a method on the endpoint
+definition and not a strategy. A returned `None` means only "no committed
+watermark"; the caller then resolves the start through the resume precedence below,
+so `compute_resume` is precedence arm (1) as code, with arms (2)–(3) remaining the
+caller's. The `DateWindow` carrier enforces its one structural invariant —
+`start < end`, well-ordered — and defers UTC validity to the codec boundary exactly
+as `DateWatermark` does. The half-open convention is what lets the delete-by-window
+predicate and the start-anchored append-filter share one boundary rule and never
+double-count at a window edge.
 
 Each endpoint definition declares which strategy it uses. This is the single
 biggest architectural improvement over fleet-telemetry-hub, whose
@@ -124,8 +128,11 @@ biggest architectural improvement over fleet-telemetry-hub, whose
 
 **Merge semantics (watermark endpoints): delete-by-window, then append.**
 
-1. Fetch window `[start, end]` from the API.
-2. In existing storage, delete every row whose event timestamp falls inside `[start, end]`.
+1. Fetch the window `[start, end)` from the API — half-open is the canonical internal form
+   (the `DateWindow` carrier), which the spec-builder maps to the provider's own request
+   convention.
+2. In existing storage, delete every row whose event timestamp falls in `[start, end)` —
+   start inclusive, end exclusive.
 3. Append the fresh fetch.
 
 The window is the unit of truth: whatever the API returns for a window
