@@ -834,8 +834,9 @@ fleetpull/
     motive.py      # Motive EndpointDefinitions + their spec-builders
     samsara.py
     geotab.py      # net-new; follows the GeoTab removals probe
+  model_contract/  # pure dependency-free leaf: the response-model config policy
+    response.py    # ResponseModel config-policy base (frozen, extra=ignore, populate_by_name, strip)
   models/          # pure API mirrors per provider (Motive/Samsara ported from fleet-telemetry-hub)
-    base.py        # ResponseModel config-policy base (frozen, extra=ignore, populate_by_name, strip)
     motive.py
     samsara.py
     geotab.py      # net-new
@@ -930,7 +931,7 @@ polymorphism into config.
 
 **Models and bindings are separate packages.** `models/` holds pure API mirrors,
 one module per provider (Motive and Samsara lifted from fleet-telemetry-hub,
-GeoTab net-new) over a shared config-policy base in `models/base.py`;
+GeoTab net-new) over a shared config-policy base in `model_contract/response.py`;
 `endpoints/` holds the bindings, one module per provider, plus
 `endpoints/base.py`. The split keeps the port a clean block-lift, keeps the
 "models are pure mirrors" invariant crisp, and lets records import the model

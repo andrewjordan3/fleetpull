@@ -26,7 +26,7 @@ from typing import Protocol
 
 from fleetpull.exceptions import ProviderResponseError
 from fleetpull.incremental import DateWindow, FeedToken
-from fleetpull.models import ResponseModel
+from fleetpull.model_contract import ResponseModel
 from fleetpull.network.contract import (
     JsonObject,
     JsonValue,

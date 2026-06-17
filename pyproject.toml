@@ -280,5 +280,5 @@ type = "layers"
 layers = [
     "fleetpull.endpoints",
     "fleetpull.models | fleetpull.network.contract | fleetpull.incremental",
-    "fleetpull.vocabulary",
+    "fleetpull.vocabulary | fleetpull.model_contract",
 ]
