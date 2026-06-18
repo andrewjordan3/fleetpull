@@ -13,14 +13,12 @@ from fleetpull.endpoints.base import (
     SnapshotMode,
     StorageKind,
     SyncMode,
-    TopLevelListExtractor,
     WatermarkMode,
 )
-from fleetpull.exceptions import ProviderResponseError
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.contract import (
+    DecodedPage,
     HttpMethod,
-    JsonObject,
     JsonValue,
     PageAdvance,
     RequestSpec,
@@ -37,21 +35,16 @@ class _StubSpecBuilder:
         return RequestSpec(method=HttpMethod.GET, url='https://example.test/v1/items')
 
 
-class _StubPagination:
-    """A PaginationStrategy double that completes after the first page."""
+class _StubPageDecoder:
+    """A PageDecoder double that returns one empty page."""
 
     def first_request(self, spec: RequestSpec) -> RequestSpec:
         return spec
 
-    def advance(self, sent: RequestSpec, envelope: JsonValue) -> PageAdvance:
-        return PageAdvance(next_spec=None, durable_progress=None)
-
-
-class _StubExtractor:
-    """A RecordExtractor double returning no records."""
-
-    def extract(self, envelope: JsonValue) -> list[JsonObject]:
-        return []
+    def decode_page(self, sent: RequestSpec, envelope: JsonValue) -> DecodedPage:
+        return DecodedPage(
+            records=[], advance=PageAdvance(next_spec=None, durable_progress=None)
+        )
 
 
 class _StubModel(ResponseModel):
@@ -64,45 +57,12 @@ def _make_endpoint(sync_mode: SyncMode) -> EndpointDefinition[_StubModel]:
         provider=Provider.SAMSARA,
         name='trips',
         spec_builder=_StubSpecBuilder(),
-        pagination=_StubPagination(),
+        page_decoder=_StubPageDecoder(),
         response_model=_StubModel,
-        record_extractor=_StubExtractor(),
         quota_scope=QuotaScope.SAMSARA,
         storage_kind=StorageKind.SINGLE,
         sync_mode=sync_mode,
     )
-
-
-class TestTopLevelListExtractor:
-    def test_returns_the_record_list(self) -> None:
-        extractor = TopLevelListExtractor(key='data')
-        envelope: JsonValue = {'data': [{'id': 1}, {'id': 2}]}
-        expected: list[JsonObject] = [{'id': 1}, {'id': 2}]
-        assert extractor.extract(envelope) == expected
-
-    def test_rejects_a_non_object_envelope(self) -> None:
-        extractor = TopLevelListExtractor(key='data')
-        envelope: JsonValue = ['not', 'an', 'object']
-        with pytest.raises(ProviderResponseError, match='JSON object envelope'):
-            extractor.extract(envelope)
-
-    def test_rejects_a_missing_key(self) -> None:
-        extractor = TopLevelListExtractor(key='data')
-        envelope: JsonValue = {'other': []}
-        with pytest.raises(ProviderResponseError, match='missing the record key'):
-            extractor.extract(envelope)
-
-    def test_rejects_a_non_list_value(self) -> None:
-        extractor = TopLevelListExtractor(key='data')
-        envelope: JsonValue = {'data': {'not': 'a list'}}
-        with pytest.raises(ProviderResponseError, match='is not a list'):
-            extractor.extract(envelope)
-
-    def test_rejects_a_non_object_element(self) -> None:
-        extractor = TopLevelListExtractor(key='data')
-        envelope: JsonValue = {'data': [{'id': 1}, 'x']}
-        with pytest.raises(ProviderResponseError, match='is not a JSON object'):
-            extractor.extract(envelope)
 
 
 class TestEndpointDefinition:

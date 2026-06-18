@@ -4,7 +4,7 @@ No real network and no real time anywhere. ``httpx.MockTransport`` (injected by
 monkeypatching ``httpx.Client``, the same seam the authenticator tests use)
 serves every response; a recording ``Sleeper`` double captures backoff without
 waiting; a ``FixedFractionGenerator`` makes every jittered delay exact
-arithmetic. Auth, classifier, and pagination are small test doubles.
+arithmetic. Auth, classifier, and page decoder are small test doubles.
 
 The limiter registry is a recording fake, NOT a real ``RateLimiterRegistry``:
 the real limiter's 429 penalty pauses on a ``threading.Condition`` timed in
@@ -36,7 +36,9 @@ from fleetpull.network.client import (
 )
 from fleetpull.network.contract import (
     ClassifiedResponse,
+    DecodedPage,
     HttpMethod,
+    JsonObject,
     JsonValue,
     PageAdvance,
     RequestSpec,
@@ -170,45 +172,57 @@ class StubClassifier(ResponseClassifier):
         return self._verdicts[index]
 
 
-class SinglePageStrategy:
-    """PaginationStrategy double that yields exactly one page."""
+class StubOnePageDecoder:
+    """PageDecoder double that yields exactly one page of records."""
 
     def __init__(self) -> None:
         self.first_request_calls = 0
-        self.advance_calls = 0
+        self.decode_calls = 0
 
     def first_request(self, spec: RequestSpec) -> RequestSpec:
         self.first_request_calls += 1
         return spec
 
-    def advance(self, sent: RequestSpec, envelope: JsonValue) -> PageAdvance:
-        self.advance_calls += 1
-        return PageAdvance(next_spec=None, durable_progress='end')
+    def decode_page(self, sent: RequestSpec, envelope: JsonValue) -> DecodedPage:
+        self.decode_calls += 1
+        return DecodedPage(
+            records=[{'id': 1}],
+            advance=PageAdvance(next_spec=None, durable_progress='end'),
+        )
 
 
-class MultiPageStrategy:
-    """PaginationStrategy double walking ``page_count`` pages then stopping.
+class StubMultiPageDecoder:
+    """PageDecoder double walking ``page_count`` pages then stopping.
 
-    Each ``advance`` emits a durable cursor (``v1``, ``v2``, …) including the
-    terminal page, and the next spec until the last page returns ``None``.
+    Each ``decode_page`` emits a durable cursor (``v1``, ``v2``, …) including
+    the terminal page, and a next spec until the last page returns ``None``.
     """
 
     def __init__(self, page_count: int) -> None:
         self._page_count = page_count
         self.first_request_calls = 0
-        self.advance_calls = 0
+        self.decode_calls = 0
 
     def first_request(self, spec: RequestSpec) -> RequestSpec:
         self.first_request_calls += 1
         return spec
 
-    def advance(self, sent: RequestSpec, envelope: JsonValue) -> PageAdvance:
-        self.advance_calls += 1
-        durable_progress = f'v{self.advance_calls}'
-        if self.advance_calls < self._page_count:
-            next_spec = sent.with_merged_params({'page': str(self.advance_calls)})
-            return PageAdvance(next_spec=next_spec, durable_progress=durable_progress)
-        return PageAdvance(next_spec=None, durable_progress=durable_progress)
+    def decode_page(self, sent: RequestSpec, envelope: JsonValue) -> DecodedPage:
+        self.decode_calls += 1
+        durable_progress = f'v{self.decode_calls}'
+        records: list[JsonObject] = [{'id': self.decode_calls}]
+        if self.decode_calls < self._page_count:
+            next_spec = sent.with_merged_params({'page': str(self.decode_calls)})
+            return DecodedPage(
+                records=records,
+                advance=PageAdvance(
+                    next_spec=next_spec, durable_progress=durable_progress
+                ),
+            )
+        return DecodedPage(
+            records=records,
+            advance=PageAdvance(next_spec=None, durable_progress=durable_progress),
+        )
 
 
 class StubHandler:
@@ -322,16 +336,16 @@ def fatal() -> ClassifiedResponse:
 # Dispatch matrix.
 # --------------------------------------------------------------------------- #
 class TestDispatchMatrix:
-    def test_success_yields_envelope(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_success_yields_records(self, monkeypatch: pytest.MonkeyPatch) -> None:
         registry = RecordingRegistry()
         profile = ProviderProfile(
             auth=StubAuth(), classifier=StubClassifier([success({'data': [1, 2]})])
         )
         runtime = make_runtime(make_retry_config(), RecordingSleeper(), registry)
         with make_client(monkeypatch, StubHandler(), profile, runtime) as client:
-            pages = list(client.fetch_pages(make_spec(), SinglePageStrategy(), SCOPE))
+            pages = list(client.fetch_pages(make_spec(), StubOnePageDecoder(), SCOPE))
 
-        assert pages == [FetchedPage(envelope={'data': [1, 2]}, durable_progress='end')]
+        assert pages == [FetchedPage(records=[{'id': 1}], durable_progress='end')]
         assert registry.limiters[SCOPE].slot_acquisitions == 1
 
     def test_transient_then_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -341,9 +355,9 @@ class TestDispatchMatrix:
         profile = ProviderProfile(auth=StubAuth(), classifier=classifier)
         runtime = make_runtime(make_retry_config(), sleeper, registry)
         with make_client(monkeypatch, StubHandler(), profile, runtime) as client:
-            pages = list(client.fetch_pages(make_spec(), SinglePageStrategy(), SCOPE))
+            pages = list(client.fetch_pages(make_spec(), StubOnePageDecoder(), SCOPE))
 
-        assert [page.envelope for page in pages] == [{'ok': True}]
+        assert [page.records for page in pages] == [[{'id': 1}]]
         assert classifier.classify_calls == 2
         assert registry.limiters[SCOPE].slot_acquisitions == 2
         assert len(sleeper.sleeps) == 1
@@ -362,7 +376,7 @@ class TestDispatchMatrix:
             make_client(monkeypatch, StubHandler(), profile, runtime) as client,
             pytest.raises(RetriesExhaustedError) as exc_info,
         ):
-            list(client.fetch_pages(make_spec(), SinglePageStrategy(), SCOPE))
+            list(client.fetch_pages(make_spec(), StubOnePageDecoder(), SCOPE))
 
         # max_failures=2 retries failures 1,2 and exhausts on the 3rd.
         assert exc_info.value.attempt_count == 3
@@ -377,9 +391,9 @@ class TestDispatchMatrix:
         profile = ProviderProfile(auth=StubAuth(), classifier=classifier)
         runtime = make_runtime(make_retry_config(), sleeper, registry)
         with make_client(monkeypatch, StubHandler(), profile, runtime) as client:
-            pages = list(client.fetch_pages(make_spec(), SinglePageStrategy(), SCOPE))
+            pages = list(client.fetch_pages(make_spec(), StubOnePageDecoder(), SCOPE))
 
-        assert [page.envelope for page in pages] == [{'ok': 1}]
+        assert [page.records for page in pages] == [[{'id': 1}]]
         assert registry.limiters[SCOPE].penalties == [5.0]
         # The limiter, not the client, owns the 429 wait: no local sleep.
         assert sleeper.sleeps == []
@@ -398,7 +412,7 @@ class TestDispatchMatrix:
             make_client(monkeypatch, StubHandler(), profile, runtime) as client,
             pytest.raises(RetriesExhaustedError) as exc_info,
         ):
-            list(client.fetch_pages(make_spec(), SinglePageStrategy(), SCOPE))
+            list(client.fetch_pages(make_spec(), StubOnePageDecoder(), SCOPE))
 
         assert exc_info.value.attempt_count == 3
         assert exc_info.value.category is ResponseCategory.RATE_LIMITED
@@ -414,9 +428,9 @@ class TestDispatchMatrix:
         profile = ProviderProfile(auth=auth, classifier=classifier)
         runtime = make_runtime(make_retry_config(), RecordingSleeper(), registry)
         with make_client(monkeypatch, StubHandler(), profile, runtime) as client:
-            pages = list(client.fetch_pages(make_spec(), SinglePageStrategy(), SCOPE))
+            pages = list(client.fetch_pages(make_spec(), StubOnePageDecoder(), SCOPE))
 
-        assert [page.envelope for page in pages] == [{'ok': 1}]
+        assert [page.records for page in pages] == [[{'id': 1}]]
         assert auth.refresh_calls == 1
         assert auth.prepare_calls == 2  # re-prepared with fresh credentials
 
@@ -433,7 +447,7 @@ class TestDispatchMatrix:
             make_client(monkeypatch, StubHandler(), profile, runtime) as client,
             pytest.raises(AuthenticationError),
         ):
-            list(client.fetch_pages(make_spec(), SinglePageStrategy(), SCOPE))
+            list(client.fetch_pages(make_spec(), StubOnePageDecoder(), SCOPE))
 
         # Second failure short-circuits on the count, never asking to refresh.
         assert auth.refresh_calls == 1
@@ -451,7 +465,7 @@ class TestDispatchMatrix:
             make_client(monkeypatch, StubHandler(), profile, runtime) as client,
             pytest.raises(AuthenticationError) as exc_info,
         ):
-            list(client.fetch_pages(make_spec(), SinglePageStrategy(), SCOPE))
+            list(client.fetch_pages(make_spec(), StubOnePageDecoder(), SCOPE))
 
         assert exc_info.value.detail == '401'
         assert auth.prepare_calls == 1  # no retry
@@ -466,7 +480,7 @@ class TestDispatchMatrix:
             make_client(monkeypatch, StubHandler(), profile, runtime) as client,
             pytest.raises(ProviderResponseError) as exc_info,
         ):
-            list(client.fetch_pages(make_spec(), SinglePageStrategy(), SCOPE))
+            list(client.fetch_pages(make_spec(), StubOnePageDecoder(), SCOPE))
 
         assert exc_info.value.detail == '400 bad request'
 
@@ -493,12 +507,12 @@ class TestResetOnSuccess:
             make_retry_config(transient_max_failures=1), sleeper, registry
         )
         with make_client(monkeypatch, StubHandler(), profile, runtime) as client:
-            pages = client.fetch_pages(make_spec(), MultiPageStrategy(2), SCOPE)
+            pages = client.fetch_pages(make_spec(), StubMultiPageDecoder(2), SCOPE)
             first_page = next(pages)
             with pytest.raises(RetriesExhaustedError) as exc_info:
                 next(pages)
 
-        assert first_page.envelope == {'page': 0}
+        assert first_page.records == [{'id': 1}]
         assert exc_info.value.attempt_count == 2  # page 1 used a full fresh budget
         assert classifier.classify_calls == 4  # 2 on page 0, 2 on page 1
         assert len(sleeper.sleeps) == 2  # one retry sleep per page
@@ -522,9 +536,9 @@ class TestParsedBodyCompletion:
         runtime = make_runtime(make_retry_config(), RecordingSleeper(), registry)
         handler = StubHandler(body_text='THIS IS NOT JSON')
         with make_client(monkeypatch, handler, profile, runtime) as client:
-            pages = list(client.fetch_pages(make_spec(), SinglePageStrategy(), SCOPE))
+            pages = list(client.fetch_pages(make_spec(), StubOnePageDecoder(), SCOPE))
 
-        assert pages[0].envelope == {'from': 'classifier'}
+        assert pages[0].records == [{'id': 1}]
 
     def test_client_parses_body_when_classifier_left_it_none(
         self, monkeypatch: pytest.MonkeyPatch
@@ -536,9 +550,9 @@ class TestParsedBodyCompletion:
         runtime = make_runtime(make_retry_config(), RecordingSleeper(), registry)
         handler = StubHandler(body_text='{"parsed": "by_client"}')
         with make_client(monkeypatch, handler, profile, runtime) as client:
-            pages = list(client.fetch_pages(make_spec(), SinglePageStrategy(), SCOPE))
+            pages = list(client.fetch_pages(make_spec(), StubOnePageDecoder(), SCOPE))
 
-        assert pages[0].envelope == {'parsed': 'by_client'}
+        assert pages[0].records == [{'id': 1}]
 
     def test_success_with_no_envelope_raises(
         self, monkeypatch: pytest.MonkeyPatch
@@ -556,7 +570,7 @@ class TestParsedBodyCompletion:
             ) as client,
             pytest.raises(ProviderResponseError, match='no parsed body'),
         ):
-            list(client.fetch_pages(make_spec(), SinglePageStrategy(), SCOPE))
+            list(client.fetch_pages(make_spec(), StubOnePageDecoder(), SCOPE))
 
 
 # --------------------------------------------------------------------------- #
@@ -574,9 +588,9 @@ class TestPrepareOutsideSlot:
         )
         runtime = make_runtime(make_retry_config(), sleeper, registry)
         with make_client(monkeypatch, StubHandler(), profile, runtime) as client:
-            pages = list(client.fetch_pages(make_spec(), SinglePageStrategy(), SCOPE))
+            pages = list(client.fetch_pages(make_spec(), StubOnePageDecoder(), SCOPE))
 
-        assert [page.envelope for page in pages] == [{'ok': 1}]
+        assert [page.records for page in pages] == [[{'id': 1}]]
         assert auth.prepare_calls == 2  # failed prepare re-run on retry
         assert len(sleeper.sleeps) == 1  # transient backoff slept once
         # The failed prepare consumed no data-scope token; only the live send did.
@@ -593,7 +607,7 @@ class TestPrepareOutsideSlot:
             make_client(monkeypatch, StubHandler(), profile, runtime) as client,
             pytest.raises(AuthenticationError) as exc_info,
         ):
-            list(client.fetch_pages(make_spec(), SinglePageStrategy(), SCOPE))
+            list(client.fetch_pages(make_spec(), StubOnePageDecoder(), SCOPE))
 
         assert exc_info.value.detail == 'revoked'
         assert auth.prepare_calls == 1  # not retried
@@ -615,9 +629,9 @@ class TestSendTransportError:
         runtime = make_runtime(make_retry_config(), sleeper, registry)
         handler = StubHandler(errors_before_success=[httpx.ReadError('reset')])
         with make_client(monkeypatch, handler, profile, runtime) as client:
-            pages = list(client.fetch_pages(make_spec(), SinglePageStrategy(), SCOPE))
+            pages = list(client.fetch_pages(make_spec(), StubOnePageDecoder(), SCOPE))
 
-        assert [page.envelope for page in pages] == [{'ok': 1}]
+        assert [page.records for page in pages] == [[{'id': 1}]]
         assert len(sleeper.sleeps) == 1
         # A failed send still consumed its token (it entered the slot); both
         # attempts therefore took a slot.
@@ -636,7 +650,7 @@ class TestRateLimitPenalty:
         profile = ProviderProfile(auth=StubAuth(), classifier=classifier)
         runtime = make_runtime(make_retry_config(), RecordingSleeper(), registry)
         with make_client(monkeypatch, StubHandler(), profile, runtime) as client:
-            list(client.fetch_pages(make_spec(), SinglePageStrategy(), SCOPE))
+            list(client.fetch_pages(make_spec(), StubOnePageDecoder(), SCOPE))
 
         assert registry.limiters[SCOPE].penalties == [7.5]
 
@@ -656,7 +670,7 @@ class TestRateLimitPenalty:
             make_client(monkeypatch, StubHandler(), profile, runtime) as client,
             caplog.at_level(logging.WARNING),
         ):
-            list(client.fetch_pages(make_spec(), SinglePageStrategy(), SCOPE))
+            list(client.fetch_pages(make_spec(), StubOnePageDecoder(), SCOPE))
 
         assert registry.limiters[SCOPE].penalties == [60.0]
         assert 'fallback penalty' in caplog.text
@@ -670,7 +684,7 @@ class TestPagination:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         registry = RecordingRegistry()
-        strategy = SinglePageStrategy()
+        strategy = StubOnePageDecoder()
         profile = ProviderProfile(
             auth=StubAuth(), classifier=StubClassifier([success({})])
         )
@@ -680,13 +694,13 @@ class TestPagination:
 
         assert len(pages) == 1
         assert pages[0].durable_progress == 'end'
-        assert strategy.advance_calls == 1
+        assert strategy.decode_calls == 1
 
     def test_multi_page_walks_every_page_and_carries_terminal_cursor(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         registry = RecordingRegistry()
-        strategy = MultiPageStrategy(3)
+        strategy = StubMultiPageDecoder(3)
         classifier = StubClassifier(
             [success({'page': 0}), success({'page': 1}), success({'page': 2})]
         )
@@ -695,15 +709,15 @@ class TestPagination:
         with make_client(monkeypatch, StubHandler(), profile, runtime) as client:
             pages = list(client.fetch_pages(make_spec(), strategy, SCOPE))
 
-        assert [page.envelope for page in pages] == [
-            {'page': 0},
-            {'page': 1},
-            {'page': 2},
+        assert [page.records for page in pages] == [
+            [{'id': 1}],
+            [{'id': 2}],
+            [{'id': 3}],
         ]
         # durable_progress on every page including the terminal one.
         assert [page.durable_progress for page in pages] == ['v1', 'v2', 'v3']
         assert strategy.first_request_calls == 1
-        assert strategy.advance_calls == 3
+        assert strategy.decode_calls == 3
 
 
 # --------------------------------------------------------------------------- #
@@ -754,6 +768,6 @@ class TestBackoffDeterminism:
             make_retry_config(base_seconds=2.0), sleeper, registry, fraction=0.5
         )
         with make_client(monkeypatch, StubHandler(), profile, runtime) as client:
-            list(client.fetch_pages(make_spec(), SinglePageStrategy(), SCOPE))
+            list(client.fetch_pages(make_spec(), StubOnePageDecoder(), SCOPE))
 
         assert sleeper.sleeps == [1.0]

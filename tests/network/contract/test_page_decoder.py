@@ -1,10 +1,10 @@
-"""Tests for fleetpull.network.contract.pagination."""
+"""Tests for fleetpull.network.contract.page_decoder."""
 
 import dataclasses
 
 import pytest
 
-from fleetpull.network.contract.pagination import PageAdvance
+from fleetpull.network.contract.page_decoder import PageAdvance
 
 
 class TestPageAdvance:
