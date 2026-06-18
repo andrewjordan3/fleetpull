@@ -60,20 +60,23 @@ _CURSORS_TABLE_DDL: Final[str] = """
 """
 
 # The runs table (joins schema v1): one row per fetch of one (provider, endpoint)
-# over one window (the watermark arm) or version range (the feed arm) — the
-# operational record the run ledger reads and writes (DESIGN §5). ``run_id`` is the
-# rowid alias, auto-assigned by the INSERT. The range columns, ``row_count``,
-# ``ended_at``, and ``error_detail`` are nullable because a two-phase run fills them
-# across its lifecycle: one range arm at start, ``row_count`` (and a feed run's
-# ``to_version``) at completion, ``error_detail`` only on failure. Three CHECKs are
-# the DB-layer backstop behind the RunLedger API guards — exactly one range arm
-# (with ``to_version`` admissible only on a feed run, so a watermark row carrying
-# one is impossible), a non-negative ``row_count``, and a window ordered
-# ``window_start < window_end``. The window bounds compare lexically because
-# ``to_iso8601`` emits a fixed-width, zero-padded, Z-suffixed form, making the TEXT
-# comparison the chronological one — the same property ``coverage_frontier``'s
-# ``max()`` relies on; do not loosen the codec format without revisiting both.
-# STRICT enforces the declared column types.
+# in one of three sync modes — a snapshot (no range), a watermark window, or a feed
+# version range — the operational record the run ledger reads and writes
+# (DESIGN §5). A ``mode`` column records which, so the row is self-describing.
+# ``run_id`` is the rowid alias, auto-assigned by the INSERT. The range columns,
+# ``row_count``, ``ended_at``, and ``error_detail`` are nullable because a two-phase
+# run fills them across its lifecycle: the mode's range shape at start, ``row_count``
+# (and a feed run's ``to_version``) at completion, ``error_detail`` only on failure.
+# Three table CHECKs are the DB-layer backstop behind the RunLedger API guards — a
+# mode-keyed range shape (snapshot carries no range; watermark carries a window;
+# feed carries ``from_version``; ``to_version`` is admissible only on a feed run, so
+# a snapshot or watermark row carrying one is impossible), a non-negative
+# ``row_count``, and a window ordered ``window_start < window_end``. The ``status``
+# and ``mode`` columns carry their own value CHECKs. The window bounds compare
+# lexically because ``to_iso8601`` emits a fixed-width, zero-padded, Z-suffixed
+# form, making the TEXT comparison the chronological one — the same property
+# ``coverage_frontier``'s ``max()`` relies on; do not loosen the codec format
+# without revisiting both. STRICT enforces the declared column types.
 _RUNS_TABLE_DDL: Final[str] = """
     CREATE TABLE runs (
         run_id        INTEGER PRIMARY KEY,
@@ -81,6 +84,9 @@ _RUNS_TABLE_DDL: Final[str] = """
         endpoint      TEXT NOT NULL,
         status        TEXT NOT NULL CHECK (
             status IN ('running', 'succeeded', 'failed')
+        ),
+        mode          TEXT NOT NULL CHECK (
+            mode IN ('snapshot', 'watermark', 'feed')
         ),
         window_start  TEXT,
         window_end    TEXT,
@@ -91,9 +97,14 @@ _RUNS_TABLE_DDL: Final[str] = """
         ended_at      TEXT,
         error_detail  TEXT,
         CHECK (
-            (window_start IS NOT NULL AND window_end IS NOT NULL
+            (mode = 'snapshot'
+                 AND window_start IS NULL AND window_end IS NULL
                  AND from_version IS NULL AND to_version IS NULL)
-            OR (from_version IS NOT NULL
+            OR (mode = 'watermark'
+                 AND window_start IS NOT NULL AND window_end IS NOT NULL
+                 AND from_version IS NULL AND to_version IS NULL)
+            OR (mode = 'feed'
+                 AND from_version IS NOT NULL
                  AND window_start IS NULL AND window_end IS NULL)
         ),
         CHECK (row_count IS NULL OR row_count >= 0),
