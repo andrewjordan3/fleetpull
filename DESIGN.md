@@ -589,11 +589,11 @@ consumes, dispatching on category. House rule this establishes:
 **Protocol for pure shape** (`AuthStrategy` — zero shared code), **ABC for
 shared substance** (`ResponseClassifier`). The contract surface lives in
 `network/contract/`: `outcome.py` (the `ClassifiedResponse` carrier),
-`classifier.py` (the ABC), `auth.py` (the protocol), `pagination.py`,
+`classifier.py` (the ABC), `auth.py` (the protocol), `page_decoder.py`,
 `envelopes.py`, `request.py`; the `ResponseCategory` vocabulary they all
 speak lives in `fleetpull/vocabulary/`. The **provider implementations** —
-the classifiers, the paginators, the auth strategies — are **peers** of the
-contract surface (`network/classifiers/`, `network/paginators/`,
+the classifiers, the decoders, the auth strategies — are **peers** of the
+contract surface (`network/classifiers/`, `network/decoders/`,
 `network/auth/strategies.py`), not children of it, and import the surface
 through its `__init__` face. The protocol/implementation boundary is thus a
 package boundary the import guard enforces: the surface may never import an
@@ -609,38 +609,48 @@ construct `HTTPStatus` from an arbitrary code — `HTTPStatus(code)` raises
 `ValueError` on nonstandard statuses (e.g. 522) and a classifier must
 classify every status, not crash on one.
 
-### Pagination contract (implemented: `network/contract/pagination.py`, `paginators/`)
+### Page-decoder contract (implemented: `network/contract/page_decoder.py`, `decoders/`)
 
-The client is pagination-blind the way it is auth-blind and
-classification-blind: one loop shape for every provider and for
-unpaginated endpoints alike. A per-provider `PaginationStrategy`
-(Protocol — the implementations share zero concrete behavior) supplies
-`first_request(spec)` (decorate the base spec for page one) and
-`advance(sent, envelope) -> PageAdvance` (the verdict for the page just
-received). Strategies are frozen dataclasses holding configuration
-fields only; the client threads the loop, the strategy computes.
-Implemented strategies: `SinglePageStrategy` (unpaginated endpoints —
-replaces any is-paginated flag), `MotivePagination` (page-numbered),
-`SamsaraPagination` (cursor), `GeotabFeedPagination` (GetFeed
-`toVersion` feed).
+The client owns the page loop and stays blind to its mechanics — pagination
+and record extraction alike — the way it is auth-blind and classification-blind:
+one loop shape for every provider and for unpaginated endpoints alike. A
+per-provider `PageDecoder` (Protocol — the implementations share zero concrete
+behavior) supplies `first_request(spec)` (decorate the base spec for page one)
+and `decode_page(sent, envelope) -> DecodedPage` (the page's records and its
+pagination verdict, read from one validated view of the envelope). Decoders are
+frozen dataclasses holding configuration fields only; the client threads the
+loop, the decoder interprets each page. Implemented decoders: `SinglePageDecoder`
+(unpaginated endpoints — replaces any is-paginated flag),
+`MotiveWrappedListPageDecoder` (page-numbered, wrapped-list records),
+`SamsaraCursorPageDecoder` (cursor, top-level-list records),
+`GeotabFeedPageDecoder` (GetFeed `toVersion` feed).
 
-**Verdict versus raise:** components return verdicts when the consumer
-must choose among actions; they raise when only one action exists.
-`advance` returns a verdict (continue/complete — the client
-dispatches). A structurally violating pagination envelope has exactly
-one action — raise `ProviderResponseError` ("contract-violating"
-covers it) — so strategies raise it directly. A malformed SENT request
-reaching a strategy is a caller bug and stays stdlib `ValueError`.
-Samsara's continuation-without-cursor is the canonical single-action
-case: silently finishing would truncate data, the one failure mode a
-fetch library must never have.
+This supersedes the former split `PaginationStrategy` + `RecordExtractor`: the
+raw envelope was interpreted twice — once for pagination metadata, once for
+records, across two layers — letting it escape the network layer to be re-parsed
+downstream. A decoder parses it once: `decode_page` validates the
+provider-uniform pagination slice and the record-bearing shape together and
+returns both, so the client emits records (a `FetchedPage` carries `records`,
+not the raw envelope) and the envelope never leaves the loop. Per-record field
+validation — each record object into the `response_model` — remains the
+downstream records layer's concern; the decoder owns wire shape, the model owns
+field shape.
 
-**Durable progress:** `PageAdvance.durable_progress` carries cursor
-progress that must outlive the fetch — GeoTab's `toVersion`, the state
-layer's FeedToken commit value — on EVERY page including the terminal
-one (the terminal page's value is the resume point; per-page progress
-is what makes a crash mid-feed resumable). None for providers whose
-cursors are fetch-private (Motive, Samsara).
+**Verdict versus raise:** components return verdicts when the consumer must
+choose among actions; they raise when only one action exists. `decode_page`
+returns a verdict (`DecodedPage.advance` — continue/complete, the client
+dispatches). A structurally violating envelope has exactly one action — raise
+`ProviderResponseError` ("contract-violating" covers it) — so decoders raise it
+directly. A malformed SENT request reaching a decoder is a caller bug and stays
+stdlib `ValueError`. Samsara's continuation-without-cursor is the canonical
+single-action case: silently finishing would truncate data, the one failure mode
+a fetch library must never have.
+
+**Durable progress:** `PageAdvance.durable_progress` carries cursor progress that
+must outlive the fetch — GeoTab's `toVersion`, the state layer's FeedToken commit
+value — on EVERY page including the terminal one (the terminal page's value is
+the resume point; per-page progress is what makes a crash mid-feed resumable).
+None for providers whose cursors are fetch-private (Motive, Samsara).
 
 **Envelope-slice models:** wire metadata is an API contract, so it is
 validated by Pydantic models — private, per-consumer, frozen,
@@ -656,9 +666,9 @@ validate the whole envelope (a two-level slice locating the metadata),
 so no naked envelope-walking or `isinstance` ladders exist in the
 layer; the shared validate-then-raise composition is
 `validated_envelope_slice` (`network/contract/envelopes.py`), relocated
-out of `pagination.py` at its second consumer — the GeoTab
+out of `page_decoder.py` at its second consumer — the GeoTab
 authenticator — because the composition is contract-layer semantics,
-not pagination semantics. These private slices are not endpoint mirrors
+not page-decoder semantics. These private slices are not endpoint mirrors
 and do not belong in `models/`.
 
 **Wire tokens are constants, not enums:** wire-protocol tokens
@@ -792,11 +802,11 @@ fleetpull/
   logger/
     setup.py       # package logging setup (setup_logger), driven by LoggerConfig
   network/         # organizational namespace; the surfaces live in the subpackages
-    client/        # HTTP transport, retry policy, limiter consultation; consumes the pagination abstraction
+    client/        # HTTP transport, retry policy, limiter consultation; consumes the page-decoder abstraction
       transport.py   # TransportClient — the assembled fetch loop and per-attempt pipeline
       profile.py     # ProviderProfile — per-provider auth + classifier bundle
       runtime.py     # ClientRuntime — process-global configs, limiter registry, jitter, sleeper
-      page.py        # FetchedPage — the emit type (envelope + durable_progress)
+      page.py        # FetchedPage — the emit type (records + durable_progress)
     tls/           # SSL-context construction
       truststore_context.py  # SSLContext factory backed by the OS trust store (Zscaler-class proxies)
     auth/
@@ -812,9 +822,9 @@ fleetpull/
       classifier.py  # ResponseClassifier ABC + shared transport-exception mapping
       auth.py      # AuthStrategy protocol only (implementations live in network/auth/strategies.py)
       envelopes.py   # validated_envelope_slice — shared validate-or-raise for wire slices (§8)
-      pagination.py  # PageAdvance, PaginationStrategy (§8)
+      page_decoder.py  # PageAdvance, DecodedPage, PageDecoder (§8)
     classifiers/   # per-provider classifiers (peers of contract/; import its face): motive.py, samsara.py, geotab.py
-    paginators/    # per-provider strategies (peers of contract/; import its face): single_page.py, motive.py, samsara.py, geotab.py
+    decoders/      # per-provider page decoders (peers of contract/; import its face): single_page.py, motive.py, samsara.py, geotab.py
     limits/
       config.py        # RateLimitConfig (frozen Pydantic)
       bucket_math.py   # pure token-bucket arithmetic (stateless functions)
@@ -830,10 +840,10 @@ fleetpull/
     cursor.py      # DateWatermark, FeedToken, IncrementalCursor tagged union
   endpoints/       # per-endpoint bindings (the endpoints layer, below) — new fleetpull code
     base.py        # EndpointDefinition: a frozen, kw-only dataclass generic over its response
-                   #   model, composing one impl per axis (spec_builder, pagination,
-                   #   response_model, record_extractor, quota_scope, sync mode,
-                   #   storage_kind) + the SpecBuilder and RecordExtractor Protocols,
-                   #   TopLevelListExtractor, the SyncMode union (SnapshotMode /
+                   #   model, composing one impl per axis (spec_builder, page_decoder,
+                   #   response_model, quota_scope, sync mode,
+                   #   storage_kind) + the SpecBuilder and PageDecoder Protocols,
+                   #   the SyncMode union (SnapshotMode /
                    #   WatermarkMode / FeedMode), ResumeValue, and StorageKind. No auth here — auth is
                    #   per-provider (network ProviderProfile), resolved at the composition root.
     motive.py      # Motive EndpointDefinitions + their spec-builders
@@ -874,7 +884,7 @@ consumer actions, and stances — is recorded in §8.
 Boundary rules:
 
 - `storage` knows nothing about state; `state` knows nothing about parquet. The orchestrator sequences them (parquet-then-watermark ordering, §5).
-- `network/client/` consumes the pagination abstraction (`network/contract/pagination.py`). Retry and limiter consultation stay interleaved per-request concerns inside the client — splitting them away from the request loop is how the token-per-attempt / token-per-page rules get violated.
+- `network/client/` consumes the page-decoder abstraction (`network/contract/page_decoder.py`). Retry and limiter consultation stay interleaved per-request concerns inside the client — splitting them away from the request loop is how the token-per-attempt / token-per-page rules get violated.
 - The orchestrator never touches the limiter (§7).
 
 ### The endpoints layer
@@ -883,33 +893,34 @@ Boundary rules:
 `EndpointDefinition` carried auth, pagination, request-building, and
 response-parsing on one class hierarchy. In fleetpull the network layer already
 owns those as separate strategies — auth as a per-provider `ProviderProfile`
-(auth + classifier) resolved at the composition root, pagination as a
-`PaginationStrategy`, classification as a `ResponseClassifier`, parsing as the
-records layer over a response model — so none of that work remains on the
-endpoint. An `EndpointDefinition` is a declaration: it composes one
+(auth + classifier) resolved at the composition root, pagination and record
+extraction together as a `PageDecoder`, classification as a `ResponseClassifier`,
+per-record validation as the records layer over a response model — so none of
+that work remains on the endpoint. An `EndpointDefinition` is a declaration: it composes one
 implementation per behavioral axis and states the per-endpoint facts the generic
 machinery reads. It executes nothing itself except its spec-builder.
 
 **`EndpointDefinition` is a single concrete frozen dataclass, generic over its
 response model; the variation lives in the strategies it holds.** Its fields are
-data — provider and name; the `SpecBuilder`; the `PaginationStrategy`; the
-per-record response model and the `RecordExtractor` that pulls records from the
-envelope; the `quota_scope`; the `SyncMode` (a marker `SnapshotMode`, a `WatermarkMode` carrying its
-lookback, or a marker `FeedMode`); and the storage kind. Constructed keyword-only,
-it is the single source of truth per endpoint, and each tier reads only its slice
-— the client reads spec-builder, pagination, and quota; the caller applies the
-record-extractor and reads the sync mode and storage kind; records reads
-the model. The excluded concerns are the records overrides (`schema_overrides` /
-`coercion_overrides`, §9) and the provider-specific event-time column the watermark
-and date-partitioning read (§3/§5) — all records/state/storage contract, attaching
-when those layers are built.
+data — provider and name; the `SpecBuilder`; the `PageDecoder` (which yields each
+page's records and its pagination verdict from one validated view of the
+envelope); the per-record response model; the `quota_scope`; the `SyncMode` (a
+marker `SnapshotMode`, a `WatermarkMode` carrying its lookback, or a marker
+`FeedMode`); and the storage kind. Constructed keyword-only, it is the single
+source of truth per endpoint, and each tier reads only its slice — the client
+reads spec-builder, page-decoder, and quota and emits the decoded records; the
+caller reads the sync mode and storage kind and validates the records into the
+model; records reads the model. The excluded concerns are the records overrides
+(`schema_overrides` / `coercion_overrides`, §9) and the provider-specific
+event-time column the watermark and date-partitioning read (§3/§5) — all
+records/state/storage contract, attaching when those layers are built.
 
 **The spec-builder is the only genuine per-endpoint behavior.** A `SpecBuilder`
 is a Protocol with one method, `build_spec(resume, path_values) -> RequestSpec`,
 where `resume` is a `ResumeValue` (`DateWindow | FeedToken | None`, §4) and `path_values` carries
 a partition key for URL-path fan-out (for example, a per-vehicle locations
 endpoint). It builds only the first request — URL, base params, and the resume
-injection; pagination produces every request after it.
+injection; the page decoder produces every request after it.
 
 **Dataclass for the binding, Protocols for the slots — and never a per-provider
 subclass.** The behavioral axes differ per provider and sometimes per endpoint,
@@ -919,7 +930,7 @@ concrete dataclass and not an ABC. Subclassing `EndpointDefinition` per provider
 is prohibited — it re-braids the per-provider variation back into a class
 hierarchy and recreates the predecessor's tangle. Per-provider or per-endpoint
 behavior goes into a strategy implementation — a new `SpecBuilder`, a new
-`PaginationStrategy` — never into a field the generic client branches on. The
+`PageDecoder` — never into a field the generic client branches on. The
 failure signature is an `if endpoint.name == ...` (or
 `if endpoint.provider == ...`) inside the client; the remedy is always a
 strategy, never a branch. (Reopen condition: if a per-endpoint fact ever needs to
@@ -947,20 +958,19 @@ and cheaper than a directory per endpoint.
 sequences.** For one fetch the caller looks up the `EndpointDefinition`, turns the
 stored cursor into a resume value (`compute_resume`, §4) and a `path_values`,
 calls `build_spec` for the first `RequestSpec`, and hands that spec plus the
-endpoint's `PaginationStrategy`, the provider's `ProviderProfile`, and the
+endpoint's `PageDecoder`, the provider's `ProviderProfile`, and the
 `quota_scope` to the client. The client streams
-`FetchedPage(envelope, durable_progress)` — `AuthStrategy.prepare` per attempt,
+`FetchedPage(records, durable_progress)` — `AuthStrategy.prepare` per attempt,
 the limiter consulted per attempt by `quota_scope`, `ResponseClassifier` per
-response, `PaginationStrategy.advance` per page. The caller applies the endpoint's
-`RecordExtractor` to pull records from each envelope, validates them into the
-response model, hands them to records for
+response, `PageDecoder.decode_page` per page. The caller validates each page's
+records into the response model, hands them to records for
 generic flattening to Polars, to storage for the merge, and to state for the
 advance (cursor after parquet, §5). No layer below the caller holds endpoint
 knowledge.
 
 **State is concentrated; almost everything is stateless.** Stateless: the
-`EndpointDefinition`, the `SpecBuilder`, the `PaginationStrategy` (pagination
-position rides in the spec's params, not in the strategy), the
+`EndpointDefinition`, the `SpecBuilder`, the `PageDecoder` (pagination
+position rides in the spec's params, not in the decoder), the
 `ResponseClassifier`, the response models, records, storage (its "state" is files
 on disk), and the per-fetch client. Stateful, and only these: the GeoTab
 `AuthStrategy` (it wraps the session token — the one stateful strategy, forced by
@@ -994,7 +1004,7 @@ lives in `state/`). The per-chunk DataFrame is a value, not a stateful component
 ## 14. Next Steps
 
 1. Review/amend this document
-2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → retry policy (done, `config/retry.py` + `network/retry/`) → pagination abstraction (done, `network/contract/pagination.py` + `paginators/`) → HTTP config + the real GeoTab authenticator (done, `config/http.py` + `network/auth/authenticate.py`) → `network/client/` (done) → `endpoints/base.py` → `records` → `storage` → `state` → `orchestrator` → `cli.py`
+2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → retry policy (done, `config/retry.py` + `network/retry/`) → page-decoder abstraction (done, `network/contract/page_decoder.py` + `decoders/`) → HTTP config + the real GeoTab authenticator (done, `config/http.py` + `network/auth/authenticate.py`) → `network/client/` (done) → `endpoints/base.py` → `records` → `storage` → `state` → `orchestrator` → `cli.py`
 
 The `network/client/` step inherits a recorded agenda: classify
 prepare-time transport exceptions (the authenticator propagates
@@ -1004,6 +1014,6 @@ exception-hierarchy raise sites (FATAL → `ProviderResponseError`, exhausted
 budgets → `RetriesExhaustedError`, auth paths → `AuthenticationError`), and
 bundle the two per-provider dependencies that share a session lifetime
 (auth strategy, classifier) into `ProviderProfile`, leaving the per-endpoint
-pagination strategy and quota scope to arrive on each `fetch_pages` call.
+page decoder and quota scope to arrive on each `fetch_pages` call.
 3. Port Motive/Samsara models and endpoint definitions onto the new base
 4. GeoTab integration when access lands

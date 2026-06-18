@@ -1,12 +1,12 @@
 # src/fleetpull/network/client/transport.py
-"""The transport client: HTTP transport, retry, rate limiting, pagination.
+"""The transport client: HTTP transport, retry, rate limiting, page decoding.
 
 Owns one pooled httpx.Client and runs the per-attempt pipeline and the page
-loop. Provider-blind, state-blind, storage-blind, records-blind, name-blind:
-every provider difference is absorbed by the injected ProviderProfile (auth +
-classifier) and the per-endpoint pagination strategy. The client emits opaque
-FetchedPage objects and interprets neither the envelope nor the
-durable_progress cursor.
+loop. Provider-blind, state-blind, storage-blind, name-blind: every provider
+difference is absorbed by the injected ProviderProfile (auth + classifier) and
+the per-endpoint page decoder. The client runs the decoder over each envelope
+to emit a FetchedPage of records plus an opaque durable_progress cursor; it
+interprets neither the records' field shapes nor the cursor.
 """
 
 import json
@@ -29,9 +29,9 @@ from fleetpull.network.client.profile import ProviderProfile
 from fleetpull.network.client.runtime import ClientRuntime
 from fleetpull.network.contract import (
     ClassifiedResponse,
+    DecodedPage,
     JsonValue,
-    PageAdvance,
-    PaginationStrategy,
+    PageDecoder,
     RequestSpec,
 )
 from fleetpull.network.retry import RetryDecision, decide_retry
@@ -112,24 +112,25 @@ class TransportClient:
     def fetch_pages(
         self,
         spec: RequestSpec,
-        pagination: PaginationStrategy,
+        page_decoder: PageDecoder,
         quota_scope: str,
     ) -> Iterator[FetchedPage]:
         """
-        Yield every page of one endpoint, pagination transparent.
+        Yield every page of one endpoint, page decoding transparent.
 
-        One visible loop, terminating when the strategy returns no next spec.
-        The strategy builds each next request; the client only sends it.
+        One visible loop, terminating when the decoder returns no next spec.
+        The decoder builds each next request and extracts each page's records;
+        the client only sends the request and emits the records.
 
         Args:
             spec: The endpoint definition's credential-less base request.
-            pagination: The endpoint's pagination strategy (per-endpoint, NOT
+            page_decoder: The endpoint's page decoder (per-endpoint, NOT
                 per-provider).
             quota_scope: The endpoint's rate-limit scope key.
 
         Yields:
-            One ``FetchedPage`` per page, in order, each carrying its
-            ``durable_progress`` (including the terminal page).
+            One ``FetchedPage`` per page, in order, each carrying its records
+            and its ``durable_progress`` (including the terminal page).
 
         Raises:
             RetriesExhaustedError: A retryable category exhausted its budget
@@ -137,16 +138,17 @@ class TransportClient:
             AuthenticationError: Credentials are unfixable, or a second
                 consecutive auth failure on one page.
             ProviderResponseError: A FATAL response, or a structurally
-                violating envelope raised by the pagination strategy.
+                violating envelope raised by the page decoder.
         """
-        sent: RequestSpec | None = pagination.first_request(spec)
+        sent: RequestSpec | None = page_decoder.first_request(spec)
         while sent is not None:
             envelope: JsonValue = self._fetch_single_page(sent, quota_scope)
-            advance: PageAdvance = pagination.advance(sent, envelope)
+            decoded: DecodedPage = page_decoder.decode_page(sent, envelope)
             yield FetchedPage(
-                envelope=envelope, durable_progress=advance.durable_progress
+                records=decoded.records,
+                durable_progress=decoded.advance.durable_progress,
             )
-            sent = advance.next_spec
+            sent = decoded.advance.next_spec
 
     def _fetch_single_page(self, sent: RequestSpec, quota_scope: str) -> JsonValue:
         """

@@ -14,10 +14,29 @@ behavior (blast-radius over DRY).
 from dataclasses import dataclass
 from typing import Protocol
 
-from fleetpull.network.contract.pagination import PageAdvance
 from fleetpull.network.contract.request import JsonObject, JsonValue, RequestSpec
 
-__all__: list[str] = ['DecodedPage', 'PageDecoder']
+__all__: list[str] = ['DecodedPage', 'PageAdvance', 'PageDecoder']
+
+
+@dataclass(frozen=True, slots=True)
+class PageAdvance:
+    """
+    A decoder's verdict on one completed page.
+
+    Attributes:
+        next_spec: The request for the next page, or None when
+            pagination is complete.
+        durable_progress: Cursor progress that must outlive the fetch
+            (GeoTab's ``toVersion``; the state layer's FeedToken commit
+            value). None for providers whose cursors are fetch-private
+            (the established inert pattern). Carried on EVERY page
+            including the terminal one — the terminal page's value is
+            the resume point.
+    """
+
+    next_spec: RequestSpec | None
+    durable_progress: str | None
 
 
 @dataclass(frozen=True, slots=True)
