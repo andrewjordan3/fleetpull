@@ -77,10 +77,10 @@ data/
       ...
 ```
 
-**Storage strategy is declared on the endpoint definition, not inferred:**
+**Storage layout is declared on the endpoint definition, not inferred — and it is *layout only*.** What a merge *does* to the data — full-replace, delete-by-window-then-append, or append-plus-dedup — follows the endpoint's `SyncMode` (§4), an orthogonal axis the storage layer combines with the layout.
 
-- `single` — one parquet file; merge is full read-modify-write. Fine for low-volume endpoints (on the order of 10–15k rows/day or less).
-- `date_partitioned` — hive-style `date=YYYY-MM-DD` partitions; merge touches only partitions overlapping the fetch window. Required for breadcrumb-scale endpoints. Hive layout is read natively by BigQuery external tables and `pl.scan_parquet`.
+- `single` — one parquet file; a merge reads the whole file, applies the `SyncMode`'s write semantics, and rewrites it. Fine for low-volume endpoints (on the order of 10–15k rows/day or less). Snapshot endpoints are always `single` — a current-state snapshot has no event-time dimension to partition on.
+- `date_partitioned` — hive-style `date=YYYY-MM-DD` partitions; a merge touches only the partitions the fetch window overlaps. Required for breadcrumb-scale endpoints. Hive layout is read natively by BigQuery external tables and `pl.scan_parquet`.
 
 `metadata.json` is a **generated human-readable snapshot**, written from SQLite
 contents at the end of each successful run. It is never read by the program.
@@ -826,10 +826,10 @@ fleetpull/
   endpoints/       # per-endpoint bindings (the endpoints layer, below) — new fleetpull code
     base.py        # EndpointDefinition: a frozen, kw-only dataclass generic over its response
                    #   model, composing one impl per axis (spec_builder, pagination,
-                   #   response_model, record_extractor, quota_scope, incremental mode,
+                   #   response_model, record_extractor, quota_scope, sync mode,
                    #   storage_kind) + the SpecBuilder and RecordExtractor Protocols,
-                   #   TopLevelListExtractor, the IncrementalMode union (WatermarkMode /
-                   #   FeedMode), ResumeValue, and StorageKind. No auth here — auth is
+                   #   TopLevelListExtractor, the SyncMode union (SnapshotMode /
+                   #   WatermarkMode / FeedMode), ResumeValue, and StorageKind. No auth here — auth is
                    #   per-provider (network ProviderProfile), resolved at the composition root.
     motive.py      # Motive EndpointDefinitions + their spec-builders
     samsara.py
@@ -889,11 +889,11 @@ machinery reads. It executes nothing itself except its spec-builder.
 response model; the variation lives in the strategies it holds.** Its fields are
 data — provider and name; the `SpecBuilder`; the `PaginationStrategy`; the
 per-record response model and the `RecordExtractor` that pulls records from the
-envelope; the `quota_scope`; the `IncrementalMode` (a `WatermarkMode` carrying its
+envelope; the `quota_scope`; the `SyncMode` (a marker `SnapshotMode`, a `WatermarkMode` carrying its
 lookback, or a marker `FeedMode`); and the storage kind. Constructed keyword-only,
 it is the single source of truth per endpoint, and each tier reads only its slice
 — the client reads spec-builder, pagination, and quota; the caller applies the
-record-extractor and reads the incremental mode and storage kind; records reads
+record-extractor and reads the sync mode and storage kind; records reads
 the model. The excluded concerns are the records overrides (`schema_overrides` /
 `coercion_overrides`, §9) and the provider-specific event-time column the watermark
 and date-partitioning read (§3/§5) — all records/state/storage contract, attaching

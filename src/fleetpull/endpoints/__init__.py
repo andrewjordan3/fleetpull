@@ -3,11 +3,12 @@
 from fleetpull.endpoints.base import (
     EndpointDefinition,
     FeedMode,
-    IncrementalMode,
     RecordExtractor,
     ResumeValue,
+    SnapshotMode,
     SpecBuilder,
     StorageKind,
+    SyncMode,
     TopLevelListExtractor,
     WatermarkMode,
 )
@@ -15,11 +16,12 @@ from fleetpull.endpoints.base import (
 __all__: list[str] = [
     'EndpointDefinition',
     'FeedMode',
-    'IncrementalMode',
     'RecordExtractor',
     'ResumeValue',
+    'SnapshotMode',
     'SpecBuilder',
     'StorageKind',
+    'SyncMode',
     'TopLevelListExtractor',
     'WatermarkMode',
 ]
