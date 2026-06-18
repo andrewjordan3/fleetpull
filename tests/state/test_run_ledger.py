@@ -9,7 +9,7 @@ import pytest
 from fleetpull.exceptions import ConfigurationError
 from fleetpull.state.database import StateDatabase
 from fleetpull.state.migrations import migrate_to_head
-from fleetpull.state.run_ledger import RunLedger, RunStatus
+from fleetpull.state.run_ledger import RunLedger, RunMode, RunStatus
 from fleetpull.timing.clock import FrozenClock
 from fleetpull.timing.codec import to_iso8601
 from fleetpull.vocabulary import Provider
@@ -25,6 +25,7 @@ _RUN_COLUMNS: tuple[str, ...] = (
     'provider',
     'endpoint',
     'status',
+    'mode',
     'window_start',
     'window_end',
     'from_version',
@@ -66,14 +67,48 @@ def _insert_raw_succeeded_window_run(
     try:
         connection.execute(
             'INSERT INTO runs '
-            '(provider, endpoint, status, window_start, window_end, started_at) '
-            'VALUES (?, ?, ?, ?, ?, ?)',
+            '(provider, endpoint, status, mode, window_start, window_end, '
+            'started_at) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?)',
             (
                 provider,
                 endpoint,
                 'succeeded',
+                'watermark',
                 window_start,
                 window_end,
+                '2026-06-16T00:00:00Z',
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _insert_raw_run(
+    database_path: Path,
+    *,
+    mode: str,
+    window_start: str | None = None,
+    window_end: str | None = None,
+    from_version: str | None = None,
+) -> None:
+    """Insert a runs row directly, bypassing the ledger — for CHECK tests."""
+    connection = sqlite3.connect(database_path)
+    try:
+        connection.execute(
+            'INSERT INTO runs '
+            '(provider, endpoint, status, mode, window_start, window_end, '
+            'from_version, started_at) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            (
+                'motive',
+                'vehicles',
+                'running',
+                mode,
+                window_start,
+                window_end,
+                from_version,
                 '2026-06-16T00:00:00Z',
             ),
         )
@@ -97,16 +132,17 @@ def run_ledger(tmp_path: Path, frozen_clock: FrozenClock) -> RunLedger:
     return RunLedger(database, frozen_clock)
 
 
-class TestStartRun:
+class TestStartWindowRun:
     def test_inserts_a_running_watermark_row(
         self, run_ledger: RunLedger, tmp_path: Path
     ) -> None:
-        run_id = run_ledger.start_run(
+        run_id = run_ledger.start_window_run(
             Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
         )
         assert isinstance(run_id, int)
         run = _read_run(_database_path(tmp_path), run_id)
         assert run['status'] == RunStatus.RUNNING
+        assert run['mode'] == RunMode.WATERMARK
         assert run['started_at'] == to_iso8601(FROZEN_INSTANT)
         assert run['window_start'] == to_iso8601(WINDOW_START)
         assert run['window_end'] == to_iso8601(WINDOW_END)
@@ -114,30 +150,6 @@ class TestStartRun:
         assert run['to_version'] is None
         assert run['row_count'] is None
         assert run['ended_at'] is None
-
-    def test_inserts_a_running_feed_row(
-        self, run_ledger: RunLedger, tmp_path: Path
-    ) -> None:
-        run_id = run_ledger.start_run(Provider.GEOTAB, 'log_records', from_version='v0')
-        run = _read_run(_database_path(tmp_path), run_id)
-        assert run['status'] == RunStatus.RUNNING
-        assert run['from_version'] == 'v0'
-        assert run['window_start'] is None
-        assert run['window_end'] is None
-        assert run['to_version'] is None
-
-    def test_rejects_both_arms(self, run_ledger: RunLedger) -> None:
-        with pytest.raises(ValueError, match='exactly one range arm'):
-            run_ledger.start_run(
-                Provider.SAMSARA,
-                'trips',
-                window=(WINDOW_START, WINDOW_END),
-                from_version='v0',
-            )
-
-    def test_rejects_neither_arm(self, run_ledger: RunLedger) -> None:
-        with pytest.raises(ValueError, match='exactly one range arm'):
-            run_ledger.start_run(Provider.SAMSARA, 'trips')
 
     @pytest.mark.parametrize(
         'window',
@@ -150,20 +162,51 @@ class TestStartRun:
         self, run_ledger: RunLedger, window: tuple[datetime, datetime]
     ) -> None:
         with pytest.raises(ValueError, match='window_start must be strictly before'):
-            run_ledger.start_run(Provider.SAMSARA, 'trips', window=window)
+            run_ledger.start_window_run(Provider.SAMSARA, 'trips', window=window)
+
+
+class TestStartFeedRun:
+    def test_inserts_a_running_feed_row(
+        self, run_ledger: RunLedger, tmp_path: Path
+    ) -> None:
+        run_id = run_ledger.start_feed_run(
+            Provider.GEOTAB, 'log_records', from_version='v0'
+        )
+        run = _read_run(_database_path(tmp_path), run_id)
+        assert run['status'] == RunStatus.RUNNING
+        assert run['mode'] == RunMode.FEED
+        assert run['from_version'] == 'v0'
+        assert run['window_start'] is None
+        assert run['window_end'] is None
+        assert run['to_version'] is None
+
+
+class TestStartSnapshotRun:
+    def test_inserts_a_running_snapshot_row_with_no_range(
+        self, run_ledger: RunLedger, tmp_path: Path
+    ) -> None:
+        run_id = run_ledger.start_snapshot_run(Provider.MOTIVE, 'vehicles')
+        run = _read_run(_database_path(tmp_path), run_id)
+        assert run['status'] == RunStatus.RUNNING
+        assert run['mode'] == RunMode.SNAPSHOT
+        assert run['window_start'] is None
+        assert run['window_end'] is None
+        assert run['from_version'] is None
+        assert run['to_version'] is None
 
 
 class TestCompleteRun:
     def test_watermark_completion_succeeds_and_stamps_the_advanced_clock(
         self, run_ledger: RunLedger, frozen_clock: FrozenClock, tmp_path: Path
     ) -> None:
-        run_id = run_ledger.start_run(
+        run_id = run_ledger.start_window_run(
             Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
         )
         frozen_clock.advance(timedelta(hours=2))
         run_ledger.complete_run(run_id, row_count=42)
         run = _read_run(_database_path(tmp_path), run_id)
         assert run['status'] == RunStatus.SUCCEEDED
+        assert run['mode'] == RunMode.WATERMARK
         assert run['row_count'] == 42
         assert run['to_version'] is None
         assert run['ended_at'] == to_iso8601(FROZEN_INSTANT + timedelta(hours=2))
@@ -171,7 +214,7 @@ class TestCompleteRun:
     def test_watermark_completion_rejects_a_to_version(
         self, run_ledger: RunLedger
     ) -> None:
-        run_id = run_ledger.start_run(
+        run_id = run_ledger.start_window_run(
             Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
         )
         with pytest.raises(ValueError, match='to_version is only valid for feed runs'):
@@ -180,22 +223,40 @@ class TestCompleteRun:
     def test_feed_completion_records_the_to_version(
         self, run_ledger: RunLedger, tmp_path: Path
     ) -> None:
-        run_id = run_ledger.start_run(Provider.GEOTAB, 'trips', from_version='v0')
+        run_id = run_ledger.start_feed_run(Provider.GEOTAB, 'trips', from_version='v0')
         run_ledger.complete_run(run_id, row_count=5, to_version='v9')
         run = _read_run(_database_path(tmp_path), run_id)
         assert run['status'] == RunStatus.SUCCEEDED
+        assert run['mode'] == RunMode.FEED
         assert run['row_count'] == 5
         assert run['from_version'] == 'v0'
         assert run['to_version'] == 'v9'
         assert run['window_start'] is None
 
     def test_feed_completion_requires_a_to_version(self, run_ledger: RunLedger) -> None:
-        run_id = run_ledger.start_run(Provider.GEOTAB, 'trips', from_version='v0')
+        run_id = run_ledger.start_feed_run(Provider.GEOTAB, 'trips', from_version='v0')
         with pytest.raises(ValueError, match='feed runs must record to_version'):
             run_ledger.complete_run(run_id, row_count=5)
 
+    def test_snapshot_completion_succeeds_with_row_count(
+        self, run_ledger: RunLedger, tmp_path: Path
+    ) -> None:
+        run_id = run_ledger.start_snapshot_run(Provider.MOTIVE, 'vehicles')
+        run_ledger.complete_run(run_id, row_count=1300)
+        run = _read_run(_database_path(tmp_path), run_id)
+        assert run['status'] == RunStatus.SUCCEEDED
+        assert run['row_count'] == 1300
+        assert run['to_version'] is None
+
+    def test_snapshot_completion_rejects_a_to_version(
+        self, run_ledger: RunLedger
+    ) -> None:
+        run_id = run_ledger.start_snapshot_run(Provider.MOTIVE, 'vehicles')
+        with pytest.raises(ValueError, match='to_version is only valid for feed runs'):
+            run_ledger.complete_run(run_id, row_count=1300, to_version='nope')
+
     def test_rejects_a_negative_row_count(self, run_ledger: RunLedger) -> None:
-        run_id = run_ledger.start_run(
+        run_id = run_ledger.start_window_run(
             Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
         )
         with pytest.raises(ValueError, match='non-negative'):
@@ -210,7 +271,7 @@ class TestFailRun:
     def test_marks_failed_with_detail_and_advanced_clock(
         self, run_ledger: RunLedger, frozen_clock: FrozenClock, tmp_path: Path
     ) -> None:
-        run_id = run_ledger.start_run(
+        run_id = run_ledger.start_window_run(
             Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
         )
         frozen_clock.advance(timedelta(minutes=5))
@@ -229,13 +290,13 @@ class TestCoverageFrontier:
     def test_returns_max_window_end_over_succeeded_watermark_runs(
         self, run_ledger: RunLedger
     ) -> None:
-        earlier = run_ledger.start_run(
+        earlier = run_ledger.start_window_run(
             Provider.SAMSARA,
             'trips',
             window=(datetime(2026, 6, 1, tzinfo=UTC), datetime(2026, 6, 2, tzinfo=UTC)),
         )
         run_ledger.complete_run(earlier, row_count=1)
-        later = run_ledger.start_run(
+        later = run_ledger.start_window_run(
             Provider.SAMSARA,
             'trips',
             window=(datetime(2026, 6, 4, tzinfo=UTC), datetime(2026, 6, 5, tzinfo=UTC)),
@@ -246,12 +307,12 @@ class TestCoverageFrontier:
         assert frontier == datetime(2026, 6, 5, tzinfo=UTC)
 
     def test_ignores_running_failed_and_feed_runs(self, run_ledger: RunLedger) -> None:
-        succeeded = run_ledger.start_run(
+        succeeded = run_ledger.start_window_run(
             Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
         )
         run_ledger.complete_run(succeeded, row_count=1)
         # A running watermark run with a later window_end — not succeeded, ignored.
-        run_ledger.start_run(
+        run_ledger.start_window_run(
             Provider.SAMSARA,
             'trips',
             window=(
@@ -260,7 +321,7 @@ class TestCoverageFrontier:
             ),
         )
         # A failed watermark run with the latest window_end — ignored.
-        failed = run_ledger.start_run(
+        failed = run_ledger.start_window_run(
             Provider.SAMSARA,
             'trips',
             window=(
@@ -270,7 +331,7 @@ class TestCoverageFrontier:
         )
         run_ledger.fail_run(failed, error_detail='nope')
         # A succeeded feed run carries no window_end — ignored.
-        feed = run_ledger.start_run(Provider.SAMSARA, 'trips', from_version='v0')
+        feed = run_ledger.start_feed_run(Provider.SAMSARA, 'trips', from_version='v0')
         run_ledger.complete_run(feed, row_count=3, to_version='v1')
 
         frontier = run_ledger.coverage_frontier(Provider.SAMSARA, 'trips')
@@ -279,7 +340,7 @@ class TestCoverageFrontier:
     def test_returns_none_when_no_succeeded_watermark_run_exists(
         self, run_ledger: RunLedger
     ) -> None:
-        feed = run_ledger.start_run(Provider.GEOTAB, 'trips', from_version='v0')
+        feed = run_ledger.start_feed_run(Provider.GEOTAB, 'trips', from_version='v0')
         run_ledger.complete_run(feed, row_count=1, to_version='v1')
         assert run_ledger.coverage_frontier(Provider.GEOTAB, 'trips') is None
 
@@ -299,11 +360,42 @@ class TestCoverageFrontier:
             run_ledger.coverage_frontier(Provider.SAMSARA, 'trips')
 
 
+class TestModeKeyedCheck:
+    def test_snapshot_row_with_a_window_is_rejected(
+        self, run_ledger: RunLedger, tmp_path: Path
+    ) -> None:
+        with pytest.raises(sqlite3.IntegrityError):
+            _insert_raw_run(
+                _database_path(tmp_path),
+                mode='snapshot',
+                window_start='2026-06-01T00:00:00Z',
+                window_end='2026-06-02T00:00:00Z',
+            )
+
+    def test_watermark_row_without_a_window_is_rejected(
+        self, run_ledger: RunLedger, tmp_path: Path
+    ) -> None:
+        with pytest.raises(sqlite3.IntegrityError):
+            _insert_raw_run(_database_path(tmp_path), mode='watermark')
+
+    def test_feed_row_without_a_version_is_rejected(
+        self, run_ledger: RunLedger, tmp_path: Path
+    ) -> None:
+        with pytest.raises(sqlite3.IntegrityError):
+            _insert_raw_run(_database_path(tmp_path), mode='feed')
+
+    def test_unknown_mode_value_is_rejected(
+        self, run_ledger: RunLedger, tmp_path: Path
+    ) -> None:
+        with pytest.raises(sqlite3.IntegrityError):
+            _insert_raw_run(_database_path(tmp_path), mode='teleport')
+
+
 class TestDurability:
     def test_a_separate_ledger_reads_back_a_started_run(
         self, run_ledger: RunLedger, tmp_path: Path
     ) -> None:
-        run_id = run_ledger.start_run(
+        run_id = run_ledger.start_window_run(
             Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
         )
         reopened = RunLedger(
@@ -311,6 +403,6 @@ class TestDurability:
             FrozenClock(start_time_utc=FROZEN_INSTANT),
         )
         # Completing through a fresh ledger proves the started row committed (its
-        # arm SELECT finds the run); the frontier then proves the completion did.
+        # mode SELECT finds the run); the frontier then proves the completion did.
         reopened.complete_run(run_id, row_count=7)
         assert reopened.coverage_frontier(Provider.SAMSARA, 'trips') == WINDOW_END
