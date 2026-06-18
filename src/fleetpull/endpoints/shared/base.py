@@ -1,4 +1,4 @@
-# src/fleetpull/endpoints/base.py
+# src/fleetpull/endpoints/shared/base.py
 """The endpoints-layer binding: the ``EndpointDefinition`` and the types it composes.
 
 An ``EndpointDefinition`` is the single source of truth per endpoint — a frozen,
