@@ -238,7 +238,7 @@ root_package = "fleetpull"
 name = "Contract surface sits below its implementations, vocabulary below it"
 type = "layers"
 layers = [
-    "fleetpull.network.classifiers | fleetpull.network.paginators | fleetpull.network.client",
+    "fleetpull.network.classifiers | fleetpull.network.decoders | fleetpull.network.paginators | fleetpull.network.client",
     "fleetpull.network.contract",
     "fleetpull.vocabulary",
 ]
@@ -266,6 +266,16 @@ modules = [
     "fleetpull.network.paginators.motive",
     "fleetpull.network.paginators.samsara",
     "fleetpull.network.paginators.single_page",
+]
+
+[[tool.importlinter.contracts]]
+name = "Provider decoders are independent of each other"
+type = "independence"
+modules = [
+    "fleetpull.network.decoders.geotab",
+    "fleetpull.network.decoders.motive",
+    "fleetpull.network.decoders.samsara",
+    "fleetpull.network.decoders.single_page",
 ]
 
 [[tool.importlinter.contracts]]
