@@ -12,8 +12,8 @@ that remains on the endpoint is its spec-builder.
 This module ships the binding, the two Protocols it composes (``SpecBuilder`` and
 ``RecordExtractor``, plain — they are only ever called through the stateless
 binding, never verified dynamically), the one generic ``TopLevelListExtractor``,
-and the small declaration types beside them: ``StorageKind``, the
-``IncrementalMode`` union (``WatermarkMode`` / ``FeedMode``), and the
+and the small declaration types beside them: ``StorageKind``, the ``SyncMode``
+union (``SnapshotMode`` / ``WatermarkMode`` / ``FeedMode``), and the
 ``ResumeValue`` alias. The records/state/storage contract (the records overrides
 and the event-time column) is deferred — ``base.py`` ships the fetch/binding core.
 """
@@ -38,11 +38,12 @@ from fleetpull.vocabulary import Provider, QuotaScope
 __all__: list[str] = [
     'EndpointDefinition',
     'FeedMode',
-    'IncrementalMode',
     'RecordExtractor',
     'ResumeValue',
+    'SnapshotMode',
     'SpecBuilder',
     'StorageKind',
+    'SyncMode',
     'TopLevelListExtractor',
     'WatermarkMode',
 ]
@@ -50,11 +51,16 @@ __all__: list[str] = [
 
 class StorageKind(StrEnum):
     """
-    The §3 storage layout an endpoint declares: one parquet file vs hive partitions.
+    The §3 storage *layout* an endpoint declares: one parquet file vs hive
+    partitions. Layout only — *where* the bytes live, not how they merge.
 
-    ``SINGLE`` is one ``data.parquet`` (full read-modify-write merge);
-    ``DATE_PARTITIONED`` is hive ``date=YYYY-MM-DD`` partitions (merge touches only
-    overlapping partitions). The caller dispatches on it to pick the storage path.
+    ``SINGLE`` is one ``data.parquet``; ``DATE_PARTITIONED`` is hive
+    ``date=YYYY-MM-DD`` partitions. The caller dispatches on it to pick the storage
+    path — read-the-whole-file for ``SINGLE``, touch-only-overlapping-partitions
+    for ``DATE_PARTITIONED``. What that read-modify-write *does* to the data —
+    full-replace, delete-by-window-then-append, or append-plus-dedup — is the
+    ``SyncMode``'s concern, not the layout's; the two are orthogonal axes the
+    storage layer combines.
 
     It lives here on the binding, not in ``vocabulary/``: unlike ``QuotaScope``
     (which config validates against, so it must sit in a leaf config can import),
@@ -67,16 +73,34 @@ class StorageKind(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class SnapshotMode:
+    """
+    Snapshot sync declaration (config): a marker carrying no configuration.
+
+    The endpoint re-fetches its full current-state dataset every run and has no
+    resume — its spec-builder always receives ``resume=None`` (no window, no
+    token). Its write semantic is *full replacement* of the endpoint's current-
+    state dataset. A marker member of ``SyncMode``. Snapshot has no event-time
+    dimension to partition on, so a snapshot endpoint is laid out ``SINGLE``;
+    ``DATE_PARTITIONED`` is not a meaningful pairing (left to discipline, not a
+    runtime guard).
+    """
+
+
+@dataclass(frozen=True, slots=True)
 class WatermarkMode:
     """
-    Watermark incremental declaration (config): the late-arrival lookback margin.
+    Watermark sync declaration (config): the late-arrival lookback margin.
 
-    The endpoint's incremental *declaration*, distinct from the runtime
+    The endpoint's sync *declaration*, distinct from the runtime
     ``IncrementalCursor`` *state* in ``incremental/``: this configures how a fetch
-    resumes; the cursor is what it resumes from. ``lookback`` is the margin
-    ``compute_resume`` subtracts from the stored watermark (§4) so late-arriving
-    records inside it are re-fetched. (Whether ``lookback`` is a code default or a
-    config override is a later concern; the field shape is the same either way.)
+    resumes; the cursor is what it resumes from. Its write semantic is
+    *delete-by-window, then append* — the refetched window is cleared and replaced,
+    so late arrivals and in-window corrections land cleanly. ``lookback`` is the
+    margin ``compute_resume`` subtracts from the stored watermark (§4) so late-
+    arriving records inside it are re-fetched. (Whether ``lookback`` is a code
+    default or a config override is a later concern; the field shape is the same
+    either way.)
 
     Attributes:
         lookback: How far before the watermark each resume re-fetches.
@@ -88,24 +112,30 @@ class WatermarkMode:
 @dataclass(frozen=True, slots=True)
 class FeedMode:
     """
-    Feed incremental declaration (config): a marker carrying no configuration.
+    Feed sync declaration (config): a marker carrying no configuration.
 
     The feed arm needs no config — its resume value is the stored ``FeedToken``
-    used directly (no lookback, no window). A marker member of ``IncrementalMode``,
+    used directly (no lookback, no window). Its write semantic is *append* — feed
+    is a forward-only version stream, so new pages are appended; the §6 global
+    exact-dedup (on by default) clears the chunk-seam and pagination duplicates
+    that append alone would otherwise accumulate. A marker member of ``SyncMode``,
     distinct from the runtime ``FeedToken`` cursor state in ``incremental/``.
     """
 
 
-# The endpoint's incremental declaration (config): the caller matches on it to
-# drive resume — WatermarkMode -> compute_resume, FeedMode -> the stored token.
-type IncrementalMode = WatermarkMode | FeedMode
+# The endpoint's sync-mode declaration (config): the caller matches on it to drive
+# both resume and write semantics — SnapshotMode -> no resume + full replace,
+# WatermarkMode -> compute_resume + delete-by-window-then-append, FeedMode -> the
+# stored token + append. Storage layout (StorageKind) is the orthogonal axis.
+type SyncMode = SnapshotMode | WatermarkMode | FeedMode
 
 
-# The resume value a spec-builder consumes — the union across both incremental
-# arms: a DateWindow (watermark, from compute_resume), a FeedToken (feed, the
-# stored token), or None (no committed cursor — first fetch / bootstrap). Named
-# here with SpecBuilder because it is the spec-builder's input contract;
-# compute_resume's own return stays the narrower DateWindow | None (watermark arm).
+# The resume value a spec-builder consumes: a DateWindow (watermark, from
+# compute_resume), a FeedToken (feed, the stored token), or None — meaning no
+# committed cursor, which covers a snapshot every run plus the watermark/feed
+# first-fetch bootstrap. Named here with SpecBuilder because it is the
+# spec-builder's input contract; compute_resume's own return stays the narrower
+# DateWindow | None (watermark arm).
 type ResumeValue = DateWindow | FeedToken | None
 
 
@@ -282,8 +312,10 @@ class EndpointDefinition[ModelT: ResponseModel]:
         response_model: The per-record response model type.
         record_extractor: Pulls the record list from each response envelope.
         quota_scope: Which token bucket this endpoint spends from.
-        storage_kind: The §3 storage layout (single file vs date-partitioned).
-        incremental: The incremental declaration (``WatermarkMode`` / ``FeedMode``).
+        storage_kind: The §3 storage layout (single file vs date-partitioned) —
+            layout only; merge semantics follow ``sync_mode``.
+        sync_mode: The sync-mode declaration (``SnapshotMode`` / ``WatermarkMode``
+            / ``FeedMode``) — drives resume and write semantics.
     """
 
     provider: Provider
@@ -294,4 +326,4 @@ class EndpointDefinition[ModelT: ResponseModel]:
     record_extractor: RecordExtractor
     quota_scope: QuotaScope
     storage_kind: StorageKind
-    incremental: IncrementalMode
+    sync_mode: SyncMode
