@@ -748,25 +748,13 @@ budgets → `RetriesExhaustedError`, failed auth paths →
 
 **Models stay pure API mirrors.** Ported Pydantic models carry no use-case
 logic. Flattening and schema derivation are generic transforms in
-`records.py`, written once against Pydantic introspection — this is what
+`records/`, written once against Pydantic introspection — this is what
 makes GeoTab cheap: define models + endpoints, get flattening and schema
 derivation for free.
 
-**Flattening: default ON.** Nested objects flatten to underscore-joined
-columns. Per-endpoint opt-out exists for the (currently hypothetical) case
-where nesting genuinely helps. Arrays cannot flatten without exploding rows;
-default representation is Polars list columns, overridable per endpoint.
-The line is structural, never semantic.
+Flattening: default ON, double-underscore-joined. Nested objects flatten to double-underscore-joined columns (`parent__child`, `parent__child__leaf`); a top-level field keeps its bare name. The join is double because field names themselves contain single underscores — a single separator is ambiguous about the level boundary and would let a top-level field collide with a nested one — and the prefix is applied uniformly (never conditionally on collision), so a column name is a stable function of the access path rather than something that can silently rename when an unrelated field is added. Arrays cannot flatten without exploding rows; default representation is `pl.List` of the inner scalar, overridable per endpoint. The line is structural, never semantic.
 
-**Schema pipeline (`records.py` contract, fixed from day one):**
-
-1. **Auto derivation** — Pydantic model → Polars schema (the happy path)
-2. **`schema_overrides: dict[str, pl.DataType]`** — per-endpoint escape hatch for derivation gaps
-3. **`coercion_overrides`** — per-endpoint value-level fixes (e.g. Motive's stringly-typed numerics)
-4. **Required-column validation** — fail loudly when an endpoint's output is missing declared columns
-
-Assume auto derivation will be incomplete; the overrides are part of the
-public internal contract, not a later retrofit.
+Schema pipeline (`records/`): Schema derivation and flattening share one field walk (`records/fields.py`), so a column's name (type side) and its value (value side) cannot drift. Auto-derivation maps the closed scalar set, enums (→`pl.String` — the model already enforces membership), and `list[scalar]` (→`pl.List`), and recurses into nested models to flatten them. A leaf the deriver cannot place — an `Any`, a `dict`, a `list` of models, a multi-arm union — raises (fail fast); the per-endpoint `schema_overrides` escape hatch remains the planned answer for genuine derivation gaps but is unbuilt until a real consumer needs it, at which point it is built complete (the dtype side and the value-serialization side together — a schema-only override is a half-built hatch that errors at construction). There is no runtime required-column check: Pydantic guarantees every validated record carries every declared field, and constructing the frame with the explicit derived schema makes every column present by construction — the guarantee is a test invariant, not a runtime step. Value-level wire-cleaning (a stringly value Pydantic's lax mode cannot coerce) is not a records concern either; it lives on the model as a `field_validator(mode='before')`, under the rule that recovering the declared type is structural (allowed on the mirror) while reshaping meaning is semantic (kept off it). Empty strings normalize to null at the DataFrame boundary, while the models preserve `""` faithfully from the wire.
 
 ---
 
@@ -775,7 +763,7 @@ public internal contract, not a later retrofit.
 **Programmatic:**
 
 - `iter_records(endpoint, **params)` — typed iterator of Pydantic models, pagination transparent. (Renamed from fleet-telemetry-hub's `fetch_all`, whose "all" misleadingly suggested all endpoints rather than all pages.) This is the escape hatch for consumers who don't want Polars; the dataframe path is built on top of it.
-- DataFrame retrieval per endpoint (built on `iter_records` + `records.py`)
+- DataFrame retrieval per endpoint (built on `iter_records` + `records/`)
 - Read path over managed storage (single or partitioned) returning a dataframe
 
 **CLI — two verbs, no more:**
@@ -858,7 +846,13 @@ fleetpull/
     motive.py
     samsara.py
     geotab.py      # net-new
-  records/         # flattening; Pydantic → Polars schema derivation + overrides + validation
+  records/         # the records stage: models -> typed Polars DataFrame
+    fields.py      # the shared field walk: classify + enumerate flat leaf columns
+    schema.py      # Pydantic model -> {column: Polars dtype}
+    flatten.py     # model instance -> flat {column: value} row (None-safe)
+    dataframe.py   # build-with-schema + empty-string -> null normalization
+    convert.py     # models_to_dataframe: the schema/flatten/build/normalize composition
+    validation.py  # raw dicts -> validated models, fail-fast and loud
   storage/         # Polars merge/write: delete-by-window + append; single vs partitioned
   state/           # SQLite operational state (§5)
     database.py    # StateDatabase shell + DB primitives (connect, verify, WAL)
@@ -913,8 +907,8 @@ marker `SnapshotMode`, a `WatermarkMode` carrying its lookback, or a marker
 source of truth per endpoint, and each tier reads only its slice — the client
 reads spec-builder, page-decoder, and quota and emits the decoded records; the
 caller reads the sync mode and storage kind and validates the records into the
-model; records reads the model. The excluded concerns are the records overrides
-(`schema_overrides` / `coercion_overrides`, §9) and the provider-specific
+model; records reads the model. The excluded concerns are the records
+`schema_overrides` hatch (§9) and the provider-specific
 event-time column the watermark and date-partitioning read (§3/§5) — all
 records/state/storage contract, attaching when those layers are built.
 
