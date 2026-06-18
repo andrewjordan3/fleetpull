@@ -799,6 +799,7 @@ fleetpull/
     geotab.py      # GeotabAuthConfig (server validated as a bare hostname, §8)
     retry.py       # RetryConfig — attempt budgets, backoff shape, fallback penalty (§7)
     http.py        # HttpConfig — connect/read timeouts, truststore opt-in
+    motive.py      # MotiveConfig (base_url, records_per_page)
   logger/
     setup.py       # package logging setup (setup_logger), driven by LoggerConfig
   network/         # organizational namespace; the surfaces live in the subpackages
@@ -839,16 +840,18 @@ fleetpull/
   incremental/     # per-endpoint resume cursors; pure dependency-free leaf (§4)
     cursor.py      # DateWatermark, FeedToken, IncrementalCursor tagged union
   endpoints/       # per-endpoint bindings (the endpoints layer, below) — new fleetpull code
-    base.py        # EndpointDefinition: a frozen, kw-only dataclass generic over its response
-                   #   model, composing one impl per axis (spec_builder, page_decoder,
-                   #   response_model, quota_scope, sync mode,
-                   #   storage_kind) + the SpecBuilder and PageDecoder Protocols,
-                   #   the SyncMode union (SnapshotMode /
-                   #   WatermarkMode / FeedMode), ResumeValue, and StorageKind. No auth here — auth is
-                   #   per-provider (network ProviderProfile), resolved at the composition root.
-    motive.py      # Motive EndpointDefinitions + their spec-builders
-    samsara.py
-    geotab.py      # net-new; follows the GeoTab removals probe
+    shared/        # shared binding machinery (no auth here — auth is per-provider
+                   #   ProviderProfile, resolved at the composition root)
+      base.py      # EndpointDefinition: frozen kw-only dataclass generic over its
+                   #   response model (spec_builder, page_decoder, response_model,
+                   #   quota_scope, storage_kind, sync_mode) + the SpecBuilder
+                   #   Protocol, the SyncMode union (SnapshotMode / WatermarkMode /
+                   #   FeedMode), ResumeValue, and StorageKind
+      spec_builders.py  # StaticGetSpecBuilder — the shared snapshot spec-builder
+    motive/
+      vehicles.py  # build_vehicles_endpoint — the Motive vehicles snapshot factory
+    samsara/       # net-new when its endpoints land
+    geotab/        # net-new; follows the GeoTab removals probe
   model_contract/  # pure dependency-free leaf: the response-model config policy
     response.py    # ResponseModel config-policy base (frozen, extra=ignore, populate_by_name, strip)
   models/          # pure API mirrors per provider (Motive/Samsara ported from fleet-telemetry-hub)
@@ -922,6 +925,22 @@ a partition key for URL-path fan-out (for example, a per-vehicle locations
 endpoint). It builds only the first request — URL, base params, and the resume
 injection; the page decoder produces every request after it.
 
+A snapshot's spec-builder is shared, and bindings are factories over config. A
+snapshot endpoint translates no resume value (`SnapshotMode` always passes
+`resume=None`) and fans out over no path, so its first request is a fixed
+`GET base_url + path` carrying no provider- or endpoint-specific logic. That
+builder — `StaticGetSpecBuilder` in `endpoints/shared/spec_builders.py` — is
+shared across every snapshot binding; per-provider resume translation (watermark
+windows, feed tokens) stays in dedicated builders beside their bindings. The base
+URL and page size are provider configuration: a `MotiveConfig` (in `config/`)
+carries them, the URL defaulting to Motive's documented host and normalized to
+drop a trailing slash, the page size defaulting to Motive's documented maximum.
+Because those values are known only after config loads, a binding cannot be a
+module-level constant — capturing config at import would freeze a default and
+module-level mutable state is forbidden — so each endpoint is a factory
+(`build_vehicles_endpoint(MotiveConfig)`) returning the frozen `EndpointDefinition`
+the composition root builds for the enabled endpoints and hands to the client.
+
 **Dataclass for the binding, Protocols for the slots — and never a per-provider
 subclass.** The behavioral axes differ per provider and sometimes per endpoint,
 which is exactly why each is a Protocol with swappable implementations; the
@@ -945,14 +964,19 @@ are written once precisely because the variation is sealed in strategies. The
 discipline above is what keeps the trade real rather than a flattening of
 polymorphism into config.
 
-**Models and bindings are separate packages.** `models/` holds pure API mirrors,
-one module per provider (Motive and Samsara lifted from fleet-telemetry-hub,
-GeoTab net-new) over a shared config-policy base in `model_contract/response.py`;
-`endpoints/` holds the bindings, one module per provider, plus
-`endpoints/base.py`. The split keeps the port a clean block-lift, keeps the
-"models are pure mirrors" invariant crisp, and lets records import the model
-package generically. Blast radius is per-provider, not per-endpoint — adequate,
-and cheaper than a directory per endpoint.
+Models and bindings are separate packages, each a directory per provider.
+`models/` holds pure API mirrors (`models/<provider>/<endpoint>.py` over a shared
+config-policy base in `model_contract/response.py`); `endpoints/` holds the
+bindings the same way — `endpoints/<provider>/<endpoint>.py`, with the shared
+binding machinery (the `EndpointDefinition`, the `SpecBuilder` protocol, the
+provider-agnostic spec-builders, and the sync/storage/resume declaration types)
+in `endpoints/shared/`. The split keeps models a clean block-lift and the "models
+are pure mirrors" invariant crisp, and lets records import the model package
+generically. A directory per provider — rather than one module per provider —
+keeps each endpoint a small file (one model plus a short binding factory), matches
+the file-per-responsibility house rule, and makes a provider package's face the
+gather point for exactly that provider's factories when the orchestrator enables
+endpoints.
 
 **Fetch assembly: the endpoint declares, the machinery is generic, the caller
 sequences.** For one fetch the caller looks up the `EndpointDefinition`, turns the
@@ -1004,7 +1028,7 @@ lives in `state/`). The per-chunk DataFrame is a value, not a stateful component
 ## 14. Next Steps
 
 1. Review/amend this document
-2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → retry policy (done, `config/retry.py` + `network/retry/`) → page-decoder abstraction (done, `network/contract/page_decoder.py` + `decoders/`) → HTTP config + the real GeoTab authenticator (done, `config/http.py` + `network/auth/authenticate.py`) → `network/client/` (done) → `endpoints/base.py` → `records` → `storage` → `state` → `orchestrator` → `cli.py`
+2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → retry policy (done, `config/retry.py` + `network/retry/`) → page-decoder abstraction (done, `network/contract/page_decoder.py` + `decoders/`) → HTTP config + the real GeoTab authenticator (done, `config/http.py` + `network/auth/authenticate.py`) → `network/client/` (done) → `endpoints/shared/base.py` → `records` → `storage` → `state` → `orchestrator` → `cli.py`
 
 The `network/client/` step inherits a recorded agenda: classify
 prepare-time transport exceptions (the authenticator propagates

@@ -1,23 +1,8 @@
-"""The endpoints-layer face: the ``EndpointDefinition`` binding and the types it composes."""
+# src/fleetpull/endpoints/__init__.py
+"""The endpoints layer: per-endpoint bindings.
 
-from fleetpull.endpoints.base import (
-    EndpointDefinition,
-    FeedMode,
-    ResumeValue,
-    SnapshotMode,
-    SpecBuilder,
-    StorageKind,
-    SyncMode,
-    WatermarkMode,
-)
-
-__all__: list[str] = [
-    'EndpointDefinition',
-    'FeedMode',
-    'ResumeValue',
-    'SnapshotMode',
-    'SpecBuilder',
-    'StorageKind',
-    'SyncMode',
-    'WatermarkMode',
-]
+A namespace package; consumers import the subpackage faces directly --
+``fleetpull.endpoints.shared`` for the ``EndpointDefinition`` binding and the
+shared spec-builders, ``fleetpull.endpoints.motive`` (and future provider
+packages) for the binding factories.
+"""
