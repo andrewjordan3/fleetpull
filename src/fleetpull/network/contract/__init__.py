@@ -18,8 +18,11 @@ from fleetpull.network.contract.envelopes import (
     validated_envelope_slice,
 )
 from fleetpull.network.contract.outcome import ClassifiedResponse
-from fleetpull.network.contract.page_decoder import DecodedPage, PageDecoder
-from fleetpull.network.contract.pagination import PageAdvance, PaginationStrategy
+from fleetpull.network.contract.page_decoder import (
+    DecodedPage,
+    PageAdvance,
+    PageDecoder,
+)
 from fleetpull.network.contract.request import (
     HttpMethod,
     JsonObject,
@@ -40,7 +43,6 @@ __all__: list[str] = [
     'JsonValue',
     'PageAdvance',
     'PageDecoder',
-    'PaginationStrategy',
     'RequestSpec',
     'ResponseClassifier',
     'body_snippet',
