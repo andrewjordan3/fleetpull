@@ -112,6 +112,7 @@ class TestMigrateToHead:
             'provider',
             'endpoint',
             'status',
+            'mode',
             'window_start',
             'window_end',
             'from_version',
@@ -126,11 +127,12 @@ class TestMigrateToHead:
         _expect_insert_rejected(
             tmp_path,
             'runs',
-            '(provider, endpoint, status, window_start, window_end, started_at)',
+            '(provider, endpoint, status, mode, window_start, window_end, started_at)',
             (
                 'samsara',
                 'trips',
                 'bogus',
+                'watermark',
                 '2026-06-01T00:00:00Z',
                 '2026-06-02T00:00:00Z',
                 '2026-06-16T00:00:00Z',
@@ -141,12 +143,13 @@ class TestMigrateToHead:
         _expect_insert_rejected(
             tmp_path,
             'runs',
-            '(provider, endpoint, status, window_start, window_end, '
+            '(provider, endpoint, status, mode, window_start, window_end, '
             'from_version, started_at)',
             (
                 'samsara',
                 'trips',
                 'running',
+                'watermark',
                 '2026-06-01T00:00:00Z',
                 '2026-06-02T00:00:00Z',
                 'v0',
@@ -160,12 +163,13 @@ class TestMigrateToHead:
         _expect_insert_rejected(
             tmp_path,
             'runs',
-            '(provider, endpoint, status, window_start, window_end, '
+            '(provider, endpoint, status, mode, window_start, window_end, '
             'to_version, started_at)',
             (
                 'samsara',
                 'trips',
                 'succeeded',
+                'watermark',
                 '2026-06-01T00:00:00Z',
                 '2026-06-02T00:00:00Z',
                 'v9',
@@ -177,12 +181,13 @@ class TestMigrateToHead:
         _expect_insert_rejected(
             tmp_path,
             'runs',
-            '(provider, endpoint, status, window_start, window_end, '
+            '(provider, endpoint, status, mode, window_start, window_end, '
             'row_count, started_at)',
             (
                 'samsara',
                 'trips',
                 'succeeded',
+                'watermark',
                 '2026-06-01T00:00:00Z',
                 '2026-06-02T00:00:00Z',
                 -1,
@@ -194,11 +199,12 @@ class TestMigrateToHead:
         _expect_insert_rejected(
             tmp_path,
             'runs',
-            '(provider, endpoint, status, window_start, window_end, started_at)',
+            '(provider, endpoint, status, mode, window_start, window_end, started_at)',
             (
                 'samsara',
                 'trips',
                 'succeeded',
+                'watermark',
                 '2026-06-02T00:00:00Z',
                 '2026-06-01T00:00:00Z',
                 '2026-06-16T00:00:00Z',

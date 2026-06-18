@@ -198,7 +198,7 @@ dataset stays complete and current.
 One SQLite database lives at the resolved state database path — runtime config resolves it from `state.database_path`, defaulting to `<dataset_root>/.fleetpull/state.sqlite3`. Keeping it separable from `storage.dataset_root` lets SQLite stay on local disk when parquet sits on a network filesystem (WAL requires local disk). WAL mode. Short `busy_timeout`. Owns:
 
 - **Watermarks/cursors** per (provider, endpoint) — the tagged-union state from §4
-- **Run ledger** — run id, provider, endpoint, window/cursor range, status, row counts, duration
+- **Run ledger** — run id, provider, endpoint, sync mode, window/cursor range, status, row counts, duration
 - **Work units** — backfill decomposes into (endpoint, date-chunk) or (endpoint, vehicle, date-chunk) units; threads claim and complete them; a crash mid-backfill resumes from unclaimed/failed units instead of refetching everything
 
 Rules:
@@ -290,28 +290,33 @@ run; else (3) the configured `default_start_date`. The `cursors` table only ever
 holds (1). Arm (2) is implemented by the run ledger's `coverage_frontier` (below).
 
 **Run ledger (`state/run_ledger.py`).** One row per run — one fetch of one
-(provider, endpoint) over one window (watermark arm) or version range (feed
-arm). A sync invocation produces many runs; incremental and backfill-chunk
-fetches alike record a run, so the run ledger is the single coverage source when
-work-units land — work-units add claim/lease/resume mechanics but each unit's
-execution still records a run, so no second coverage query is needed. Lifecycle
-is two-phase: `start_run` inserts a `running` row (timestamped from the injected
-`Clock`, one range arm populated); `complete_run` closes it `succeeded` with the
-row count (and, for a feed run, the end `toVersion`); `fail_run` closes it
-`failed` with an error detail. The range is polymorphic, mirroring the cursor
-union: a run carries `window_start`/`window_end` or `from_version`/`to_version`,
-never both. That invariant — plus a non-negative row count and a well-ordered
-window — is enforced both in the `RunLedger` API and by CHECK constraints on the
-table, so neither a cross-arm write nor a malformed window can persist.
+(provider, endpoint) in one of three sync modes: a snapshot (no range — a full
+current-state refetch), a watermark window, or a feed version range; a `mode`
+column records which. A sync invocation produces many runs; incremental and
+backfill-chunk fetches alike record a run, so the run ledger is the single
+coverage source when work-units land — work-units add claim/lease/resume
+mechanics but each unit's execution still records a run, so no second coverage
+query is needed. Lifecycle is two-phase: one of `start_snapshot_run` /
+`start_window_run` / `start_feed_run` inserts a `running` row (timestamped from
+the injected `Clock`, with the range shape its mode requires — three
+single-shape entry points, so an impossible arm combination cannot be
+expressed); `complete_run` closes it `succeeded` with the row count (and, for a
+feed run, the end `toVersion`); `fail_run` closes it `failed` with an error
+detail. The range is mode-keyed, mirroring the cursor union: a snapshot run
+carries no range, a watermark run carries `window_start`/`window_end`, a feed
+run carries `from_version`/`to_version`. That shape — plus a non-negative row
+count and a well-ordered window — is enforced both by the per-mode entry points
+and by CHECK constraints on the table, so neither a mismatched range shape nor a
+malformed window can persist.
 
 **Coverage frontier — resume arm (2).** `coverage_frontier(provider, endpoint)`
 returns `max(window_end)` over that endpoint's `succeeded` runs, or `None`. This
 is the implementation of resume arm (2) recorded above: a backfill chunk that
 completed empty is still `succeeded`, so its window is counted and the history is
-never re-scanned. The frontier is watermark-only — feed endpoints always hold a
-committed cursor and never reach this arm. A `window_end` that fails to parse is
-state-store corruption and raises `ConfigurationError`, consistent with the other
-§5 stances.
+never re-scanned. The frontier is watermark-only — feed and snapshot endpoints
+never reach this arm (a feed endpoint holds a committed cursor; a snapshot has no
+resume). A `window_end` that fails to parse is state-store corruption and raises
+`ConfigurationError`, consistent with the other §5 stances.
 
 **Stale `running` rows are diagnostic.** A run whose process crashed leaves a
 `running` row; nothing depends on it (the frontier filters `succeeded`, and
