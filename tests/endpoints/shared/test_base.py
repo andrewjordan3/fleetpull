@@ -1,4 +1,4 @@
-"""Tests for fleetpull.endpoints.base."""
+"""Tests for fleetpull.endpoints.shared.base."""
 
 import dataclasses
 from collections.abc import Mapping
@@ -6,7 +6,7 @@ from datetime import timedelta
 
 import pytest
 
-from fleetpull.endpoints.base import (
+from fleetpull.endpoints.shared import (
     EndpointDefinition,
     FeedMode,
     ResumeValue,
