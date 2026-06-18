@@ -57,7 +57,6 @@ def _full_vehicle_payload() -> dict[str, object]:
         'availability_details': {
             'availability_status': 'in_service',
             'updated_at': '2026-01-01T00:00:00Z',
-            'updated_by_user': None,
         },
         'eld_device': {
             'id': _DEVICE_ID,
@@ -71,7 +70,6 @@ def _full_vehicle_payload() -> dict[str, object]:
             'status': 'active',
             'role': 'driver',
         },
-        'external_ids': [],
         'carb_ctc_test_enabled': None,
         'carb_ctc_emission_status': None,
         'registration_expiry_date': None,
@@ -140,7 +138,6 @@ class TestVehicle:
         assert vehicle.driver_facing_camera == _SENTINEL
         assert vehicle.incab_audio_recording == _SENTINEL
         assert vehicle.group_ids == []
-        assert vehicle.external_ids == []
         assert vehicle.permanent_driver is None
         assert vehicle.eld_device is None
 
@@ -160,21 +157,6 @@ class TestVehicle:
             }
         )
         assert vehicle.fuel_type == 'Diesel'
-
-    def test_external_ids_accepts_arbitrary_objects(self) -> None:
-        vehicle: Vehicle = Vehicle.model_validate(
-            {
-                'id': _VEHICLE_ID,
-                'company_id': _COMPANY_ID,
-                'number': 'TEST-004',
-                'status': 'active',
-                'ifta': False,
-                'created_at': '2025-01-01T00:00:00Z',
-                'updated_at': '2025-01-01T00:00:00Z',
-                'external_ids': [{'a': 1}, {'b': ['nested']}],
-            }
-        )
-        assert vehicle.external_ids == [{'a': 1}, {'b': ['nested']}]
 
     def test_unknown_field_is_ignored(self) -> None:
         vehicle: Vehicle = Vehicle.model_validate(
@@ -231,26 +213,15 @@ class TestVehicle:
 
 
 class TestAvailabilityDetails:
-    def test_validates_with_null_updated_by_user(self) -> None:
+    def test_validates_status_and_timestamp(self) -> None:
         details: AvailabilityDetails = AvailabilityDetails.model_validate(
             {
                 'availability_status': 'out_of_service',
                 'updated_at': '2026-01-01T00:00:00Z',
-                'updated_by_user': None,
             }
         )
         assert details.availability_status is AvailabilityStatus.OUT_OF_SERVICE
-        assert details.updated_by_user is None
-
-    def test_updated_by_user_accepts_arbitrary_object(self) -> None:
-        details: AvailabilityDetails = AvailabilityDetails.model_validate(
-            {
-                'availability_status': 'in_service',
-                'updated_at': '2026-01-01T00:00:00Z',
-                'updated_by_user': {'id': 1, 'name': 'admin'},
-            }
-        )
-        assert details.updated_by_user == {'id': 1, 'name': 'admin'}
+        assert details.updated_at == datetime(2026, 1, 1, tzinfo=UTC)
 
 
 class TestVehicleStatus:

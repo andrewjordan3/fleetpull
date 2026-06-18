@@ -16,7 +16,6 @@ so this module mirrors only the inner per-vehicle object.
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
 
 from pydantic import Field
 
@@ -68,17 +67,10 @@ class AvailabilityDetails(ResponseModel):
     Attributes:
         availability_status: Current in-service / out-of-service value.
         updated_at: Timestamp of the last status change.
-        updated_by_user: The user who set the status; null when system-set.
-            Typed ``Any`` because Motive returns an unconstrained, rarely
-            populated nested object here that fleetpull does not interpret;
-            a single justified ``Any`` is preferred over ``dict[str, Any]``
-            (type discipline) and over importing a JSON value alias (the
-            import boundary forbids that for response models).
     """
 
     availability_status: AvailabilityStatus
     updated_at: datetime
-    updated_by_user: Any = None  # free-form nested object; see docstring
 
 
 class Vehicle(ResponseModel):
@@ -125,12 +117,6 @@ class Vehicle(ResponseModel):
         availability_details: Current availability block; null when absent.
         eld_device: Installed ELD hardware; null when none.
         current_driver: Currently logged-in driver; null when none.
-        external_ids: External-system identifier objects. Typed
-            ``list[Any]`` because the element is an unconstrained,
-            integration-specific object fleetpull does not interpret; a
-            justified ``Any`` element is preferred over ``dict[str, Any]``
-            and over a JSON value alias, as for
-            ``AvailabilityDetails.updated_by_user``.
         carb_ctc_test_enabled: CARB compliance flag; null when absent.
         carb_ctc_emission_status: CARB emission status string; null when
             absent.
@@ -169,8 +155,6 @@ class Vehicle(ResponseModel):
     availability_details: AvailabilityDetails | None = None
     eld_device: EldDeviceInfo | None = None
     current_driver: DriverSummary | None = None
-
-    external_ids: list[Any] = Field(default_factory=list)  # see docstring
 
     carb_ctc_test_enabled: bool | None = None
     carb_ctc_emission_status: str | None = None
