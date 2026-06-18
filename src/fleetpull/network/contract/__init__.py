@@ -12,8 +12,13 @@ from fleetpull.network.contract.classifier import (
     body_snippet,
     retry_after_seconds_from_headers,
 )
-from fleetpull.network.contract.envelopes import validated_envelope_slice
+from fleetpull.network.contract.envelopes import (
+    require_record_list,
+    unwrap_record_objects,
+    validated_envelope_slice,
+)
 from fleetpull.network.contract.outcome import ClassifiedResponse
+from fleetpull.network.contract.page_decoder import DecodedPage, PageDecoder
 from fleetpull.network.contract.pagination import PageAdvance, PaginationStrategy
 from fleetpull.network.contract.request import (
     HttpMethod,
@@ -28,15 +33,19 @@ __all__: list[str] = [
     'SUCCESS_STATUS_RANGE',
     'AuthStrategy',
     'ClassifiedResponse',
+    'DecodedPage',
     'HttpMethod',
     'JsonObject',
     'JsonScalar',
     'JsonValue',
     'PageAdvance',
+    'PageDecoder',
     'PaginationStrategy',
     'RequestSpec',
     'ResponseClassifier',
     'body_snippet',
+    'require_record_list',
     'retry_after_seconds_from_headers',
+    'unwrap_record_objects',
     'validated_envelope_slice',
 ]
