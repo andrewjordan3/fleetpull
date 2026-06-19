@@ -1,8 +1,15 @@
 """Tests for fleetpull.storage.merge."""
 
+from datetime import UTC, datetime
+
 import polars as pl
 
-from fleetpull.storage.merge import drop_exact_duplicates, merge_snapshot
+from fleetpull.incremental import DateWindow
+from fleetpull.storage.merge import (
+    drop_exact_duplicates,
+    in_window,
+    merge_snapshot,
+)
 
 
 def test_snapshot_returns_new_and_ignores_existing() -> None:
@@ -29,3 +36,42 @@ def test_dedup_preserves_order() -> None:
 def test_dedup_keeps_same_key_different_payload() -> None:
     frame = pl.DataFrame({'a': [1, 1], 'b': ['x', 'z']})
     assert drop_exact_duplicates(frame).height == 2
+
+
+def test_in_window_keeps_rows_inside_half_open_window() -> None:
+    window = DateWindow(
+        start=datetime(2026, 6, 1, tzinfo=UTC),
+        end=datetime(2026, 6, 3, tzinfo=UTC),
+    )
+    frame = pl.DataFrame(
+        {
+            'located_at': [
+                datetime(2026, 5, 31, 23, tzinfo=UTC),  # before start: out
+                datetime(2026, 6, 1, tzinfo=UTC),  # exactly start: in
+                datetime(2026, 6, 2, tzinfo=UTC),  # inside: in
+                datetime(2026, 6, 3, tzinfo=UTC),  # exactly end: out
+            ],
+            'id': [1, 2, 3, 4],
+        }
+    )
+    kept = frame.filter(in_window('located_at', window))
+    assert kept.get_column('id').to_list() == [2, 3]
+
+
+def test_in_window_negation_is_the_complement() -> None:
+    window = DateWindow(
+        start=datetime(2026, 6, 1, tzinfo=UTC),
+        end=datetime(2026, 6, 3, tzinfo=UTC),
+    )
+    frame = pl.DataFrame(
+        {
+            'located_at': [
+                datetime(2026, 5, 31, 23, tzinfo=UTC),
+                datetime(2026, 6, 1, tzinfo=UTC),
+                datetime(2026, 6, 3, tzinfo=UTC),
+            ],
+            'id': [1, 2, 3],
+        }
+    )
+    outside = frame.filter(~in_window('located_at', window))
+    assert outside.get_column('id').to_list() == [1, 3]

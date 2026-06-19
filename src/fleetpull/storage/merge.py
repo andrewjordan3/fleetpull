@@ -20,7 +20,9 @@ from collections.abc import Callable
 
 import polars as pl
 
-__all__: list[str] = ['MergeFn', 'drop_exact_duplicates', 'merge_snapshot']
+from fleetpull.incremental import DateWindow
+
+__all__: list[str] = ['MergeFn', 'drop_exact_duplicates', 'in_window', 'merge_snapshot']
 
 # A merge function: (existing-or-None, new) -> the frame to persist for a unit.
 type MergeFn = Callable[[pl.DataFrame | None, pl.DataFrame], pl.DataFrame]
@@ -54,3 +56,38 @@ def drop_exact_duplicates(frame: pl.DataFrame) -> pl.DataFrame:
         The frame with exact-duplicate rows removed, order preserved.
     """
     return frame.unique(maintain_order=True)
+
+
+def in_window(event_time_column: str, window: DateWindow) -> pl.Expr:
+    """The half-open ``[start, end)`` window-membership predicate for a column.
+
+    Returns the boolean Polars expression true for rows whose
+    ``event_time_column`` falls in ``window`` -- ``>= window.start`` and
+    ``< window.end``, the half-open boundary made literal. It is a *predicate*,
+    not a filter: ``merge_watermark`` will apply it in both polarities from the
+    one rule -- ``frame.filter(~in_window(col, w))`` to delete a window's rows
+    from the existing on-disk frame, ``frame.filter(in_window(col, w))`` to keep
+    only the in-window rows of a fresh fetch -- so the boundary is defined in
+    exactly one place and "removal" stays the caller's concern (DESIGN §4).
+
+    The full ``[start, end)`` predicate, not merely ``>= start``: in steady state
+    ``end`` is ``now`` and ``< end`` binds nothing, but a historical backfill
+    chunk has a real ``end``, and ``< end`` is what stops an event on a chunk
+    boundary from being claimed by both the chunk ending at it and the one
+    starting at it. ``window`` already guarantees ``start < end`` at construction,
+    so the predicate never sees an inverted range.
+
+    Args:
+        event_time_column: Name of the UTC datetime column to test.
+        window: The half-open ``[start, end)`` resume window.
+
+    Returns:
+        A boolean ``pl.Expr`` true for in-window rows; apply it (or its negation)
+        with ``DataFrame.filter``.
+
+    Side Effects:
+        None -- builds an expression; evaluates nothing.
+    """
+    return (pl.col(event_time_column) >= window.start) & (
+        pl.col(event_time_column) < window.end
+    )
