@@ -1,6 +1,6 @@
 # fleetpull — Design Document
 
-**Status:** Design settled through module layout; implementation underway (see §14 for build progress).
+**Status:** Design settled through module layout; implementation well underway — the `vehicles` snapshot vertical is complete end-to-end and the `vehicle_locations` date-partitioned/watermark vertical is in progress (see §14 for build progress).
 **Name:** `fleetpull` — final. Describes exactly what the package does and nothing more (PyPI availability confirmed 2026-06-10).
 **Relationship to fleet-telemetry-hub:** New package, not a rewrite. fleet-telemetry-hub remains in production untouched while fleetpull is built.
 
@@ -86,18 +86,111 @@ data/
 contents at the end of each successful run. It is never read by the program.
 SQLite is the single source of truth (see §5) — no dual-write divergence.
 
-**Realized structure (snapshot + single built; the rest are seams).** The two
-orthogonal axes compose as a `Layout` Protocol (the `StorageKind` axis) plus
-injected merge functions (the `SyncMode` axis) — 2 layouts + 3 merges, never 6
-fused handlers. The layout owns the write-unit structure and the parquet I/O; the
-merge is injected and applied per write unit, with exact-duplicate dedup (§6) run
-on the *merged* result (so a feed refetch's re-appended rows collapse, not just
-the incoming fetch's). `persist` is the single entry point, dispatching both axes;
-`PersistResult` is its write report. Storage is stateless — parquet only, no
-SQLite, no watermark commit, no `metadata.json` (the orchestrator sequences those
-after a successful persist, §5). Only `snapshot` + `single` is built today;
-`watermark`, `date_partitioned`, and `feed` are explicit `NotImplementedError`
-seams that fill with their consumers (`vehicle_locations`, then GeoTab).
+**Realized structure (`snapshot`+`single` built end-to-end; the date-partitioned
+watermark write path building now).** The two orthogonal axes compose as a `Layout`
+Protocol (the `StorageKind` axis) plus injected merge functions (the `SyncMode`
+axis), never fused handlers. The layout owns the write-unit structure and the
+parquet I/O; the merge is injected and applied per write unit, with exact-duplicate
+dedup (§6) run on the *merged* result (so a feed refetch's re-appended rows
+collapse, not just the incoming fetch's). `persist` is the single entry point,
+dispatching both axes; `PersistResult` is its write report. Storage is stateless —
+parquet only, no SQLite, no watermark commit, no `metadata.json` (the orchestrator
+sequences those after a successful persist, §5). Only `snapshot`+`single` is built
+end-to-end (the vehicles vertical); the `date_partitioned` and `feed` cells are
+`NotImplementedError` seams that fill with their consumers (`vehicle_locations`,
+then GeoTab). The leaf primitives the date-partitioned/watermark path composes are
+built and tested ahead of the layout: `split_by_date` (`storage/partition.py`: a
+frame → per-UTC-date sub-frames), `date_partition_segment` /
+`parse_date_partition_segment` (`paths/partitions.py`: the `date=YYYY-MM-DD` segment
+and its strict inverse), `partition_part_file` (`storage/files.py`), `in_window`
+(`storage/merge.py`: the half-open `[start, end)` row predicate),
+`render_url_path_template` (`endpoints/shared/url_paths.py`: the per-vehicle URL
+fan-out), and `latest_event_time` (`records/event_time.py`: the watermark
+candidate). `SinglePageDecoder` (§8) already exists, so `vehicle_locations` composes
+it; only its watermark spec-builder is net-new (`StaticGetSpecBuilder` is
+snapshot-only).
+
+**The merge family is two pure functions, not three — the window never touches the
+merge.** A merge is `(existing | None, new) -> frame` and merges, nothing else: it
+knows nothing of windows, dates, or the event-time column. `merge_snapshot` (built)
+returns `new` (full replace); `merge_incremental` (the planned second function,
+landing with the incremental write path) concatenates an *already-cleared*
+`existing` with `new`. Watermark and feed endpoints both use `merge_incremental` —
+the earlier per-`SyncMode` merge trio collapses to two — because window-clearing is
+lifted *out* of the merge into the write mechanism (next). The `MergeFn` signature
+is therefore unchanged, and the earlier "how does the fetch window reach the merge?"
+problem is dissolved rather than routed around: the window never reaches the merge.
+
+**Window-clearing is a write-mechanism concern, and which mechanism applies turns on
+whether the partition grain equals the window grain.** The full mechanism matrix,
+`StorageKind` × `SyncMode`:
+
+| layout × mode | clear-and-write mechanism | reads parquet? | status |
+|---|---|---|---|
+| `snapshot` / `single` | overwrite the file | no | built |
+| date-window / `single` | lazy `scan_parquet` + `~in_window` filter + concat + rewrite | yes (`in_window` here) | not built |
+| date-window / `date_partitioned` | delete covered `date=` folders + write the fetched partitions | **no parquet reads** | building now (`vehicle_locations`) |
+| feed / `date_partitioned` | append to the partition: read + concat + dedup + rewrite | yes | not built (GeoTab) |
+| feed / `single` | `scan_parquet` + concat + dedup + rewrite | yes | not built |
+
+**The date-partitioned date-window cell touches no parquet bytes.** Because the
+partition grain *equals* the window dimension — date partitions, a date window —
+every `date=` partition is wholly inside or wholly outside `[start, end)`; there is
+no sub-partition row-filtering. Clearing the window is therefore a *directory*
+operation (delete whole `date=` folders), not a data operation — which is why
+`in_window` (the row-level predicate) is used only in the single-file date-window
+and feed cells, never in this one.
+
+**The write+delete for that cell is two steps.** (1) Write every
+`split_by_date(new_frame)` partition through `atomic_write_parquet` —
+overwrite-or-create, the prior existence of the folder/file being irrelevant since
+the result is identical either way. (2) Delete any on-disk `date=` folder the window
+*covers* that received no fetched partition — the empty-refetch dates. Step (2) is
+**mandatory, not optional**: the window's contract is "`[start, end)` is
+authoritatively replaced," and a covered date can legitimately return empty while
+stale rows sit on disk (a provider that deletes or edits records). We do not assume
+immutability for this whole code path — one immutable provider does not license the
+assumption for every endpoint that travels it — so the delete is mandatory
+insurance, the directory-grain analogue of §4's delete-by-window.
+
+**The delete step iterates from the window, never from disk.** Generate the covered
+date segments from `window_dates(window)` (cost O(window)), `stat` / `is_dir()` only
+those specific paths under the endpoint directory, subtract the dates just written,
+and delete the remainder — the set arithmetic is `{covered date folders that exist
+on disk} − {date folders just written} → delete`. Never list the full endpoint
+directory: a dataset spanning years would make that an O(dataset) scan, the exact
+cost partitioning exists to avoid.
+
+**`window_dates(window) -> list[date]` is the half-open rule (§4) lifted from
+instants to dates.** A partition `date=d` is covered iff some instant of that day
+lies in `[start, end)`, i.e. the dates `start.date()` through `(end - 1µs).date()`
+inclusive. The load-bearing consequence: a window ending exactly at midnight does
+**not** cover that date — `end = June 8 00:00` covers through `date=June 7`, because
+`June 8 00:00` *is* `end` and `end` is excluded; a mid-day `end` (`June 8 14:00`)
+*does* cover `date=June 8`. The one-microsecond epsilon is valid because datetimes
+are `us`-precision end to end (enforced upstream). Reopening trigger: if precision
+ever becomes uncertain, switch to the precision-independent branch form
+(`last = end.date()`, stepped back one day when `end.time()` is exactly midnight).
+
+```python
+def window_dates(window: DateWindow) -> list[date]:
+    first = window.start.date()
+    last = (window.end - timedelta(microseconds=1)).date()
+    return [first + timedelta(days=n) for n in range((last - first).days + 1)]
+```
+
+**`persist` grows a keyword-only `window`.** The signature becomes
+`persist(definition, new_frame, dataset_root, *, window: DateWindow | None = None)`.
+The window is computed per-run by the driver (via `compute_resume`, §4) and passed
+in — never read off the definition — and `persist` validates the pairing against the
+sync mode: a `WatermarkMode` endpoint with `window is None` is a wiring bug and
+raises, and a `SnapshotMode` endpoint handed a non-`None` window also raises.
+
+**How the fleet's rows for one date are assembled across the per-vehicle fan-out** —
+`vehicle_locations` fetches per vehicle (~1,459 `GET .../{vehicle_id}` calls) but a
+single `date=` partition holds the whole fleet's rows for that date — is the central
+open question for this write path (§13), as is `DatePartitionedLayout`'s exact
+interface, which is contingent on it.
 
 ---
 
@@ -135,6 +228,19 @@ as `DateWatermark` does. The half-open convention is what lets the delete-by-win
 predicate and the start-anchored append-filter share one boundary rule and never
 double-count at a window edge.
 
+**The window is cooked per-run by the driver, not stored.** `compute_resume` is
+precedence arm (1); the driver composes it with the end-cutoff and the resume
+precedence (§5) to produce each run's `DateWindow` fresh and hands it to `persist`
+(§3) — the frozen `EndpointDefinition` never carries a window. The window's `end` is
+`today - cutoff` rather than the literal `now`: `cutoff` is a config value (e.g. 1
+day, or 0 for "up to now") that holds the trailing edge back so a still-arriving day
+is not frozen prematurely — `compute_resume`'s injected `now` *is* this cutoff
+instant. `default_start_date` (config) is only the first-backfill anchor — arm (3) —
+and goes inert the moment observed data or completed coverage exists; thereafter the
+start is `max(observed) - lookback`. `lookback` already sits on `WatermarkMode`;
+where the end-cutoff lives — a second `WatermarkMode` field or a code default — is
+tentative (§13).
+
 Each endpoint definition declares which strategy it uses. This is the single
 biggest architectural improvement over fleet-telemetry-hub, whose
 `latest_data_date - lookback` assumption cannot represent GeoTab.
@@ -153,6 +259,12 @@ replaces what was held for that window. This handles late-arriving records and
 payload-drift updates (providers have been observed returning the same event
 with end timestamps drifting by milliseconds-to-seconds across fetches) with
 no event-id logic.
+
+The merge *function* does none of this clearing: §3's two-function family lifts the
+delete out of the merge, so `merge_incremental` only concatenates an already-cleared
+existing frame with the fresh fetch. How the clear is realized — a row-level
+`~in_window` rewrite for `single`, a whole-`date=`-folder delete for
+`date_partitioned` — is the write-mechanism matrix in §3.
 
 **Precondition — the incoming frame must be anchored to the window on the same
 field the delete keys on.** Delete-by-window is idempotent and dup-free only
@@ -218,6 +330,12 @@ Rules:
 
 - Transactions are tiny: claim unit → commit; finish unit → commit. **Never hold a transaction across an HTTP call.**
 - SQLite is local-disk only; not designed for network filesystems.
+
+**Status: the `state/` layer is built and tested in full** — `StateDatabase` (WAL,
+application-id stamping, integrity check), the v1 forward-only migration (`cursors`
+/ `runs` / `work_units`), `CursorStore`, `RunLedger` / `RunStatus`, and
+`WorkUnitStore` with its claim queue. What remains unbuilt is the *orchestrator*
+that sequences these against fetch and storage (§14), not the state layer itself.
 
 **Crash-safety ordering:** write parquet first (temp file + atomic rename),
 commit watermark/cursor second. A crash between the two causes a refetch on the
@@ -307,7 +425,7 @@ holds (1). Arm (2) is implemented by the run ledger's `coverage_frontier` (below
 current-state refetch), a watermark window, or a feed version range; a `mode`
 column records which. A sync invocation produces many runs; incremental and
 backfill-chunk fetches alike record a run, so the run ledger is the single
-coverage source when work-units land — work-units add claim/lease/resume
+coverage source for the work-units backfill too — work-units add claim/resume
 mechanics but each unit's execution still records a run, so no second coverage
 query is needed. Lifecycle is two-phase: one of `start_snapshot_run` /
 `start_window_run` / `start_feed_run` inserts a `running` row (timestamped from
@@ -333,7 +451,7 @@ resume). A `window_end` that fails to parse is state-store corruption and raises
 
 **Stale `running` rows are diagnostic.** A run whose process crashed leaves a
 `running` row; nothing depends on it (the frontier filters `succeeded`, and
-resume correctness rests on the cursor and, later, work-units). Reconciling or
+resume correctness rests on the cursor and the work-units queue). Reconciling or
 reaping stale `running` rows is deferred.
 
 **Work units (`state/work_units.py`).** A backfill decomposes a
@@ -754,6 +872,7 @@ budgets → `RetriesExhaustedError`, failed auth paths →
 | GeoTab | `toVersion` is a string cursor; `GetFeed` with `search.fromDate` supports historical bootstrap (feeds the state design). |
 | Samsara | 429 with fractional `Retry-After` (e.g. `0.40235`); 401 body is `{"message": ...}`; 5xx bodies are plain strings, never JSON. |
 | Motive | 401 body is `{"error_message": ...}`; the documented /vehicle_locations limit was not observed to enforce — generic 429 posture. |
+| Motive | `/v3/vehicle_locations/{vehicle_id}` verified live: envelope `{"vehicle_locations": [{"vehicle_location": {...}}]}`, `located_at` is UTC ISO-8601 (`Z`-suffixed), one non-paginated page per fetch (so `SinglePageDecoder` fits), and a single per-vehicle fetch spans multiple calendar dates (the sample crossed two) — confirming `split_by_date`'s multi-partition output is load-bearing in production, not a theoretical edge: one fetch genuinely fans into several partitions. |
 
 ---
 
@@ -839,6 +958,8 @@ fleetpull/
     datasets.py    # endpoint_directory: the shared, filesystem-neutral endpoint-dir
                    #   atom ({root}/{provider}/{endpoint}/), used by storage and the
                    #   future metadata layer
+    partitions.py  # date_partition_segment + parse_date_partition_segment: the hive
+                   #   date=YYYY-MM-DD segment and its strict inverse
   timing/
     clock.py       # injectable Clock Protocol; SystemClock and FrozenClock implementations
     sleeper.py     # injectable Sleeper Protocol; SystemSleeper backing TRANSIENT backoff waits
@@ -852,10 +973,11 @@ fleetpull/
                    #   ProviderProfile, resolved at the composition root)
       base.py      # EndpointDefinition: frozen kw-only dataclass generic over its
                    #   response model (spec_builder, page_decoder, response_model,
-                   #   quota_scope, storage_kind, sync_mode) + the SpecBuilder
-                   #   Protocol, the SyncMode union (SnapshotMode / WatermarkMode /
-                   #   FeedMode), ResumeValue, and StorageKind
+                   #   quota_scope, storage_kind, sync_mode, event_time_column) + the
+                   #   SpecBuilder Protocol, the SyncMode union (SnapshotMode /
+                   #   WatermarkMode / FeedMode), ResumeValue, and StorageKind
       spec_builders.py  # StaticGetSpecBuilder — the shared snapshot spec-builder
+      url_paths.py  # render_url_path_template — strict {placeholder} URL-path rendering (fan-out)
     motive/
       vehicles.py  # build_vehicles_endpoint — the Motive vehicles snapshot factory
     samsara/       # net-new when its endpoints land
@@ -876,13 +998,15 @@ fleetpull/
     dataframe.py   # build-with-schema + empty-string -> null normalization
     convert.py     # models_to_dataframe: the schema/flatten/build/normalize composition
     validation.py  # raw dicts -> validated models, fail-fast and loud
+    event_time.py  # latest_event_time: the max event-time watermark candidate (raw datetime)
   storage/         # the storage layer: a records DataFrame -> parquet
-    files.py       # storage path construction: data_file, temp_sibling_path
+    files.py       # storage path construction: data_file, partition_part_file, temp_sibling_path
     atomic.py      # atomic_write_parquet: the temp-then-rename durability primitive
-    merge.py       # the SyncMode axis: merge_snapshot + cross-cutting exact dedup
+    partition.py   # split_by_date: a frame -> per-UTC-date sub-frames (the date_partitioned write unit)
+    merge.py       # the SyncMode axis: merge_snapshot + in_window predicate + exact dedup (merge_incremental designed, §3)
     result.py      # PersistResult: the write report
-    layout.py      # the StorageKind axis: Layout protocol + SingleFileLayout
-    persist.py     # persist: the entry point, dispatching both axes
+    layout.py      # the StorageKind axis: Layout protocol + SingleFileLayout (DatePartitionedLayout pending, §13)
+    persist.py     # persist: the entry point, dispatching both axes (keyword-only window for watermark)
   state/           # SQLite operational state (§5)
     database.py    # StateDatabase shell + DB primitives (connect, verify, WAL)
     migrations.py  # forward-only migration runner (user_version); v1 = cursors + runs + work_units
@@ -932,14 +1056,18 @@ data — provider and name; the `SpecBuilder`; the `PageDecoder` (which yields e
 page's records and its pagination verdict from one validated view of the
 envelope); the per-record response model; the `quota_scope`; the `SyncMode` (a
 marker `SnapshotMode`, a `WatermarkMode` carrying its lookback, or a marker
-`FeedMode`); and the storage kind. Constructed keyword-only, it is the single
-source of truth per endpoint, and each tier reads only its slice — the client
-reads spec-builder, page-decoder, and quota and emits the decoded records; the
-caller reads the sync mode and storage kind and validates the records into the
-model; records reads the model. The excluded concerns are the records
-`schema_overrides` hatch (§9) and the provider-specific
-event-time column the watermark and date-partitioning read (§3/§5) — all
-records/state/storage contract, attaching when those layers are built.
+`FeedMode`); the storage kind; and — settled with `vehicle_locations` — the
+`event_time_column` the watermark and date-partitioning read (§3/§5), `'located_at'`
+for `vehicle_locations`. Constructed keyword-only, it is the single source of truth
+per endpoint, and each tier reads only its slice — the client reads spec-builder,
+page-decoder, and quota and emits the decoded records; the caller reads the sync
+mode and storage kind and validates the records into the model; records reads the
+model. The definition carries only the *static recipe* — the strategies, the
+response model, the quota/storage axes, the sync-mode config (the `lookback` on
+`WatermarkMode`, the end-cutoff), and the event-time column — all built once from
+config; the per-run `DateWindow` is cooked fresh each run by the driver (§4) and is
+never on the frozen definition. The one remaining excluded concern is the records
+`schema_overrides` hatch (§9), attaching when that layer needs it.
 
 **The spec-builder is the only genuine per-endpoint behavior.** A `SpecBuilder`
 is a Protocol with one method, `build_spec(resume, path_values) -> RequestSpec`,
@@ -954,7 +1082,11 @@ snapshot endpoint translates no resume value (`SnapshotMode` always passes
 `GET base_url + path` carrying no provider- or endpoint-specific logic. That
 builder — `StaticGetSpecBuilder` in `endpoints/shared/spec_builders.py` — is
 shared across every snapshot binding; per-provider resume translation (watermark
-windows, feed tokens) stays in dedicated builders beside their bindings. The base
+windows, feed tokens) stays in dedicated builders beside their bindings. The first
+such dedicated builder is `vehicle_locations`'s watermark spec-builder (net-new —
+`StaticGetSpecBuilder` is snapshot-only, with no resume and no fan-out): it renders
+the per-vehicle path via `render_url_path_template` and injects the run's
+`DateWindow` as the provider's window query parameters. The base
 URL and page size are provider configuration: a `MotiveConfig` (in `config/`)
 carries them, the URL defaulting to Motive's documented host and normalized to
 drop a trailing slash, the page size defaulting to Motive's documented maximum.
@@ -1047,11 +1179,18 @@ lives in `state/`). The per-chunk DataFrame is a value, not a stateful component
 - Real rate-limit values for Motive/Samsara (YAML numbers above are placeholders)
 - Whether any endpoint actually warrants the flattening opt-out
 - Per-endpoint quota scopes for Samsara: a provider metering one endpoint apart adds a `QuotaScope` member (code), while that scope's limits stay config — a code-plus-config change, not config-only.
+- **How `date_partitioned` partitions are assembled across the per-vehicle fan-out — the central open question for the `vehicle_locations` write path (§3).** The fan-out is per-vehicle (~1,459 separate `GET .../{vehicle_id}` calls), but a single `date=` partition holds the *whole fleet's* rows for that date, assembled across all those fetches. Options (A) and (B) produce the *same* output — one clean `part.parquet` per date — and differ only in the memory mechanism (RAM buffer vs. disk shards + coalesce); the real question is whether disk-spill is needed or whether small backfill chunks plus a RAM buffer suffice. Deciding factor: backfill chunk sizing (next item) — if backfill is chunked small, each chunk is bounded and a buffer may be enough (A); staging (B) is robust to any volume regardless of chunk size. The tradeoff is staging complexity vs. chunk-sizing discipline atop the existing `work_units` queue.
+    - **(A) RAM buffer.** Accumulate one window's fleet data in memory, `split_by_date`, write one `part.parquet` per date at the end. Bounded by window size in steady state; breaks for backfill (e.g. 2024→today is not bounded by `lookback`).
+    - **(B) Staging / spill-to-disk (tentative lean).** On run start create a staging area; append each vehicle to a buffer; at a row threshold (e.g. ~500k) split by date and flush shards (`shard-000001.parquet`, …) into per-date staging; at the end `pl.scan_parquet` each date's shards and coalesce (streamed via sink) to the final `part.parquet`, then delete staging. Peak memory is the threshold knob, independent of total volume — handles backfill and avoids the small-files problem in one mechanism. Cost: shard lifecycle, the coalesce step, and staging crash-recovery (clear stale staging on restart; the final `part.parquet`, written atomically at coalesce, is the only durable artifact).
+    - **(REJECTED) Per-vehicle multi-part** (`part-{uuid}.parquet`, no coalesce): ~1,459 vehicles × ~7 window-days ≈ 10k tiny files per refresh, compounding every refresh — the small-files problem partitioning exists to prevent. Tens of thousands of few-KB files degrade BigQuery external tables and `scan_parquet` badly. Not viable at breadcrumb scale.
+- **Backfill chunking as a config value.** Splitting one large window (e.g. 2024→today) into sub-window units of N days (e.g. 7) does not exist yet and would be user config. It maps onto the `work_units` queue (built): each sub-window is a work unit, claimed and executed in turn. Tied to the deciding factor above.
+- **`DatePartitionedLayout`'s exact interface, contingent on the partition-assembly question above.** How it slots against the `Layout` protocol, where the delete step (§3) sits relative to the writes, and whether it receives an accumulated frame or coordinates staging are all unresolved until that settles.
+- **End-cutoff (`today - N`) placement (§4):** a second field on `WatermarkMode` vs. a code default — tentative; settle when the config/driver layer is built.
 
 ## 14. Next Steps
 
 1. Review/amend this document
-2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → retry policy (done, `config/retry.py` + `network/retry/`) → page-decoder abstraction (done, `network/contract/page_decoder.py` + `decoders/`) → HTTP config + the real GeoTab authenticator (done, `config/http.py` + `network/auth/authenticate.py`) → `network/client/` (done) → `endpoints/shared/base.py` → `records` → `storage` → `state` → `orchestrator` → `cli.py`
+2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → retry policy (done, `config/retry.py` + `network/retry/`) → page-decoder abstraction (done, `network/contract/page_decoder.py` + `decoders/`) → HTTP config + the real GeoTab authenticator (done, `config/http.py` + `network/auth/authenticate.py`) → `network/client/` (done) → `endpoints/shared/base.py` (done) → `records` (done) → `storage` (done: `snapshot`+`single` plus the date-partitioned/watermark leaf primitives; `DatePartitionedLayout` pending — §3/§13) → `state` (done in full — §5) → `orchestrator` → `cli.py`
 
 The `network/client/` step inherits a recorded agenda: classify
 prepare-time transport exceptions (the authenticator propagates
@@ -1062,5 +1201,23 @@ budgets → `RetriesExhaustedError`, auth paths → `AuthenticationError`), and
 bundle the two per-provider dependencies that share a session lifetime
 (auth strategy, classifier) into `ProviderProfile`, leaving the per-endpoint
 page decoder and quota scope to arrive on each `fetch_pages` call.
+
+**Vertical progress.** The Motive `vehicles` snapshot vertical is complete
+end-to-end (`client → validate_records → models_to_dataframe → persist`, exercised
+by a throwaway hand-run driver). The Motive `vehicle_locations`
+date-partitioned/watermark vertical is in progress: the leaf primitives are built
+(§3), and what remains is `DatePartitionedLayout` (its interface open, §13), the
+net-new watermark spec-builder, the `persist` window parameter and the
+`event_time_column` field, and the trivial `VehicleLocation` model port — the last
+step of the vertical.
+
+**Deliberately deferred — not blockers for the `vehicle_locations` port.** The YAML
+config loader (hardcoded config stands in meanwhile); the full `work_units` backfill
+orchestrator (per-provider executor and per-endpoint writer threads — the
+`work_units` *store* is built, the orchestrator that drives it is not); and
+`metadata.json` generation (cosmetic, projected from SQLite, never read by the
+program). The `state/` layer (§5) is built in full; only the orchestrator that
+sequences it against fetch and storage remains.
+
 3. Port Motive/Samsara models and endpoint definitions onto the new base
 4. GeoTab integration when access lands
