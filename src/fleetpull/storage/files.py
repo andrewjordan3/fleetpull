@@ -9,14 +9,19 @@ target's own directory so the rename that follows is same-filesystem and
 therefore atomic.
 """
 
+from datetime import date
 from pathlib import Path
 from uuid import uuid4
 
-__all__: list[str] = ['data_file', 'temp_sibling_path']
+from fleetpull.paths import date_partition_segment
 
-# The single-layout data file name (DESIGN §3). Date-partitioned part files
-# (``part.parquet``) are the partitioned layout's concern, added with it.
+__all__: list[str] = ['data_file', 'partition_part_file', 'temp_sibling_path']
+
+# The single-layout data file name (DESIGN §3).
 _SINGLE_FILE_NAME: str = 'data.parquet'
+
+# The date-partitioned layout's per-partition part file name (DESIGN §3).
+_PART_FILE_NAME: str = 'part.parquet'
 
 
 def data_file(endpoint_dir: Path) -> Path:
@@ -29,6 +34,19 @@ def data_file(endpoint_dir: Path) -> Path:
         ``{endpoint_dir}/data.parquet``.
     """
     return endpoint_dir / _SINGLE_FILE_NAME
+
+
+def partition_part_file(endpoint_dir: Path, partition_date: date) -> Path:
+    """The date-partitioned part file for one date under an endpoint directory.
+
+    Args:
+        endpoint_dir: The endpoint directory (from ``endpoint_directory``).
+        partition_date: The partition's calendar date.
+
+    Returns:
+        ``{endpoint_dir}/date=YYYY-MM-DD/part.parquet``.
+    """
+    return endpoint_dir / date_partition_segment(partition_date) / _PART_FILE_NAME
 
 
 def temp_sibling_path(target: Path) -> Path:
