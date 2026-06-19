@@ -843,8 +843,10 @@ fleetpull/
     clock.py       # injectable Clock Protocol; SystemClock and FrozenClock implementations
     sleeper.py     # injectable Sleeper Protocol; SystemSleeper backing TRANSIENT backoff waits
     codec.py       # pure UTC datetime <-> ISO-8601/date-string conversions (stdlib-only leaf)
-  incremental/     # per-endpoint resume cursors; pure dependency-free leaf (§4)
+  incremental/     # per-endpoint resume state: cursors + window + deriving fn; pure leaf (§4)
     cursor.py      # DateWatermark, FeedToken, IncrementalCursor tagged union
+    window.py      # DateWindow — the half-open [start, end) watermark resume window (§4)
+    resume.py      # compute_resume — pure DateWatermark -> DateWindow resume function (§4)
   endpoints/       # per-endpoint bindings (the endpoints layer, below) — new fleetpull code
     shared/        # shared binding machinery (no auth here — auth is per-provider
                    #   ProviderProfile, resolved at the composition root)
@@ -858,6 +860,9 @@ fleetpull/
       vehicles.py  # build_vehicles_endpoint — the Motive vehicles snapshot factory
     samsara/       # net-new when its endpoints land
     geotab/        # net-new; follows the GeoTab removals probe
+  polars_typing/   # quarantined re-export boundary for Polars type aliases with no public
+                   #   equivalent (e.g. ParquetCompression) — the sole importer of polars._typing
+    __init__.py    # re-exports ParquetCompression
   model_contract/  # pure dependency-free leaf: the response-model config policy
     response.py    # ResponseModel config-policy base (frozen, extra=ignore, populate_by_name, strip)
   models/          # pure API mirrors per provider (Motive/Samsara ported from fleet-telemetry-hub)
