@@ -86,6 +86,19 @@ data/
 contents at the end of each successful run. It is never read by the program.
 SQLite is the single source of truth (see §5) — no dual-write divergence.
 
+**Realized structure (snapshot + single built; the rest are seams).** The two
+orthogonal axes compose as a `Layout` Protocol (the `StorageKind` axis) plus
+injected merge functions (the `SyncMode` axis) — 2 layouts + 3 merges, never 6
+fused handlers. The layout owns the write-unit structure and the parquet I/O; the
+merge is injected and applied per write unit, with exact-duplicate dedup (§6) run
+on the *merged* result (so a feed refetch's re-appended rows collapse, not just
+the incoming fetch's). `persist` is the single entry point, dispatching both axes;
+`PersistResult` is its write report. Storage is stateless — parquet only, no
+SQLite, no watermark commit, no `metadata.json` (the orchestrator sequences those
+after a successful persist, §5). Only `snapshot` + `single` is built today;
+`watermark`, `date_partitioned`, and `feed` are explicit `NotImplementedError`
+seams that fill with their consumers (`vehicle_locations`, then GeoTab).
+
 ---
 
 ## 4. Incremental Model
@@ -821,6 +834,11 @@ fleetpull/
       registry.py      # RateLimiterRegistry
     retry/
       decision.py  # RetryDecision, RandomFractionGenerator, decide_retry — pure retry policy (§7)
+  paths/           # filesystem path expansion + dataset-layout utilities (pure leaf)
+    resolution.py  # resolve_path + PathInput: lexical absolute-path normalization
+    datasets.py    # endpoint_directory: the shared, filesystem-neutral endpoint-dir
+                   #   atom ({root}/{provider}/{endpoint}/), used by storage and the
+                   #   future metadata layer
   timing/
     clock.py       # injectable Clock Protocol; SystemClock and FrozenClock implementations
     sleeper.py     # injectable Sleeper Protocol; SystemSleeper backing TRANSIENT backoff waits
@@ -853,7 +871,13 @@ fleetpull/
     dataframe.py   # build-with-schema + empty-string -> null normalization
     convert.py     # models_to_dataframe: the schema/flatten/build/normalize composition
     validation.py  # raw dicts -> validated models, fail-fast and loud
-  storage/         # Polars merge/write: delete-by-window + append; single vs partitioned
+  storage/         # the storage layer: a records DataFrame -> parquet
+    files.py       # storage path construction: data_file, temp_sibling_path
+    atomic.py      # atomic_write_parquet: the temp-then-rename durability primitive
+    merge.py       # the SyncMode axis: merge_snapshot + cross-cutting exact dedup
+    result.py      # PersistResult: the write report
+    layout.py      # the StorageKind axis: Layout protocol + SingleFileLayout
+    persist.py     # persist: the entry point, dispatching both axes
   state/           # SQLite operational state (§5)
     database.py    # StateDatabase shell + DB primitives (connect, verify, WAL)
     migrations.py  # forward-only migration runner (user_version); v1 = cursors + runs + work_units
