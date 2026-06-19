@@ -161,6 +161,9 @@ combine-as-imports = true
 # Docstring presence (D) is enforced in src/ only: test names are the
 # documentation convention there.
 "tests/**" = ["PLR2004", "S101", "D"]
+# A hand-run driver script's stdout IS its interface, so print (T20) is its
+# legitimate output mechanism, not the production-logging smell the rule guards.
+"scripts/**" = ["T20"]
 
 [tool.ruff.format]
 quote-style = "single"
