@@ -6,7 +6,8 @@ reads it (via the orchestrator, not storage). The fleetpull analogue of
 fleet-telemetry-hub's merge stats.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import date
 
 __all__: list[str] = ['WriteResult']
 
@@ -22,8 +23,12 @@ class WriteResult:
         duplicates_dropped: Exact-duplicate rows removed at write time.
         files_written: Parquet files written -- ``1`` for ``single``, the count of
             touched partitions for ``date_partitioned``.
+        deleted_partitions: The date partitions deleted this run -- the
+            covered-but-empty dates a date-partitioned watermark refresh prunes.
+            Empty for every other cell.
     """
 
     rows_written: int
     duplicates_dropped: int
     files_written: int
+    deleted_partitions: list[date] = field(default_factory=list)

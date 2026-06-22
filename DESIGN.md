@@ -86,40 +86,43 @@ data/
 contents at the end of each successful run. It is never read by the program.
 SQLite is the single source of truth (see §5) — no dual-write divergence.
 
-**Realized structure (`snapshot`+`single` built end-to-end; the date-partitioned
-watermark write path building now).** The two orthogonal axes compose as a `Layout`
-Protocol (the `StorageKind` axis) plus injected merge functions (the `SyncMode`
-axis), never fused handlers. The layout owns the write-unit structure and the
-parquet I/O; the merge is injected and applied per write unit, with exact-duplicate
-dedup (§6) run on the *merged* result (so a feed refetch's re-appended rows
-collapse, not just the incoming fetch's). `persist` is the single entry point,
-dispatching both axes; `PersistResult` is its write report. Storage is stateless —
-parquet only, no SQLite, no watermark commit, no `metadata.json` (the orchestrator
-sequences those after a successful persist, §5). Only `snapshot`+`single` is built
-end-to-end (the vehicles vertical); the `date_partitioned` and `feed` cells are
-`NotImplementedError` seams that fill with their consumers (`vehicle_locations`,
-then GeoTab). The leaf primitives the date-partitioned/watermark path composes are
-built and tested ahead of the layout: `split_by_date` (`storage/partition.py`: a
-frame → per-UTC-date sub-frames), `date_partition_segment` /
-`parse_date_partition_segment` (`paths/partitions.py`: the `date=YYYY-MM-DD` segment
-and its strict inverse), `partition_part_file` (`storage/files.py`), `in_window`
-(`storage/frames.py`: the half-open `[start, end)` row predicate),
+**Realized structure (`snapshot`+`single` and `watermark`+`date_partitioned` built;
+the feed cells next).** Each `(StorageKind, SyncMode)` cell is its own
+`DatasetWriter` — fused per cell, not composed from an injected merge, because the
+write semantic depends on both axes at once (a floored watermark write *replaces*
+under date partitioning but *clears and appends* under a single file). `select_writer`
+is the single routing point: it resolves the endpoint directory and returns the
+cell's writer, constructed with the runtime resume `window` an incremental cell
+needs. The orchestrator drives every endpoint identically — `write` per fetched
+piece, `finalize` once — and `finalize` returns a `WriteResult`. The exact-duplicate
+dedup (§6) runs inside each writer's finalize, on the frame it is about to write.
+Storage is stateless — parquet only, no SQLite, no watermark commit, no
+`metadata.json` (the orchestrator sequences those after a successful `finalize`,
+§5). The single-file family (`SingleFileWriter` → `SnapshotWriter`) and the
+date-partitioned watermark cell (`PartitionedWriter` → `WatermarkPartitionedWriter`)
+are built; the feed cells (single and partitioned) fill with GeoTab. The leaf
+primitives the writers compose: `split_by_date` (`storage/partition.py`: a frame →
+per-UTC-date sub-frames), `date_partition_segment` / `parse_date_partition_segment`
+(`paths/partitions.py`: the `date=YYYY-MM-DD` segment and its strict inverse),
+`partition_part_file` (`storage/files.py`), `in_window` (`storage/frames.py`: the
+half-open `[start, end)` row predicate, for the single-file combine cells),
 `render_url_path_template` (`endpoints/shared/url_paths.py`: the per-vehicle URL
-fan-out), and `latest_event_time` (`records/event_time.py`: the watermark
-candidate). `SinglePageDecoder` (§8) already exists, so `vehicle_locations` composes
-it; only its watermark spec-builder is net-new (`StaticGetSpecBuilder` is
+fan-out), `latest_event_time` (`records/event_time.py`: the watermark candidate),
+`stage_shard` / `compact_partition` (`storage/staging.py`: the date-partitioned
+write half), and `prune_window_partitions` (`storage/partitioning.py`: the delete
+half). `SinglePageDecoder` (§8) already exists, so `vehicle_locations` composes it;
+only its watermark spec-builder is net-new (`StaticGetSpecBuilder` is
 snapshot-only).
 
-**The merge family is two pure functions, not three — the window never touches the
-merge.** A merge is `(existing | None, new) -> frame` and merges, nothing else: it
-knows nothing of windows, dates, or the event-time column. `merge_snapshot` (built)
-returns `new` (full replace); `merge_incremental` (the planned second function,
-landing with the incremental write path) concatenates an *already-cleared*
-`existing` with `new`. Watermark and feed endpoints both use `merge_incremental` —
-the earlier per-`SyncMode` merge trio collapses to two — because window-clearing is
-lifted *out* of the merge into the write mechanism (next). The `MergeFn` signature
-is therefore unchanged, and the earlier "how does the fetch window reach the merge?"
-problem is dissolved rather than routed around: the window never reaches the merge.
+**There is no merge function — the combine lives in each writer.** The earlier
+design injected a `MergeFn` per `SyncMode` and applied it inside a `Layout`; both
+are gone. Each cell's writer owns its own combine: a snapshot returns this run's
+frame, a feed concatenates-and-dedups against the prior file, a watermark single-file
+clears the window (`~in_window`) and appends, a watermark date-partitioned replaces
+each covered partition and prunes the empty ones. Window-clearing is therefore not a
+row operation a merge performs but a property of the cell's write mechanism — and
+which mechanism applies turns on whether the partition grain equals the window grain,
+the matrix below.
 
 **Window-clearing is a write-mechanism concern, and which mechanism applies turns on
 whether the partition grain equals the window grain.** The full mechanism matrix,
@@ -260,11 +263,9 @@ payload-drift updates (providers have been observed returning the same event
 with end timestamps drifting by milliseconds-to-seconds across fetches) with
 no event-id logic.
 
-The merge *function* does none of this clearing: §3's two-function family lifts the
-delete out of the merge, so `merge_incremental` only concatenates an already-cleared
-existing frame with the fresh fetch. How the clear is realized — a row-level
-`~in_window` rewrite for `single`, a whole-`date=`-folder delete for
-`date_partitioned` — is the write-mechanism matrix in §3.
+No merge function performs this clearing — there is no merge function (§3). The clear
+is a property of the cell's writer: a row-level `~in_window` rewrite for `single`, a
+whole-`date=`-folder delete for `date_partitioned` — the write-mechanism matrix in §3.
 
 **Precondition — the incoming frame must be anchored to the window on the same
 field the delete keys on.** Delete-by-window is idempotent and dup-free only
@@ -1004,10 +1005,11 @@ fleetpull/
     atomic.py      # atomic_write_parquet: the temp-then-rename durability primitive
     read.py        # read_parquet_if_exists: existence-tolerant parquet read (the write's read sibling)
     partition.py   # split_by_date: a frame -> per-UTC-date sub-frames (the date_partitioned write unit)
-    partitioning.py # the date-partition prune: window_dates + existing_partition_dates + delete_partition + prune_window_partitions (§3)
+    partitioning.py # the date-partition prune (delete half): window_dates + existing_partition_dates + delete_partition + prune_window_partitions (§3)
+    staging.py     # the date-partition write half: stage_shard + compact_partition (§3)
     frames.py      # frame ops the writers compose: exact dedup + the half-open window predicate
     result.py      # WriteResult: the write report
-    writers.py     # DatasetWriter protocol + SingleFileWriter ABC + SnapshotWriter + select_writer (partitioned family in Part 2, §3)
+    writers.py     # DatasetWriter protocol + SingleFile/Partitioned ABCs + Snapshot/WatermarkPartitioned writers + select_writer (feed cells next, §3)
   state/           # SQLite operational state (§5)
     database.py    # StateDatabase shell + DB primitives (connect, verify, WAL)
     migrations.py  # forward-only migration runner (user_version); v1 = cursors + runs + work_units
