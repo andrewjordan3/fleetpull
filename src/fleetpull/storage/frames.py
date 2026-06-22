@@ -1,45 +1,21 @@
-# src/fleetpull/storage/merge.py
-"""Merge functions: the per-``SyncMode`` write semantics, plus the cross-cutting
-exact-duplicate dedup.
+# src/fleetpull/storage/frames.py
+"""Frame operations the writers compose: the exact-duplicate dedup and the
+half-open window-membership predicate.
 
-The ``SyncMode`` axis. Each merge takes the existing on-disk frame (or ``None``)
-and this run's new frame and returns the frame to persist for one write unit;
-they are pure DataFrame transforms, dispatched by the ``SyncMode`` marker in
-``persist``. Only ``merge_snapshot`` exists now; ``merge_watermark`` (delete-by-
-window-then-append) and ``merge_feed`` (append) arrive with their consumers.
-
-``drop_exact_duplicates`` is the write-time exact dedup (DESIGN §6): applied to
-the merged result of every mode (default on; its config off-switch is a later
-concern), it clears byte-identical rows -- feed's pagination / refetch duplicates
-most importantly, and a cheap safety net elsewhere. It runs on the merged result,
-not just the incoming frame, so a feed crash-refetch that re-appends an already-
-stored row still collapses.
+Two pure DataFrame helpers shared across the dataset writers. ``drop_exact_
+duplicates`` is the write-time exact dedup (DESIGN §6): every writer runs it on its
+finalized frame, clearing byte-identical rows -- a feed's pagination / refetch
+duplicates most importantly, a cheap safety net elsewhere. ``in_window`` is the
+half-open ``[start, end)`` membership predicate a window-clearing writer applies in
+both polarities (delete the existing window's rows, keep the fresh fetch's
+in-window rows) so the boundary is defined in exactly one place.
 """
-
-from collections.abc import Callable
 
 import polars as pl
 
 from fleetpull.incremental import DateWindow
 
-__all__: list[str] = ['MergeFn', 'drop_exact_duplicates', 'in_window', 'merge_snapshot']
-
-# A merge function: (existing-or-None, new) -> the frame to persist for a unit.
-type MergeFn = Callable[[pl.DataFrame | None, pl.DataFrame], pl.DataFrame]
-
-
-def merge_snapshot(existing: pl.DataFrame | None, new: pl.DataFrame) -> pl.DataFrame:
-    """Full-replace: the new frame is the result; existing is discarded.
-
-    Args:
-        existing: The prior on-disk frame; accepted to satisfy ``MergeFn`` and
-            intentionally unused -- a snapshot replaces wholesale.
-        new: This run's freshly fetched frame.
-
-    Returns:
-        ``new``, unchanged.
-    """
-    return new
+__all__: list[str] = ['drop_exact_duplicates', 'in_window']
 
 
 def drop_exact_duplicates(frame: pl.DataFrame) -> pl.DataFrame:
@@ -64,7 +40,7 @@ def in_window(event_time_column: str, window: DateWindow) -> pl.Expr:
     Returns the boolean Polars expression true for rows whose
     ``event_time_column`` falls in ``window`` -- ``>= window.start`` and
     ``< window.end``, the half-open boundary made literal. It is a *predicate*,
-    not a filter: ``merge_watermark`` will apply it in both polarities from the
+    not a filter: a window-clearing writer applies it in both polarities from the
     one rule -- ``frame.filter(~in_window(col, w))`` to delete a window's rows
     from the existing on-disk frame, ``frame.filter(in_window(col, w))`` to keep
     only the in-window rows of a fresh fetch -- so the boundary is defined in
