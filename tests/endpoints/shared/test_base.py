@@ -76,7 +76,7 @@ def _make_endpoint(
 class TestEndpointDefinition:
     def test_constructs_and_reads_back_fields(self) -> None:
         endpoint = _make_endpoint(
-            WatermarkMode(lookback=timedelta(days=1)),
+            WatermarkMode(lookback=timedelta(days=1), cutoff=timedelta(days=2)),
             event_time_column='occurred_at',
         )
         assert endpoint.provider == Provider.SAMSARA
@@ -84,7 +84,9 @@ class TestEndpointDefinition:
         assert endpoint.response_model is _StubModel
         assert endpoint.quota_scope == QuotaScope.SAMSARA
         assert endpoint.storage_kind == StorageKind.SINGLE
-        assert endpoint.sync_mode == WatermarkMode(lookback=timedelta(days=1))
+        assert endpoint.sync_mode == WatermarkMode(
+            lookback=timedelta(days=1), cutoff=timedelta(days=2)
+        )
         assert endpoint.event_time_column == 'occurred_at'
 
     def test_accepts_a_feed_mode(self) -> None:
@@ -106,10 +108,12 @@ class TestEndpointDefinition:
 
 class TestSyncMode:
     def test_watermark_mode_holds_lookback(self) -> None:
-        assert WatermarkMode(lookback=timedelta(hours=6)).lookback == timedelta(hours=6)
+        assert WatermarkMode(
+            lookback=timedelta(hours=6), cutoff=timedelta(days=2)
+        ).lookback == timedelta(hours=6)
 
     def test_watermark_mode_is_frozen_and_slotted(self) -> None:
-        mode = WatermarkMode(lookback=timedelta(hours=6))
+        mode = WatermarkMode(lookback=timedelta(hours=6), cutoff=timedelta(days=2))
         assert not hasattr(mode, '__dict__')
         with pytest.raises(dataclasses.FrozenInstanceError):
             mode.lookback = timedelta(0)  # type: ignore[misc]
@@ -145,7 +149,9 @@ class TestEndpointDefinitionValidation:
 
     def test_watermark_without_event_time_column_raises(self) -> None:
         with pytest.raises(ValueError, match='requires an event_time_column'):
-            _make_endpoint(WatermarkMode(lookback=timedelta(days=1)))
+            _make_endpoint(
+                WatermarkMode(lookback=timedelta(days=1), cutoff=timedelta(days=2))
+            )
 
     def test_date_partitioned_without_event_time_column_raises(self) -> None:
         with pytest.raises(ValueError, match='requires an event_time_column'):
@@ -154,27 +160,27 @@ class TestEndpointDefinitionValidation:
     def test_event_time_column_not_a_field_raises(self) -> None:
         with pytest.raises(ValueError, match='not a field'):
             _make_endpoint(
-                WatermarkMode(lookback=timedelta(days=1)),
+                WatermarkMode(lookback=timedelta(days=1), cutoff=timedelta(days=2)),
                 event_time_column='not_a_field',
             )
 
     def test_non_date_like_event_time_column_raises(self) -> None:
         with pytest.raises(TypeError, match='date-like'):
             _make_endpoint(
-                WatermarkMode(lookback=timedelta(days=1)),
+                WatermarkMode(lookback=timedelta(days=1), cutoff=timedelta(days=2)),
                 event_time_column='name',
             )
 
     def test_watermark_single_with_event_time_constructs(self) -> None:
         endpoint = _make_endpoint(
-            WatermarkMode(lookback=timedelta(days=1)),
+            WatermarkMode(lookback=timedelta(days=1), cutoff=timedelta(days=2)),
             event_time_column='occurred_at',
         )
         assert endpoint.event_time_column == 'occurred_at'
 
     def test_watermark_date_partitioned_constructs(self) -> None:
         endpoint = _make_endpoint(
-            WatermarkMode(lookback=timedelta(days=1)),
+            WatermarkMode(lookback=timedelta(days=1), cutoff=timedelta(days=2)),
             storage_kind=StorageKind.DATE_PARTITIONED,
             event_time_column='occurred_at',
         )
@@ -182,7 +188,7 @@ class TestEndpointDefinitionValidation:
 
     def test_nullable_date_like_event_time_constructs(self) -> None:
         endpoint = _make_endpoint(
-            WatermarkMode(lookback=timedelta(days=1)),
+            WatermarkMode(lookback=timedelta(days=1), cutoff=timedelta(days=2)),
             event_time_column='maybe_at',
         )
         assert endpoint.event_time_column == 'maybe_at'

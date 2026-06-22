@@ -85,7 +85,7 @@ def _partitioned_watermark_definition() -> EndpointDefinition[_LocationStub]:
         response_model=_LocationStub,
         quota_scope=QuotaScope.MOTIVE,
         storage_kind=StorageKind.DATE_PARTITIONED,
-        sync_mode=WatermarkMode(lookback=timedelta(days=1)),
+        sync_mode=WatermarkMode(lookback=timedelta(days=1), cutoff=timedelta(days=2)),
         event_time_column='located_at',
     )
 
