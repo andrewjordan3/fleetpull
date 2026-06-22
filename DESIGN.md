@@ -110,9 +110,12 @@ half-open `[start, end)` row predicate, for the single-file combine cells),
 fan-out), `latest_event_time` (`records/event_time.py`: the watermark candidate),
 `stage_shard` / `compact_partition` (`storage/staging.py`: the date-partitioned
 write half), and `prune_window_partitions` (`storage/partitioning.py`: the delete
-half). `SinglePageDecoder` (§8) already exists, so `vehicle_locations` composes it;
-only its watermark spec-builder is net-new (`StaticGetSpecBuilder` is
-snapshot-only).
+half). `vehicle_locations`'s watermark spec-builder is built (`StaticGetSpecBuilder` is
+snapshot-only); its page decoder is the remaining net-new piece. `SinglePageDecoder`
+(§8) decodes one top-level record list under a single key, but Motive wraps each
+location individually (`{"vehicle_locations": [{"vehicle_location": {...}}]}`), so
+the endpoint needs a decoder that strips the per-item wrapper — resolved with the
+binding.
 
 **There is no merge function — the combine lives in each writer.** The earlier
 design injected a `MergeFn` per `SyncMode` and applied it inside a `Layout`; both
@@ -981,6 +984,7 @@ fleetpull/
       url_paths.py  # render_url_path_template — strict {placeholder} URL-path rendering (fan-out)
     motive/
       vehicles.py  # build_vehicles_endpoint — the Motive vehicles snapshot factory
+      vehicle_locations.py  # MotiveVehicleLocationsSpecBuilder — the watermark spec-builder (binding next)
     samsara/       # net-new when its endpoints land
     geotab/        # net-new; follows the GeoTab removals probe
   polars_typing/   # quarantined re-export boundary for Polars type aliases with no public
@@ -1089,8 +1093,8 @@ snapshot endpoint translates no resume value (`SnapshotMode` always passes
 builder — `StaticGetSpecBuilder` in `endpoints/shared/spec_builders.py` — is
 shared across every snapshot binding; per-provider resume translation (watermark
 windows, feed tokens) stays in dedicated builders beside their bindings. The first
-such dedicated builder is `vehicle_locations`'s watermark spec-builder (net-new —
-`StaticGetSpecBuilder` is snapshot-only, with no resume and no fan-out): it renders
+such dedicated builder is `vehicle_locations`'s watermark spec-builder
+(`StaticGetSpecBuilder` is snapshot-only, with no resume and no fan-out): it renders
 the per-vehicle path via `render_url_path_template` and injects the run's
 `DateWindow` as the provider's window query parameters. The base
 URL and page size are provider configuration: a `MotiveConfig` (in `config/`)
