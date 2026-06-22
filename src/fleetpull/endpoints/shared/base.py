@@ -90,15 +90,23 @@ class WatermarkMode:
     *delete-by-window, then append* — the refetched window is cleared and replaced,
     so late arrivals and in-window corrections land cleanly. ``lookback`` is the
     margin ``compute_resume`` subtracts from the stored watermark (§4) so late-
-    arriving records inside it are re-fetched. (Whether ``lookback`` is a code
-    default or a config override is a later concern; the field shape is the same
-    either way.)
+    arriving records inside it are re-fetched. ``cutoff`` is the complementary
+    trailing-edge holdback: the window's end is held back this far from the clock
+    so a still-arriving day is never frozen as a complete partition. Both express
+    one physical concern -- provider data latency -- from opposite ends, so both
+    are sourced from the provider config (``lookback_days`` / ``cutoff_days``),
+    not defaulted on the mode.
 
     Attributes:
-        lookback: How far before the watermark each resume re-fetches.
+        lookback: How far before the watermark each resume re-fetches, to recover
+            records that landed after their event-time day.
+        cutoff: How far the window's end is held back from the clock, so the most
+            recent written partition is always a complete day. Day-granular; zero
+            adds no holdback beyond the resolver's own date alignment.
     """
 
     lookback: timedelta
+    cutoff: timedelta
 
 
 @dataclass(frozen=True, slots=True)

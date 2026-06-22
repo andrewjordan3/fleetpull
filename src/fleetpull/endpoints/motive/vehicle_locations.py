@@ -133,8 +133,8 @@ def build_vehicle_locations_endpoint(
 
     Args:
         config: The validated Motive configuration; supplies the base URL the
-            spec-builder joins to the per-vehicle path and the lookback the
-            watermark mode carries.
+            spec-builder joins to the per-vehicle path and the lookback and
+            cutoff the watermark mode carry.
 
     Returns:
         The frozen vehicle_locations ``EndpointDefinition``. Construction validates
@@ -155,6 +155,9 @@ def build_vehicle_locations_endpoint(
         response_model=VehicleLocation,
         quota_scope=QuotaScope.MOTIVE,
         storage_kind=StorageKind.DATE_PARTITIONED,
-        sync_mode=WatermarkMode(lookback=timedelta(days=config.lookback_days)),
+        sync_mode=WatermarkMode(
+            lookback=timedelta(days=config.lookback_days),
+            cutoff=timedelta(days=config.cutoff_days),
+        ),
         event_time_column='located_at',
     )
