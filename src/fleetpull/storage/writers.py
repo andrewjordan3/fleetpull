@@ -16,11 +16,13 @@ snapshot, once per fanned-out unit for a partitioned watermark endpoint), then
 helpers (the atomic write, the exact dedup); the runtime resume ``window`` an
 incremental writer needs is supplied at construction, not on ``write``.
 
-Only the single-file family is built here (``SnapshotWriter``); the partitioned
-family (staging + per-partition compaction + the prune) lands in Part 2.
+The single-file family (``SnapshotWriter``) and the date-partitioned watermark cell
+(``WatermarkPartitionedWriter``, staging + per-partition compaction + the prune) are
+built; the feed cells (single and partitioned) fill with GeoTab.
 """
 
 from abc import ABC, abstractmethod
+from datetime import date
 from pathlib import Path
 from typing import Protocol
 
@@ -30,19 +32,25 @@ from fleetpull.endpoints.shared import (
     EndpointDefinition,
     SnapshotMode,
     StorageKind,
+    WatermarkMode,
 )
 from fleetpull.incremental import DateWindow
 from fleetpull.model_contract import ResponseModel
 from fleetpull.paths import PathInput, endpoint_directory
 from fleetpull.storage.atomic import atomic_write_parquet
-from fleetpull.storage.files import data_file
+from fleetpull.storage.files import data_file, partition_part_file
 from fleetpull.storage.frames import drop_exact_duplicates
+from fleetpull.storage.partitioning import prune_window_partitions
+from fleetpull.storage.read import read_parquet_if_exists
 from fleetpull.storage.result import WriteResult
+from fleetpull.storage.staging import compact_partition, stage_shard
 
 __all__: list[str] = [
     'DatasetWriter',
+    'PartitionedWriter',
     'SingleFileWriter',
     'SnapshotWriter',
+    'WatermarkPartitionedWriter',
     'select_writer',
 ]
 
@@ -178,6 +186,124 @@ class SnapshotWriter(SingleFileWriter):
         return self._accumulated()
 
 
+class PartitionedWriter(ABC):
+    """Writers whose dataset is hive ``date=YYYY-MM-DD`` partitions.
+
+    Shared substance: each ``write`` stages its piece as date-split shards
+    (``stage_shard``); ``finalize`` folds each touched date's shards into that
+    date's ``part.parquet`` (``compact_partition``) and reports. Two per-cell
+    decisions are the subclass's: whether compaction folds in the existing
+    partition (``_reads_existing`` -- append cells do, replace cells do not), and
+    whether the run prunes the covered-but-empty dates (``_prunes`` -- a watermark
+    refresh authoritatively replaces its window, so it prunes; an append-only feed
+    does not). The ABC owns the staging and the finalize orchestration; the
+    per-partition compaction is the shared ``compact_partition`` it drives.
+    """
+
+    @property
+    @abstractmethod
+    def _reads_existing(self) -> bool:
+        """Whether compaction folds the existing ``part.parquet`` into the result."""
+        ...
+
+    @property
+    @abstractmethod
+    def _prunes(self) -> bool:
+        """Whether ``finalize`` deletes the window's covered-but-empty partitions."""
+        ...
+
+    def __init__(
+        self, target_dir: Path, event_time_column: str, window: DateWindow
+    ) -> None:
+        """Bind the writer to an endpoint directory, event-time column, and window.
+
+        Args:
+            target_dir: The endpoint directory holding the ``date=`` partitions.
+            event_time_column: The UTC datetime column whose date keys the
+                partitions.
+            window: The run's half-open resume window -- the prune's bound.
+
+        Side Effects:
+            None.
+        """
+        self._target_dir = target_dir
+        self._event_time_column = event_time_column
+        self._window = window
+        self._written_dates: set[date] = set()
+
+    def write(self, frame: pl.DataFrame) -> None:
+        """Stage one fetched piece as date-split shards.
+
+        Args:
+            frame: One fetched piece (e.g. one vehicle's rows over the window).
+
+        Side Effects:
+            Writes ``.shard`` files under the touched dates' staging directories.
+        """
+        self._written_dates.update(
+            stage_shard(self._target_dir, frame, self._event_time_column)
+        )
+
+    def finalize(self) -> WriteResult:
+        """Compact every touched partition, prune if the cell prunes, and report.
+
+        Returns:
+            The write report -- rows and duplicates summed across the compacted
+            partitions, ``files_written`` the partition count, and
+            ``deleted_partitions`` the pruned dates (empty when the cell does not
+            prune).
+
+        Side Effects:
+            Writes each touched ``part.parquet`` and clears its staging; deletes
+            the pruned partition directories.
+        """
+        rows_written = 0
+        duplicates_dropped = 0
+        for partition_date in sorted(self._written_dates):
+            existing = (
+                read_parquet_if_exists(
+                    partition_part_file(self._target_dir, partition_date)
+                )
+                if self._reads_existing
+                else None
+            )
+            result = compact_partition(self._target_dir, partition_date, existing)
+            rows_written += result.rows_written
+            duplicates_dropped += result.duplicates_dropped
+        deleted_partitions = (
+            prune_window_partitions(self._target_dir, self._window, self._written_dates)
+            if self._prunes
+            else []
+        )
+        return WriteResult(
+            rows_written=rows_written,
+            duplicates_dropped=duplicates_dropped,
+            files_written=len(self._written_dates),
+            deleted_partitions=deleted_partitions,
+        )
+
+
+class WatermarkPartitionedWriter(PartitionedWriter):
+    """``watermark`` + ``date_partitioned``: replace each covered partition, prune.
+
+    The floored window refetches each covered date in full, so compaction replaces
+    that date's ``part.parquet`` outright -- no existing read -- and the run prunes
+    the covered dates that returned empty (a provider that deleted or edited
+    records). Late, corrected, and deleted records all land through replacement,
+    never a row-level merge (DESIGN §3/§4).
+    """
+
+    @property
+    def _reads_existing(self) -> bool:
+        """Replace, never fold in the prior partition."""
+        return False
+
+    @property
+    def _prunes(self) -> bool:
+        """The window is authoritatively replaced, so empty-refetch dates prune."""
+        return True
+
+
 def select_writer(
     definition: EndpointDefinition[ResponseModel],
     dataset_root: PathInput,
@@ -220,6 +346,19 @@ def select_writer(
                     f'endpoints have no resume window.'
                 )
             return SnapshotWriter(target_dir)
+        case (StorageKind.DATE_PARTITIONED, WatermarkMode()):
+            if window is None:
+                raise ValueError(
+                    f'{definition.provider.value}.{definition.name}: a watermark '
+                    f'date-partitioned endpoint requires a resume window.'
+                )
+            event_time_column = definition.event_time_column
+            if event_time_column is None:
+                raise ValueError(
+                    f'{definition.provider.value}.{definition.name}: a '
+                    f'date-partitioned endpoint requires an event_time_column.'
+                )
+            return WatermarkPartitionedWriter(target_dir, event_time_column, window)
         case _:
             raise NotImplementedError(
                 f'no writer for storage_kind={definition.storage_kind} '

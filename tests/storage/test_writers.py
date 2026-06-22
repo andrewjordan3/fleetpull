@@ -1,6 +1,6 @@
 """Tests for fleetpull.storage.writers."""
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import polars as pl
@@ -13,16 +13,36 @@ from fleetpull.endpoints.shared import (
     StaticGetSpecBuilder,
     StorageKind,
     SyncMode,
+    WatermarkMode,
 )
 from fleetpull.incremental import DateWindow
+from fleetpull.model_contract import ResponseModel
 from fleetpull.models.motive import Vehicle
 from fleetpull.network.decoders import MotiveWrappedListPageDecoder
-from fleetpull.storage.writers import SnapshotWriter, select_writer
+from fleetpull.storage.writers import (
+    SnapshotWriter,
+    WatermarkPartitionedWriter,
+    select_writer,
+)
 from fleetpull.vocabulary import Provider, QuotaScope
 
 
 def _frame() -> pl.DataFrame:
     return pl.DataFrame({'a': [1, 2], 'b': ['x', 'y']})
+
+
+def _located_frame(rows: list[tuple[datetime, int]]) -> pl.DataFrame:
+    """Build a (located_at, id) frame from (datetime, id) rows."""
+    return pl.DataFrame(
+        {
+            'located_at': [moment for moment, _ in rows],
+            'id': [identifier for _, identifier in rows],
+        }
+    )
+
+
+class _LocationStub(ResponseModel):
+    located_at: datetime
 
 
 def _vehicles_definition(sync_mode: SyncMode) -> EndpointDefinition[Vehicle]:
@@ -46,6 +66,27 @@ def _vehicles_definition(sync_mode: SyncMode) -> EndpointDefinition[Vehicle]:
         quota_scope=QuotaScope.MOTIVE,
         storage_kind=StorageKind.SINGLE,
         sync_mode=sync_mode,
+    )
+
+
+def _partitioned_watermark_definition() -> EndpointDefinition[_LocationStub]:
+    """A date-partitioned watermark binding (the vehicle_locations shape)."""
+    return EndpointDefinition(
+        provider=Provider.MOTIVE,
+        name='vehicle_locations',
+        spec_builder=StaticGetSpecBuilder(
+            base_url='https://api.gomotive.com', path='/v3/vehicle_locations'
+        ),
+        page_decoder=MotiveWrappedListPageDecoder(
+            list_key='vehicle_locations',
+            item_key='vehicle_location',
+            per_page=100,
+        ),
+        response_model=_LocationStub,
+        quota_scope=QuotaScope.MOTIVE,
+        storage_kind=StorageKind.DATE_PARTITIONED,
+        sync_mode=WatermarkMode(lookback=timedelta(days=1)),
+        event_time_column='located_at',
     )
 
 
@@ -87,6 +128,73 @@ class TestSnapshotWriter:
         assert pl.read_parquet(tmp_path / 'data.parquet').equals(_frame())
 
 
+class TestWatermarkPartitionedWriter:
+    def test_single_run_writes_one_partition_per_date(self, tmp_path: Path) -> None:
+        window = DateWindow(
+            start=datetime(2026, 6, 1, tzinfo=UTC),
+            end=datetime(2026, 6, 3, tzinfo=UTC),
+        )
+        writer = WatermarkPartitionedWriter(tmp_path, 'located_at', window)
+        writer.write(
+            _located_frame(
+                [
+                    (datetime(2026, 6, 1, 8, tzinfo=UTC), 1),
+                    (datetime(2026, 6, 2, 8, tzinfo=UTC), 2),
+                ]
+            )
+        )
+        result = writer.finalize()
+        assert (tmp_path / 'date=2026-06-01' / 'part.parquet').exists()
+        assert (tmp_path / 'date=2026-06-02' / 'part.parquet').exists()
+        assert result.rows_written == 2
+        assert result.files_written == 2
+
+    def test_fan_out_folds_into_one_partition(self, tmp_path: Path) -> None:
+        window = DateWindow(
+            start=datetime(2026, 6, 1, tzinfo=UTC),
+            end=datetime(2026, 6, 2, tzinfo=UTC),
+        )
+        writer = WatermarkPartitionedWriter(tmp_path, 'located_at', window)
+        writer.write(_located_frame([(datetime(2026, 6, 1, 8, tzinfo=UTC), 1)]))
+        writer.write(_located_frame([(datetime(2026, 6, 1, 9, tzinfo=UTC), 2)]))
+        writer.finalize()
+        part = pl.read_parquet(tmp_path / 'date=2026-06-01' / 'part.parquet')
+        assert sorted(part.get_column('id').to_list()) == [1, 2]
+
+    def test_replaces_the_existing_partition(self, tmp_path: Path) -> None:
+        window = DateWindow(
+            start=datetime(2026, 6, 1, tzinfo=UTC),
+            end=datetime(2026, 6, 2, tzinfo=UTC),
+        )
+        stale_dir = tmp_path / 'date=2026-06-01'
+        stale_dir.mkdir(parents=True)
+        pl.DataFrame(
+            {'located_at': [datetime(2026, 6, 1, 1, tzinfo=UTC)], 'id': [99]}
+        ).write_parquet(stale_dir / 'part.parquet')
+        writer = WatermarkPartitionedWriter(tmp_path, 'located_at', window)
+        writer.write(_located_frame([(datetime(2026, 6, 1, 8, tzinfo=UTC), 1)]))
+        writer.finalize()
+        part = pl.read_parquet(stale_dir / 'part.parquet')
+        assert part.get_column('id').to_list() == [1]
+
+    def test_prunes_the_empty_refetch_date(self, tmp_path: Path) -> None:
+        window = DateWindow(
+            start=datetime(2026, 6, 1, tzinfo=UTC),
+            end=datetime(2026, 6, 3, tzinfo=UTC),
+        )
+        stale_dir = tmp_path / 'date=2026-06-01'
+        stale_dir.mkdir(parents=True)
+        pl.DataFrame(
+            {'located_at': [datetime(2026, 6, 1, 1, tzinfo=UTC)], 'id': [99]}
+        ).write_parquet(stale_dir / 'part.parquet')
+        writer = WatermarkPartitionedWriter(tmp_path, 'located_at', window)
+        writer.write(_located_frame([(datetime(2026, 6, 2, 8, tzinfo=UTC), 2)]))
+        result = writer.finalize()
+        assert not stale_dir.exists()
+        assert result.deleted_partitions == [date(2026, 6, 1)]
+        assert (tmp_path / 'date=2026-06-02' / 'part.parquet').exists()
+
+
 class TestSelectWriter:
     def test_returns_snapshot_writer_for_snapshot_single(self, tmp_path: Path) -> None:
         writer = select_writer(_vehicles_definition(SnapshotMode()), tmp_path)
@@ -115,3 +223,19 @@ class TestSelectWriter:
     def test_raises_for_an_unbuilt_cell(self, tmp_path: Path) -> None:
         with pytest.raises(NotImplementedError):
             select_writer(_vehicles_definition(FeedMode()), tmp_path)
+
+    def test_returns_watermark_partitioned_writer(self, tmp_path: Path) -> None:
+        window = DateWindow(
+            start=datetime(2026, 6, 1, tzinfo=UTC),
+            end=datetime(2026, 6, 2, tzinfo=UTC),
+        )
+        writer = select_writer(
+            _partitioned_watermark_definition(), tmp_path, window=window
+        )
+        assert isinstance(writer, WatermarkPartitionedWriter)
+
+    def test_rejects_missing_window_for_partitioned_watermark(
+        self, tmp_path: Path
+    ) -> None:
+        with pytest.raises(ValueError, match='resume window'):
+            select_writer(_partitioned_watermark_definition(), tmp_path)
