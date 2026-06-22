@@ -7,6 +7,8 @@ from fleetpull.storage.files import (
     data_file,
     partition_dir,
     partition_part_file,
+    partition_staging_dir,
+    partition_staging_shard,
     temp_sibling_path,
 )
 
@@ -54,3 +56,27 @@ class TestPartitionDir:
     def test_directory_name_is_the_date_segment(self) -> None:
         result = partition_dir(Path('/d/m/e'), date(2026, 6, 1))
         assert result.name == 'date=2026-06-01'
+
+
+class TestPartitionStaging:
+    def test_staging_dir_is_inside_the_partition(self) -> None:
+        result = partition_staging_dir(Path('/d/m/vehicle_locations'), date(2026, 6, 1))
+        assert result == Path('/d/m/vehicle_locations/date=2026-06-01/staging')
+
+    def test_shard_parent_is_the_staging_dir(self) -> None:
+        endpoint_dir = Path('/d/m/vehicle_locations')
+        partition_date = date(2026, 6, 1)
+        shard = partition_staging_shard(endpoint_dir, partition_date)
+        assert shard.parent == partition_staging_dir(endpoint_dir, partition_date)
+
+    def test_shard_name_is_a_shard_file(self) -> None:
+        shard = partition_staging_shard(Path('/d/m/e'), date(2026, 6, 1))
+        assert shard.name.startswith('shard-')
+        assert shard.name.endswith('.shard')
+
+    def test_two_shards_for_one_date_differ(self) -> None:
+        endpoint_dir = Path('/d/m/e')
+        partition_date = date(2026, 6, 1)
+        first = partition_staging_shard(endpoint_dir, partition_date)
+        second = partition_staging_shard(endpoint_dir, partition_date)
+        assert first != second
