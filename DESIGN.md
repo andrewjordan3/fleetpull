@@ -989,9 +989,12 @@ fleetpull/
   model_contract/  # pure dependency-free leaf: the response-model config policy
     response.py    # ResponseModel config-policy base (frozen, extra=ignore, populate_by_name, strip)
   models/          # pure API mirrors per provider (Motive/Samsara ported from fleet-telemetry-hub)
-    motive.py
-    samsara.py
-    geotab.py      # net-new
+    motive/        # the Motive model package — a directory per provider (§11 prose below)
+      shared.py    # DriverSummary, EldDeviceInfo — embedded shapes shared across endpoints
+      vehicles.py  # Vehicle snapshot record (+ AvailabilityDetails / AvailabilityStatus / VehicleStatus)
+      vehicle_locations.py # VehicleLocation breadcrumb record (/v3/vehicle_locations)
+    samsara/       # net-new when its endpoints land
+    geotab/        # net-new
   records/         # the records stage: models -> typed Polars DataFrame
     fields.py      # the shared field walk: classify + enumerate flat leaf columns
     schema.py      # Pydantic model -> {column: Polars dtype}
