@@ -103,7 +103,7 @@ built and tested ahead of the layout: `split_by_date` (`storage/partition.py`: a
 frame → per-UTC-date sub-frames), `date_partition_segment` /
 `parse_date_partition_segment` (`paths/partitions.py`: the `date=YYYY-MM-DD` segment
 and its strict inverse), `partition_part_file` (`storage/files.py`), `in_window`
-(`storage/merge.py`: the half-open `[start, end)` row predicate),
+(`storage/frames.py`: the half-open `[start, end)` row predicate),
 `render_url_path_template` (`endpoints/shared/url_paths.py`: the per-vehicle URL
 fan-out), and `latest_event_time` (`records/event_time.py`: the watermark
 candidate). `SinglePageDecoder` (§8) already exists, so `vehicle_locations` composes
@@ -1002,12 +1002,12 @@ fleetpull/
   storage/         # the storage layer: a records DataFrame -> parquet
     files.py       # storage path construction: data_file, partition_dir, partition_part_file, temp_sibling_path
     atomic.py      # atomic_write_parquet: the temp-then-rename durability primitive
+    read.py        # read_parquet_if_exists: existence-tolerant parquet read (the write's read sibling)
     partition.py   # split_by_date: a frame -> per-UTC-date sub-frames (the date_partitioned write unit)
     partitioning.py # the date-partition prune: window_dates + existing_partition_dates + delete_partition + prune_window_partitions (§3)
-    merge.py       # the SyncMode axis: merge_snapshot + in_window predicate + exact dedup (merge_incremental designed, §3)
-    result.py      # PersistResult: the write report
-    layout.py      # the StorageKind axis: Layout protocol + SingleFileLayout (DatePartitionedLayout pending, §13)
-    persist.py     # persist: the entry point, dispatching both axes (keyword-only window for watermark)
+    frames.py      # frame ops the writers compose: exact dedup + the half-open window predicate
+    result.py      # WriteResult: the write report
+    writers.py     # DatasetWriter protocol + SingleFileWriter ABC + SnapshotWriter + select_writer (partitioned family in Part 2, §3)
   state/           # SQLite operational state (§5)
     database.py    # StateDatabase shell + DB primitives (connect, verify, WAL)
     migrations.py  # forward-only migration runner (user_version); v1 = cursors + runs + work_units
