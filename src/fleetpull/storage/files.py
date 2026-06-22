@@ -15,7 +15,12 @@ from uuid import uuid4
 
 from fleetpull.paths import date_partition_segment
 
-__all__: list[str] = ['data_file', 'partition_part_file', 'temp_sibling_path']
+__all__: list[str] = [
+    'data_file',
+    'partition_dir',
+    'partition_part_file',
+    'temp_sibling_path',
+]
 
 # The single-layout data file name (DESIGN §3).
 _SINGLE_FILE_NAME: str = 'data.parquet'
@@ -36,6 +41,26 @@ def data_file(endpoint_dir: Path) -> Path:
     return endpoint_dir / _SINGLE_FILE_NAME
 
 
+def partition_dir(endpoint_dir: Path, partition_date: date) -> Path:
+    """The date-partition directory for one date under an endpoint directory.
+
+    The single place the hive ``date=YYYY-MM-DD`` directory path is built;
+    ``partition_part_file`` and the prune step both go through it, so the
+    structural fact lives once.
+
+    Args:
+        endpoint_dir: The endpoint directory (from ``endpoint_directory``).
+        partition_date: The partition's calendar date.
+
+    Returns:
+        ``{endpoint_dir}/date=YYYY-MM-DD``.
+
+    Side Effects:
+        None -- pure path arithmetic; no filesystem access.
+    """
+    return endpoint_dir / date_partition_segment(partition_date)
+
+
 def partition_part_file(endpoint_dir: Path, partition_date: date) -> Path:
     """The date-partitioned part file for one date under an endpoint directory.
 
@@ -45,8 +70,11 @@ def partition_part_file(endpoint_dir: Path, partition_date: date) -> Path:
 
     Returns:
         ``{endpoint_dir}/date=YYYY-MM-DD/part.parquet``.
+
+    Side Effects:
+        None -- pure path arithmetic; no filesystem access.
     """
-    return endpoint_dir / date_partition_segment(partition_date) / _PART_FILE_NAME
+    return partition_dir(endpoint_dir, partition_date) / _PART_FILE_NAME
 
 
 def temp_sibling_path(target: Path) -> Path:

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fleetpull.storage.files import (
     data_file,
+    partition_dir,
     partition_part_file,
     temp_sibling_path,
 )
@@ -43,3 +44,13 @@ class TestPartitionPartFile:
         result = partition_part_file(Path('/d/m/e'), date(2026, 1, 5))
         assert result.name == 'part.parquet'
         assert result.parent.name == 'date=2026-01-05'
+
+
+class TestPartitionDir:
+    def test_builds_hive_partition_directory(self) -> None:
+        result = partition_dir(Path('/d/m/vehicle_locations'), date(2026, 6, 1))
+        assert result == Path('/d/m/vehicle_locations/date=2026-06-01')
+
+    def test_directory_name_is_the_date_segment(self) -> None:
+        result = partition_dir(Path('/d/m/e'), date(2026, 6, 1))
+        assert result.name == 'date=2026-06-01'
