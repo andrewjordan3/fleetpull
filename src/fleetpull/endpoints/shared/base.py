@@ -13,15 +13,16 @@ This module ships the binding, the one Protocol it defines (``SpecBuilder``; the
 ``PageDecoder`` it composes is imported from the contract), and the small
 declaration types beside it: ``StorageKind``, the ``SyncMode`` union
 (``SnapshotMode`` / ``WatermarkMode`` / ``FeedMode``), and the ``ResumeValue``
-alias. The records/state/storage contract (the records overrides and the
-event-time column) is deferred — ``base.py`` ships the fetch/binding core.
+alias. The ``event_time_column`` the watermark and date-partitioning read
+(§3/§5) now ships here on the binding, validated at construction; the records
+``schema_overrides`` hatch (§9) is the one contract piece still deferred.
 """
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 from enum import StrEnum
-from typing import Protocol
+from typing import Any, Protocol, get_args
 
 from fleetpull.incremental import DateWindow, FeedToken
 from fleetpull.model_contract import ResponseModel
@@ -72,9 +73,9 @@ class SnapshotMode:
     resume — its spec-builder always receives ``resume=None`` (no window, no
     token). Its write semantic is *full replacement* of the endpoint's current-
     state dataset. A marker member of ``SyncMode``. Snapshot has no event-time
-    dimension to partition on, so a snapshot endpoint is laid out ``SINGLE``;
-    ``DATE_PARTITIONED`` is not a meaningful pairing (left to discipline, not a
-    runtime guard).
+    dimension to partition on, so a snapshot endpoint must be laid out
+    ``SINGLE`` — ``EndpointDefinition`` enforces that pairing at construction,
+    since ``DATE_PARTITIONED`` would have no event-time column to split on.
     """
 
 
@@ -187,12 +188,11 @@ class EndpointDefinition[ModelT: ResponseModel]:
     not a full-response wrapper — the ``page_decoder`` owns the envelope, so
     fleet-telemetry-hub's wrapper models are not ported, only the per-record ones.
 
-    Keyword-only because eight positional fields is an error waiting to happen. The
-    excluded concerns are the records/state/storage contract — the records overrides
-    (``schema_overrides`` / ``coercion_overrides``, §9) and the provider-specific
-    event-time column the watermark and date-partitioning read (§3/§5) — which
-    attach when those layers are built; ``base.py`` ships the fetch/binding core
-    only.
+    Keyword-only because positional fields here are an error waiting to happen. The
+    ``event_time_column`` the watermark and date-partitioning read (§3/§5) now
+    attaches here, validated against the response model at construction; the
+    records ``schema_overrides`` / ``coercion_overrides`` hatch (§9) is the one
+    excluded concern still deferred.
 
     Attributes:
         provider: The provider this endpoint belongs to.
@@ -206,6 +206,11 @@ class EndpointDefinition[ModelT: ResponseModel]:
             layout only; merge semantics follow ``sync_mode``.
         sync_mode: The sync-mode declaration (``SnapshotMode`` / ``WatermarkMode``
             / ``FeedMode``) — drives resume and write semantics.
+        event_time_column: The response model's UTC datetime field the watermark
+            and date-partitioning read (§3/§5) — e.g. ``'located_at'``. ``None``
+            for endpoints with no event-time dimension (every snapshot). Required
+            for ``WatermarkMode`` / ``DATE_PARTITIONED``, forbidden for snapshots;
+            validated against ``response_model`` at construction.
     """
 
     provider: Provider
@@ -216,3 +221,156 @@ class EndpointDefinition[ModelT: ResponseModel]:
     quota_scope: QuotaScope
     storage_kind: StorageKind
     sync_mode: SyncMode
+    event_time_column: str | None = None
+
+    def __post_init__(self) -> None:
+        """Validate the binding's storage / sync / event-time coherence.
+
+        Raises:
+            ValueError: The storage-kind / sync-mode pairing is invalid, or the
+                event-time column is required-but-missing or forbidden-but-present
+                or names no field on the response model.
+            TypeError: ``event_time_column`` names a non-date-like field.
+
+        Side Effects:
+            None -- reads fields and may raise.
+        """
+        self._validate_storage_sync_pairing()
+        self._validate_event_time_column()
+
+    def _validate_storage_sync_pairing(self) -> None:
+        """Reject a snapshot endpoint laid out anything but ``SINGLE``.
+
+        A snapshot has no event-time dimension to partition on, so
+        ``DATE_PARTITIONED`` is structurally unexecutable for it -- there is no
+        column for ``split_by_date`` to split on (DESIGN §3).
+
+        Raises:
+            ValueError: The endpoint is a snapshot with a non-``SINGLE`` layout.
+
+        Side Effects:
+            None.
+        """
+        if (
+            isinstance(self.sync_mode, SnapshotMode)
+            and self.storage_kind is not StorageKind.SINGLE
+        ):
+            raise ValueError(
+                f'{self.provider.value}.{self.name}: SnapshotMode requires '
+                f'storage_kind SINGLE, got {self.storage_kind}.'
+            )
+
+    def _validate_event_time_column(self) -> None:
+        """Validate the event-time column against sync mode, layout, and model.
+
+        Snapshots forbid it (no event-time dimension); ``WatermarkMode`` and
+        ``DATE_PARTITIONED`` require it (the watermark and the partition key both
+        read it). When present it must name a date-like field on the response
+        model, caught here at construction rather than mid-persist, where
+        ``split_by_date`` or ``latest_event_time`` would otherwise fail on a
+        non-temporal column after the fetch is already spent (DESIGN §3/§5).
+
+        Raises:
+            ValueError: The column is required-but-missing, forbidden-but-present,
+                or names no field on the response model.
+            TypeError: The named field is not date-like.
+
+        Side Effects:
+            None.
+        """
+        is_snapshot = isinstance(self.sync_mode, SnapshotMode)
+        requires_event_time = (
+            isinstance(self.sync_mode, WatermarkMode)
+            or self.storage_kind is StorageKind.DATE_PARTITIONED
+        )
+        if is_snapshot and self.event_time_column is not None:
+            raise ValueError(
+                f'{self.provider.value}.{self.name}: snapshot endpoints have no '
+                f'event-time dimension, so event_time_column must be None.'
+            )
+        if requires_event_time and self.event_time_column is None:
+            raise ValueError(
+                f'{self.provider.value}.{self.name}: WatermarkMode or '
+                f'DATE_PARTITIONED requires an event_time_column.'
+            )
+        if self.event_time_column is not None:
+            self._require_date_like_field(self.event_time_column)
+
+    def _require_date_like_field(self, column: str) -> None:
+        """Require ``column`` to name a date-like field on the response model.
+
+        Validated as a top-level Pydantic field name: the records flatten
+        preserves top-level field names as column names, so a top-level
+        event-time field's column name equals its field name. A nested event-time
+        field is not yet supported and would not resolve here (deferred until an
+        endpoint needs one).
+
+        Args:
+            column: The event-time column name to check against the model.
+
+        Raises:
+            ValueError: ``column`` names no field on ``response_model``.
+            TypeError: The field is annotated as neither ``date`` nor ``datetime``
+                (nullable forms included).
+
+        Side Effects:
+            None.
+        """
+        model_fields = self.response_model.model_fields
+        if column not in model_fields:
+            valid_names = ', '.join(sorted(model_fields))
+            raise ValueError(
+                f'{self.provider.value}.{self.name}: event_time_column '
+                f'{column!r} is not a field on {self.response_model.__name__}. '
+                f'Fields: {valid_names}.'
+            )
+        annotation = model_fields[column].annotation
+        if not _is_date_like_annotation(annotation):
+            raise TypeError(
+                f'{self.provider.value}.{self.name}: event_time_column '
+                f'{column!r} must be date-like, got annotation {annotation!r}.'
+            )
+
+
+# A field annotation is an arbitrary type form (a class, a PEP 604 union, ...),
+# so ``Any`` is the honest parameter type for these annotation-inspection helpers.
+def _is_date_like_annotation(annotation: Any) -> bool:
+    """Whether an annotation resolves to ``date`` or ``datetime``.
+
+    Nullable forms count: a provider's ``datetime | None`` timestamp is still a
+    valid event-time field. Other unions and non-temporal types do not.
+
+    Args:
+        annotation: The field annotation to inspect.
+
+    Returns:
+        ``True`` if the annotation is ``date``, ``datetime``, or a two-arm
+        optional of either.
+
+    Side Effects:
+        None.
+    """
+    return _unwrap_optional(annotation) in {date, datetime}
+
+
+def _unwrap_optional(annotation: Any) -> Any:
+    """Strip ``None`` from a two-arm optional annotation, else return it as is.
+
+    Args:
+        annotation: The annotation to inspect.
+
+    Returns:
+        The sole non-``None`` arm of a two-arm ``X | None`` union; otherwise
+        ``annotation`` unchanged. A union of more than two arms passes through, so
+        a genuinely ambiguous union is not treated as date-like.
+
+    Side Effects:
+        None.
+    """
+    union_args = get_args(annotation)
+    if not union_args:
+        return annotation
+    non_none_args = [arg for arg in union_args if arg is not type(None)]
+    if len(non_none_args) == 1 and len(non_none_args) != len(union_args):
+        return non_none_args[0]
+    return annotation

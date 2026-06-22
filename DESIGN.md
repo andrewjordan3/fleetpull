@@ -1000,9 +1000,10 @@ fleetpull/
     validation.py  # raw dicts -> validated models, fail-fast and loud
     event_time.py  # latest_event_time: the max event-time watermark candidate (raw datetime)
   storage/         # the storage layer: a records DataFrame -> parquet
-    files.py       # storage path construction: data_file, partition_part_file, temp_sibling_path
+    files.py       # storage path construction: data_file, partition_dir, partition_part_file, temp_sibling_path
     atomic.py      # atomic_write_parquet: the temp-then-rename durability primitive
     partition.py   # split_by_date: a frame -> per-UTC-date sub-frames (the date_partitioned write unit)
+    partitioning.py # the date-partition prune: window_dates + existing_partition_dates + delete_partition + prune_window_partitions (§3)
     merge.py       # the SyncMode axis: merge_snapshot + in_window predicate + exact dedup (merge_incremental designed, §3)
     result.py      # PersistResult: the write report
     layout.py      # the StorageKind axis: Layout protocol + SingleFileLayout (DatePartitionedLayout pending, §13)
