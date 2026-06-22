@@ -1,26 +1,11 @@
-"""Tests for fleetpull.storage.merge."""
+"""Tests for fleetpull.storage.frames."""
 
 from datetime import UTC, datetime
 
 import polars as pl
 
 from fleetpull.incremental import DateWindow
-from fleetpull.storage.merge import (
-    drop_exact_duplicates,
-    in_window,
-    merge_snapshot,
-)
-
-
-def test_snapshot_returns_new_and_ignores_existing() -> None:
-    existing = pl.DataFrame({'a': [1, 2, 3]})
-    new = pl.DataFrame({'a': [9]})
-    assert merge_snapshot(existing, new).equals(new)
-
-
-def test_snapshot_handles_no_existing() -> None:
-    new = pl.DataFrame({'a': [1]})
-    assert merge_snapshot(None, new).equals(new)
+from fleetpull.storage.frames import drop_exact_duplicates, in_window
 
 
 def test_dedup_drops_byte_identical_rows() -> None:
