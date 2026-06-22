@@ -22,7 +22,7 @@ from fleetpull.network.classifiers import MotiveResponseClassifier
 from fleetpull.network.client import ClientRuntime, ProviderProfile, TransportClient
 from fleetpull.network.limits import RateLimitConfig, RateLimiterRegistry
 from fleetpull.records import models_to_dataframe, validate_records
-from fleetpull.storage import persist
+from fleetpull.storage import select_writer
 from fleetpull.timing import SystemSleeper
 
 # --- hardcoded config (stands in for the YAML loader) -----------------------
@@ -90,7 +90,9 @@ def main() -> None:
     print(f'Built a {frame.height} x {frame.width} DataFrame:')
     print(frame.head())
 
-    result = persist(definition, frame, DATASET_ROOT)
+    writer = select_writer(definition, DATASET_ROOT)
+    writer.write(frame)
+    result = writer.finalize()
     print(
         f'Persisted {result.rows_written} rows to {DATASET_ROOT} '
         f'({result.duplicates_dropped} exact duplicates dropped, '
