@@ -9,13 +9,17 @@ provider envelopes evolve separately (blast-radius over DRY).
 """
 
 from fleetpull.network.decoders.geotab import GeotabFeedPageDecoder
-from fleetpull.network.decoders.motive import MotiveWrappedListPageDecoder
+from fleetpull.network.decoders.motive import (
+    MotiveWrappedListPageDecoder,
+    MotiveWrappedSinglePageDecoder,
+)
 from fleetpull.network.decoders.samsara import SamsaraCursorPageDecoder
 from fleetpull.network.decoders.single_page import SinglePageDecoder
 
 __all__: list[str] = [
     'GeotabFeedPageDecoder',
     'MotiveWrappedListPageDecoder',
+    'MotiveWrappedSinglePageDecoder',
     'SamsaraCursorPageDecoder',
     'SinglePageDecoder',
 ]

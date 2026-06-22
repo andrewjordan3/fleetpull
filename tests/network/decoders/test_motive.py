@@ -9,7 +9,10 @@ import pytest
 from fleetpull.exceptions import ProviderResponseError
 from fleetpull.network.contract import PageDecoder
 from fleetpull.network.contract.request import HttpMethod, JsonValue, RequestSpec
-from fleetpull.network.decoders import MotiveWrappedListPageDecoder
+from fleetpull.network.decoders import (
+    MotiveWrappedListPageDecoder,
+    MotiveWrappedSinglePageDecoder,
+)
 
 
 def build_spec() -> RequestSpec:
@@ -76,3 +79,53 @@ class TestMotiveWrappedListPageDecoder:
         }
         with pytest.raises(ProviderResponseError, match='malformed response envelope'):
             build_decoder().decode_page(build_spec(), envelope)
+
+
+def build_single_page_decoder() -> MotiveWrappedSinglePageDecoder:
+    return MotiveWrappedSinglePageDecoder(
+        list_key='vehicle_locations', item_key='vehicle_location'
+    )
+
+
+class TestMotiveWrappedSinglePageDecoder:
+    def test_satisfies_page_decoder_protocol(self) -> None:
+        decoder: PageDecoder = build_single_page_decoder()
+        assert isinstance(decoder, MotiveWrappedSinglePageDecoder)
+
+    def test_first_request_is_identity(self) -> None:
+        spec = build_spec()
+        assert build_single_page_decoder().first_request(spec) is spec
+
+    def test_unwraps_records(self) -> None:
+        envelope: dict[str, JsonValue] = {
+            'vehicle_locations': [
+                {'vehicle_location': {'id': 1}},
+                {'vehicle_location': {'id': 2}},
+            ]
+        }
+        decoded = build_single_page_decoder().decode_page(build_spec(), envelope)
+        assert decoded.records == [{'id': 1}, {'id': 2}]
+
+    def test_is_always_terminal(self) -> None:
+        envelope: dict[str, JsonValue] = {
+            'vehicle_locations': [{'vehicle_location': {'id': 1}}]
+        }
+        decoded = build_single_page_decoder().decode_page(build_spec(), envelope)
+        assert decoded.advance.next_spec is None
+        assert decoded.advance.durable_progress is None
+
+    def test_empty_list_decodes_to_no_records(self) -> None:
+        envelope: dict[str, JsonValue] = {'vehicle_locations': []}
+        decoded = build_single_page_decoder().decode_page(build_spec(), envelope)
+        assert decoded.records == []
+        assert decoded.advance.next_spec is None
+
+    def test_missing_list_key_raises(self) -> None:
+        envelope: dict[str, JsonValue] = {'other': []}
+        with pytest.raises(ProviderResponseError, match='missing the record key'):
+            build_single_page_decoder().decode_page(build_spec(), envelope)
+
+    def test_missing_item_key_raises(self) -> None:
+        envelope: dict[str, JsonValue] = {'vehicle_locations': [{'other': {'id': 1}}]}
+        with pytest.raises(ProviderResponseError, match='missing the item key'):
+            build_single_page_decoder().decode_page(build_spec(), envelope)

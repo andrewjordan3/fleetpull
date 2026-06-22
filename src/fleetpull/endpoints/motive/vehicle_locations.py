@@ -35,14 +35,31 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 
-from fleetpull.endpoints.shared import ResumeValue, render_url_path_template
+from fleetpull.config import MotiveConfig
+from fleetpull.endpoints.shared import (
+    EndpointDefinition,
+    ResumeValue,
+    StorageKind,
+    WatermarkMode,
+    render_url_path_template,
+)
 from fleetpull.incremental import DateWindow
+from fleetpull.models.motive import VehicleLocation
 from fleetpull.network.contract import HttpMethod, RequestSpec
+from fleetpull.network.decoders import MotiveWrappedSinglePageDecoder
 from fleetpull.timing import to_utc_date_string
+from fleetpull.vocabulary import Provider, QuotaScope
 
-__all__: list[str] = ['MotiveVehicleLocationsSpecBuilder']
+__all__: list[str] = [
+    'MotiveVehicleLocationsSpecBuilder',
+    'build_vehicle_locations_endpoint',
+]
 
 logger = logging.getLogger(__name__)
+
+_VEHICLE_LOCATIONS_PATH: str = '/v3/vehicle_locations/{vehicle_id}'
+_VEHICLE_LOCATIONS_LIST_KEY: str = 'vehicle_locations'
+_VEHICLE_LOCATIONS_ITEM_KEY: str = 'vehicle_location'
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,3 +116,45 @@ class MotiveVehicleLocationsSpecBuilder:
         end_date = to_utc_date_string(resume.end - timedelta(microseconds=1))
         params = {'start_date': start_date, 'end_date': end_date}
         return RequestSpec(method=HttpMethod.GET, url=url, params=params)
+
+
+def build_vehicle_locations_endpoint(
+    config: MotiveConfig,
+) -> EndpointDefinition[VehicleLocation]:
+    """Build the Motive vehicle_locations watermark binding.
+
+    A per-vehicle breadcrumb history fetched incrementally: the run resumes from a
+    ``DateWindow`` (watermark with the provider's late-arrival lookback from config),
+    the fetched whole days are written to ``date=YYYY-MM-DD`` partitions, and each
+    refetched partition is replaced. Records arrive wrapped and unpaginated
+    (``{"vehicle_locations": [{"vehicle_location": {...}}]}``). The per-vehicle URL
+    fan-out is driven by the orchestrator, which passes each ``vehicle_id`` to the
+    spec-builder's ``path_values``; this binding only declares the strategies.
+
+    Args:
+        config: The validated Motive configuration; supplies the base URL the
+            spec-builder joins to the per-vehicle path and the lookback the
+            watermark mode carries.
+
+    Returns:
+        The frozen vehicle_locations ``EndpointDefinition``. Construction validates
+        the ``WatermarkMode`` / ``DATE_PARTITIONED`` / ``event_time_column`` triple
+        against the response model.
+    """
+    return EndpointDefinition(
+        provider=Provider.MOTIVE,
+        name='vehicle_locations',
+        spec_builder=MotiveVehicleLocationsSpecBuilder(
+            base_url=config.base_url,
+            path_template=_VEHICLE_LOCATIONS_PATH,
+        ),
+        page_decoder=MotiveWrappedSinglePageDecoder(
+            list_key=_VEHICLE_LOCATIONS_LIST_KEY,
+            item_key=_VEHICLE_LOCATIONS_ITEM_KEY,
+        ),
+        response_model=VehicleLocation,
+        quota_scope=QuotaScope.MOTIVE,
+        storage_kind=StorageKind.DATE_PARTITIONED,
+        sync_mode=WatermarkMode(lookback=timedelta(days=config.lookback_days)),
+        event_time_column='located_at',
+    )

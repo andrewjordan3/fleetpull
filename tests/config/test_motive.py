@@ -11,6 +11,14 @@ class TestMotiveConfig:
         config = MotiveConfig()
         assert config.base_url == 'https://api.gomotive.com'
         assert config.records_per_page == 100
+        assert config.lookback_days == 7
+
+    def test_accepts_a_lookback_override(self) -> None:
+        assert MotiveConfig(lookback_days=2).lookback_days == 2
+
+    def test_rejects_a_negative_lookback(self) -> None:
+        with pytest.raises(ValidationError):
+            MotiveConfig(lookback_days=-1)
 
     def test_accepts_an_override_base_url(self) -> None:
         assert MotiveConfig(base_url='https://motive.test').base_url == (
