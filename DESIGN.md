@@ -110,12 +110,15 @@ half-open `[start, end)` row predicate, for the single-file combine cells),
 fan-out), `latest_event_time` (`records/event_time.py`: the watermark candidate),
 `stage_shard` / `compact_partition` (`storage/staging.py`: the date-partitioned
 write half), and `prune_window_partitions` (`storage/partitioning.py`: the delete
-half). `vehicle_locations`'s watermark spec-builder is built (`StaticGetSpecBuilder` is
-snapshot-only); its page decoder is the remaining net-new piece. `SinglePageDecoder`
-(§8) decodes one top-level record list under a single key, but Motive wraps each
-location individually (`{"vehicle_locations": [{"vehicle_location": {...}}]}`), so
-the endpoint needs a decoder that strips the per-item wrapper — resolved with the
-binding.
+half). `vehicle_locations` is fully bound. Its page decoder is
+`MotiveWrappedSinglePageDecoder` (§8) — the wrapped-list unwrap with a terminal
+verdict, net-new because neither existing decoder fit: `SinglePageDecoder` does not
+strip the per-item wrapper, and `MotiveWrappedListPageDecoder` requires a
+`pagination` block this unpaginated endpoint lacks.
+`build_vehicle_locations_endpoint` composes the spec-builder and decoder with
+`DATE_PARTITIONED`, `WatermarkMode` (its lookback from the provider config), and
+`event_time_column='located_at'`. The per-vehicle fan-out over the vehicle list is
+the orchestrator's, next.
 
 **There is no merge function — the combine lives in each writer.** The earlier
 design injected a `MergeFn` per `SyncMode` and applied it inside a `Layout`; both
@@ -757,6 +760,7 @@ frozen dataclasses holding configuration fields only; the client threads the
 loop, the decoder interprets each page. Implemented decoders: `SinglePageDecoder`
 (unpaginated endpoints — replaces any is-paginated flag),
 `MotiveWrappedListPageDecoder` (page-numbered, wrapped-list records),
+`MotiveWrappedSinglePageDecoder` (unpaginated, wrapped-list records),
 `SamsaraCursorPageDecoder` (cursor, top-level-list records),
 `GeotabFeedPageDecoder` (GetFeed `toVersion` feed).
 
@@ -984,7 +988,7 @@ fleetpull/
       url_paths.py  # render_url_path_template — strict {placeholder} URL-path rendering (fan-out)
     motive/
       vehicles.py  # build_vehicles_endpoint — the Motive vehicles snapshot factory
-      vehicle_locations.py  # MotiveVehicleLocationsSpecBuilder — the watermark spec-builder (binding next)
+      vehicle_locations.py  # MotiveVehicleLocationsSpecBuilder + build_vehicle_locations_endpoint — the watermark binding
     samsara/       # net-new when its endpoints land
     geotab/        # net-new; follows the GeoTab removals probe
   polars_typing/   # quarantined re-export boundary for Polars type aliases with no public

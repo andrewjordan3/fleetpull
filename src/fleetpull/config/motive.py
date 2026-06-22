@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 _MOTIVE_DEFAULT_BASE_URL: str = 'https://api.gomotive.com'
 _MOTIVE_MAX_RECORDS_PER_PAGE: int = 100
+_MOTIVE_DEFAULT_LOOKBACK_DAYS: int = 7
 
 
 class MotiveConfig(BaseModel):
@@ -31,6 +32,12 @@ class MotiveConfig(BaseModel):
             endpoints. Optional; defaults to Motive's documented maximum.
             Bounded to ``1..100`` (the documented ceiling) so a typo
             cannot silently request an out-of-range page.
+        lookback_days: Late-arrival re-fetch margin in whole days for
+            watermark endpoints -- how far before the stored watermark
+            each resume re-fetches, so a record that landed after its
+            event-time day is recovered and its partitions replaced.
+            Optional; defaults to 7. Non-negative, where zero means no
+            margin beyond the watermark's own date.
     """
 
     model_config = ConfigDict(frozen=True, extra='forbid', validate_default=True)
@@ -39,6 +46,7 @@ class MotiveConfig(BaseModel):
     records_per_page: int = Field(
         default=_MOTIVE_MAX_RECORDS_PER_PAGE, ge=1, le=_MOTIVE_MAX_RECORDS_PER_PAGE
     )
+    lookback_days: int = Field(default=_MOTIVE_DEFAULT_LOOKBACK_DAYS, ge=0)
 
     @field_validator('base_url')
     @classmethod
