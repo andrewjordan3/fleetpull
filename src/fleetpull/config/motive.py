@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 _MOTIVE_DEFAULT_BASE_URL: str = 'https://api.gomotive.com'
 _MOTIVE_MAX_RECORDS_PER_PAGE: int = 100
 _MOTIVE_DEFAULT_LOOKBACK_DAYS: int = 7
+_MOTIVE_DEFAULT_CUTOFF_DAYS: int = 0
 
 
 class MotiveConfig(BaseModel):
@@ -38,6 +39,13 @@ class MotiveConfig(BaseModel):
             event-time day is recovered and its partitions replaced.
             Optional; defaults to 7. Non-negative, where zero means no
             margin beyond the watermark's own date.
+        cutoff_days: Trailing-edge holdback in whole days for watermark
+            endpoints -- how far the resume window's end is held back from
+            the clock, so a still-arriving day is never frozen as a complete
+            partition. The complement of ``lookback_days``: both express the
+            same provider data-latency concern from opposite ends. Optional;
+            defaults to 0. Non-negative, where zero adds no holdback beyond
+            the resolver's own date alignment.
     """
 
     model_config = ConfigDict(frozen=True, extra='forbid', validate_default=True)
@@ -47,6 +55,7 @@ class MotiveConfig(BaseModel):
         default=_MOTIVE_MAX_RECORDS_PER_PAGE, ge=1, le=_MOTIVE_MAX_RECORDS_PER_PAGE
     )
     lookback_days: int = Field(default=_MOTIVE_DEFAULT_LOOKBACK_DAYS, ge=0)
+    cutoff_days: int = Field(default=_MOTIVE_DEFAULT_CUTOFF_DAYS, ge=0)
 
     @field_validator('base_url')
     @classmethod

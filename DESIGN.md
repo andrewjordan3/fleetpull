@@ -246,9 +246,11 @@ day, or 0 for "up to now") that holds the trailing edge back so a still-arriving
 is not frozen prematurely — `compute_resume`'s injected `now` *is* this cutoff
 instant. `default_start_date` (config) is only the first-backfill anchor — arm (3) —
 and goes inert the moment observed data or completed coverage exists; thereafter the
-start is `max(observed) - lookback`. `lookback` already sits on `WatermarkMode`;
-where the end-cutoff lives — a second `WatermarkMode` field or a code default — is
-tentative (§13).
+start is `max(observed) - lookback`. `lookback` and `cutoff` both sit on
+`WatermarkMode`, sourced per-provider from the provider config (`lookback_days` /
+`cutoff_days`) — the two ends of one provider-latency concern. The cold-start
+`default_start_date` — arm (3) — is sync-wide rather than per-endpoint, so it lives
+on the sync-level `SyncConfig`, not on every `WatermarkMode`.
 
 Each endpoint definition declares which strategy it uses. This is the single
 biggest architectural improvement over fleet-telemetry-hub, whose
@@ -927,7 +929,8 @@ fleetpull/
     geotab.py      # GeotabAuthConfig (server validated as a bare hostname, §8)
     retry.py       # RetryConfig — attempt budgets, backoff shape, fallback penalty (§7)
     http.py        # HttpConfig — connect/read timeouts, truststore opt-in
-    motive.py      # MotiveConfig (base_url, records_per_page)
+    motive.py      # MotiveConfig (base_url, records_per_page, lookback_days, cutoff_days)
+    sync.py        # SyncConfig (default_start_date) — the cold-start backfill anchor
   logger/
     setup.py       # package logging setup (setup_logger), driven by LoggerConfig
   network/         # organizational namespace; the surfaces live in the subpackages
@@ -1199,7 +1202,6 @@ lives in `state/`). The per-chunk DataFrame is a value, not a stateful component
     - **(REJECTED) Per-vehicle multi-part** (`part-{uuid}.parquet`, no coalesce): ~1,459 vehicles × ~7 window-days ≈ 10k tiny files per refresh, compounding every refresh — the small-files problem partitioning exists to prevent. Tens of thousands of few-KB files degrade BigQuery external tables and `scan_parquet` badly. Not viable at breadcrumb scale.
 - **Backfill chunking as a config value.** Splitting one large window (e.g. 2024→today) into sub-window units of N days (e.g. 7) does not exist yet and would be user config. It maps onto the `work_units` queue (built): each sub-window is a work unit, claimed and executed in turn. Tied to the deciding factor above.
 - **`DatePartitionedLayout`'s exact interface, contingent on the partition-assembly question above.** How it slots against the `Layout` protocol, where the delete step (§3) sits relative to the writes, and whether it receives an accumulated frame or coordinates staging are all unresolved until that settles.
-- **End-cutoff (`today - N`) placement (§4):** a second field on `WatermarkMode` vs. a code default — tentative; settle when the config/driver layer is built.
 
 ## 14. Next Steps
 
