@@ -12,6 +12,7 @@ class TestMotiveConfig:
         assert config.base_url == 'https://api.gomotive.com'
         assert config.records_per_page == 100
         assert config.lookback_days == 7
+        assert config.cutoff_days == 0
 
     def test_accepts_a_lookback_override(self) -> None:
         assert MotiveConfig(lookback_days=2).lookback_days == 2
@@ -19,6 +20,13 @@ class TestMotiveConfig:
     def test_rejects_a_negative_lookback(self) -> None:
         with pytest.raises(ValidationError):
             MotiveConfig(lookback_days=-1)
+
+    def test_accepts_a_cutoff_override(self) -> None:
+        assert MotiveConfig(cutoff_days=3).cutoff_days == 3
+
+    def test_rejects_a_negative_cutoff(self) -> None:
+        with pytest.raises(ValidationError):
+            MotiveConfig(cutoff_days=-1)
 
     def test_accepts_an_override_base_url(self) -> None:
         assert MotiveConfig(base_url='https://motive.test').base_url == (
