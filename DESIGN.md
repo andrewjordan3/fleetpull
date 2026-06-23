@@ -252,6 +252,25 @@ start is `max(observed) - lookback`. `lookback` and `cutoff` both sit on
 `default_start_date` — arm (3) — is sync-wide rather than per-endpoint, so it lives
 on the sync-level `SyncConfig`, not on every `WatermarkMode`.
 
+Window resolution decomposes into three pure helpers (this refines the
+`compute_resume` framing above). Rather than one function, the per-run window is
+computed by three single-concern pure functions in `incremental/`, composed by the
+orchestrator (which does the SQLite and clock reads and feeds the values in):
+`resolve_trailing_edge(now, cutoff)` — the end, `now` floored to its UTC midnight
+less the cutoff; `resolve_resume_start(watermark_start, frontier, default_start)` —
+the start by the resume precedence (arm 1's `watermark - lookback`, else the
+coverage frontier, else the cold-start default), the arms passed as pre-resolved
+datetimes so the helper stays pure datetime math with no cursor dependency; and
+`window_or_none(start, end)` — a `DateWindow` when `start < end`, else `None`. The
+`None` is the load-bearing change from `compute_resume`: a caught-up window
+(`start >= end`, e.g. a watermark sitting inside the still-arriving day) is a
+verdict meaning "no work this run", not the error `compute_resume` raises.
+`compute_resume` is arm (1) only, ends at the literal `now`, and raises on
+inversion — all superseded here; it is retained for now and removed when the
+orchestrator adopts these helpers. The future-watermark guard (a watermark dated
+past `now`, which would otherwise stall the endpoint as a permanent caught-up) is
+deliberately deferred to the orchestrator, not baked into these helpers.
+
 Each endpoint definition declares which strategy it uses. This is the single
 biggest architectural improvement over fleet-telemetry-hub, whose
 `latest_data_date - lookback` assumption cannot represent GeoTab.
