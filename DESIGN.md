@@ -1064,7 +1064,7 @@ fleetpull/
     run_ledger.py  # RunLedger + RunStatus: per-run records + coverage frontier + last_success_at
     work_units.py  # WorkUnitStore: the backfill claim queue (enqueue/claim/complete/recover)
     rosters.py     # RosterStore + reconcile + is_roster_stale + RosterDelta: the fan-out roster
-  orchestrator/    # sync planner: builds work units, per-provider executors, per-endpoint writer threads
+  orchestrator/    # run executor + request drivers + fan-out coordinator (§14); concurrency executors (§7)
   cli.py           # fetch, sync
 ```
 
@@ -1237,7 +1237,125 @@ lives in `state/`). The per-chunk DataFrame is a value, not a stateful component
 - **Backfill chunking as a config value.** Splitting one large window (e.g. 2024→today) into sub-window units of N days (e.g. 7) does not exist yet and would be user config. It maps onto the `work_units` queue (built): each sub-window is a work unit, claimed and executed in turn. Tied to the deciding factor above.
 - **`DatePartitionedLayout`'s exact interface, contingent on the partition-assembly question above.** How it slots against the `Layout` protocol, where the delete step (§3) sits relative to the writes, and whether it receives an accumulated frame or coordinates staging are all unresolved until that settles.
 
-## 14. Next Steps
+---
+
+## 14. Orchestration: the run executor, the request driver, and the client registry
+
+The layer that sequences fetch, records, storage (§3), and state (§5) into one
+endpoint's run. The network, `records/`, `storage/`, and `state/` layers are all
+built; this is the layer that drives them, and the only major vertical still
+unbuilt.
+
+**The carve: a run executor under which a request driver owns cardinality.** The
+orchestration splits into three nested layers, by concern:
+
+- **`EndpointRunner`** (`orchestrator/runner.py`) owns one endpoint's run
+  *transaction*: open the run (`RunLedger`), construct the writer (`select_writer`,
+  §3), call the request driver, consume each chain of records the driver yields
+  (validate -> frame -> guard -> `writer.write`), then `finalize` once, advance the
+  cursor once, and complete the run once. It is cardinality-blind — it never knows,
+  or branches on, how many requests a run makes.
+- **`RequestDriver`** (`orchestrator/drivers.py`) owns request *cardinality*.
+  `SingleRequestDriver` yields one chain built with `path_values={}`;
+  `FanOutRequestDriver` yields one chain per roster member, each with
+  `path_values={placeholder: member}`. A driver touches only the client (from the
+  registry) and the endpoint's `SpecBuilder`, and yields each chain's raw records;
+  it does no validation, framing, or writing. **`path_values` live only in the
+  driver** — the runner never writes them and the coordinator never supplies them.
+- **The fan-out coordinator** (built last) refreshes the roster when stale
+  (`last_success_at` -> `is_roster_stale` -> `reconcile` -> `RosterStore.apply`,
+  §5), reads the members, builds a `FanOutRequestDriver` from them, and hands it to
+  the runner. `EndpointDefinition.fan_out` is read in exactly one place: here.
+
+The driver is the missing adapter between one endpoint run and one-or-many request
+chains, and it matches grain the existing layers already have: a `SpecBuilder`
+builds one first request from `path_values`, `TransportClient.fetch_pages` drives
+one chain from one first spec, and a `DatasetWriter` accepts one-or-many frames and
+finalizes once. This resolves the §13 question on how a date partition's rows
+assemble across the per-vehicle fan-out: the driver yields per vehicle, the runner
+writes per vehicle, and `stage_shard` lands each piece to disk immediately (§3), so
+the fleet's rows for a date assemble across per-vehicle `write` calls bounded by one
+chain's records — never a RAM buffer holding the fleet. Backfill chunk sizing (§13)
+remains the one open piece.
+
+**The run is constructed, not self-assembling.** The `EndpointRunner` is injected
+with its collaborators — the `ProviderClientRegistry`, the `RunLedger`, the
+`Clock`, and `dataset_root`; the watermark arm adds the `CursorStore` and
+`SyncConfig`. The `EndpointDefinition` and the driver are `run()` arguments, not
+constructor fields, so one runner instance runs `vehicles`, then `vehicle_locations`,
+each with the driver its caller built. The runner constructs no clients and reads no
+credentials. One `Clock` instance is shared by the runner, the `RunLedger`, the
+`CursorStore`, and the limiter inside the registry's runtime — otherwise run
+timestamps, window resolution, and the future guards skew apart.
+
+**`ProviderClientRegistry`** (`network/client/registry.py`) owns
+`{provider: TransportClient}` and answers `client_for(provider)`. It is a
+resource-owning context manager: handed the per-provider `ProviderProfile`s and the
+one shared `ClientRuntime` (it builds neither — credential and config composition is
+the composition root's job, not the registry's), it opens every enabled provider's
+client on enter, closes every connection pool on exit, and raises
+`ConfigurationError` for an un-enabled provider. The single shared `ClientRuntime` is
+what keeps cross-provider quota enforced — every page attempt routes through its one
+`RateLimiterRegistry` (§7). This separates transport identity (which provider's
+auth/classifier/pool) from endpoint execution (decoder, quota scope, model, storage,
+sync mode — all carried by the `EndpointDefinition`): the runner asks the registry
+for `definition.provider`'s client, and the endpoint supplies the rest.
+
+**Crash-safety ordering — parquet, then cursor, then ledger.** §5 fixes
+parquet-before-cursor; the run executor adds a second ordering, cursor before run
+completion. A succeeded watermark run feeds `coverage_frontier` (resume arm 2, §4),
+and arm 2 applies no lookback. So if `complete_run` landed before `set_cursor` and
+the cursor write then failed or crashed, the next run would find no cursor but a
+frontier, resume from the frontier without lookback, and skip late arrivals inside
+the window just written. The order is therefore **parquet -> `set_cursor` ->
+`complete_run`**: a crash between the cursor and the completion leaves the watermark
+advanced (arm 1, lookback applies) and the run merely `running` (diagnostic-only —
+the frontier filters `succeeded`), which is the protective state. Snapshots are
+unaffected: they hold no cursor and never reach the frontier.
+
+**Two future-time guards, both the runner's.** The `CursorStore` enforces no advance
+discipline by design (§5), so the runner owns the future-time checks. *Guard A*, in
+the watermark head before window resolution: a persisted `watermark > now` is
+corruption and raises `ConfigurationError` — otherwise a future-dated cursor becomes
+a permanent "caught up". *Guard B*, in the consume loop after framing and **before**
+`writer.write`: an observed event-time maximum past the run's captured `now` fails
+the run before any parquet is written — because a future-dated row would
+`split_by_date` into a `date=<future>` partition outside the resume window, which the
+window-bounded `prune_window_partitions` (§3) never reaches, leaving an orphan
+partition beyond the prune horizon. Failing before the write is the only thing that
+prevents that permanent litter; both guards are one rule ("no event-time after now")
+applied at the two points it can surface.
+
+**What the runner tracks and returns.** The ledger's row count is `records_fetched`
+— the summed `len(records)` across chains — not `WriteResult.rows_written`; the write
+report's counts (dedup, pruning, partitions touched) are a different quantity, kept
+for logging. The watermark candidate is folded incrementally —
+`latest_event_time(frame, event_time_column)` per chain, combined with a
+None-tolerant `max` — never by retaining frames. `run()` returns a `RunOutcome`,
+never `None`: a frozen tagged union `Executed` (carrying `records_fetched` and the
+`WriteResult`) or `CaughtUp` (the window resolved to nothing — no fetch, no writer,
+no ledger row). The high-level surface dispatches on it.
+
+**Date-partition staging is crash-cleaned at writer construction.**
+`compact_partition` folds *every* `.shard` in a date's staging directory (§3), so a
+run that fails after `stage_shard` but before `finalize` leaves shards a later run
+would fold in — re-injecting a superseded row's old version (one that exact dedup
+will not collapse against the corrected version), which defeats the watermark cell's
+replace semantics. The `WatermarkPartitionedWriter` therefore clears the staging
+directories for its window's covered dates at construction, before staging anything:
+this both sweeps a prior crash's shards and guarantees a clean start, since the run
+that compacts a date always covers it and so always clears it first. The `.shard`
+extension keeps a half-staged partition out of any hive `*.parquet` read in the
+interim.
+
+**Build order.** (1) `ProviderClientRegistry`; (2) `EndpointRunner` +
+`SingleRequestDriver` + `RunOutcome`, exercising the snapshot path end-to-end on
+`vehicles`; (3) the staging crash-clean; (4) the watermark arm — window resolution,
+both guards, the incremental fold, the parquet -> cursor -> ledger ordering, and a
+watermark stub endpoint to exercise it without fan-out. `FanOutRequestDriver` and
+the coordinator follow, wiring `vehicle_locations.fan_out`.
+
+## 15. Next Steps
 
 1. Review/amend this document
 2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → retry policy (done, `config/retry.py` + `network/retry/`) → page-decoder abstraction (done, `network/contract/page_decoder.py` + `decoders/`) → HTTP config + the real GeoTab authenticator (done, `config/http.py` + `network/auth/authenticate.py`) → `network/client/` (done) → `endpoints/shared/base.py` (done) → `records` (done) → `storage` (done: `snapshot`+`single` plus the date-partitioned/watermark leaf primitives; `DatePartitionedLayout` pending — §3/§13) → `state` (done in full — §5) → `orchestrator` → `cli.py`
