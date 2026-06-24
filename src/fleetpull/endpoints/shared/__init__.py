@@ -14,6 +14,7 @@ from fleetpull.endpoints.shared.base import (
     SyncMode,
     WatermarkMode,
 )
+from fleetpull.endpoints.shared.fan_out import FanOutSource, FanOutSpec
 from fleetpull.endpoints.shared.spec_builders import StaticGetSpecBuilder
 from fleetpull.endpoints.shared.url_paths import (
     UrlPathTemplateError,
@@ -22,6 +23,8 @@ from fleetpull.endpoints.shared.url_paths import (
 
 __all__: list[str] = [
     'EndpointDefinition',
+    'FanOutSource',
+    'FanOutSpec',
     'FeedMode',
     'ResumeValue',
     'SnapshotMode',

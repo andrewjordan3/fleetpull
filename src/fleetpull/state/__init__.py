@@ -4,6 +4,12 @@
 from fleetpull.state.cursors import CursorKind, CursorStore
 from fleetpull.state.database import StateDatabase
 from fleetpull.state.migrations import migrate_to_head
+from fleetpull.state.rosters import (
+    RosterDelta,
+    RosterStore,
+    is_roster_stale,
+    reconcile,
+)
 from fleetpull.state.run_ledger import RunLedger, RunStatus
 from fleetpull.state.work_units import (
     ClaimedWorkUnit,
@@ -17,6 +23,8 @@ __all__: list[str] = [
     'ClaimedWorkUnit',
     'CursorKind',
     'CursorStore',
+    'RosterDelta',
+    'RosterStore',
     'RunLedger',
     'RunStatus',
     'StateDatabase',
@@ -24,5 +32,7 @@ __all__: list[str] = [
     'WorkUnitSpec',
     'WorkUnitStatus',
     'WorkUnitStore',
+    'is_roster_stale',
     'migrate_to_head',
+    'reconcile',
 ]
