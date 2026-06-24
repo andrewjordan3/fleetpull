@@ -11,8 +11,8 @@ irrelevant to the call.
 
 This module ships ``RosterDelta`` (a reconciliation result), the pure ``reconcile`` and
 ``is_roster_stale``, and ``RosterStore`` (the table's read/write orchestrator). The pure
-functions sit beside their store, the same shape as ``compute_resume`` beside the
-cursor: the import discipline permits a pure function in ``state/``, and keeping the
+functions sit beside their store, the same shape as the resolution helpers beside the
+cursors: the import discipline permits a pure function in ``state/``, and keeping the
 threshold and staleness logic next to the store it serves beats scattering it.
 ``RosterStore`` takes the feeder identity as ``(provider, source_endpoint,
 source_column)`` primitives, not the endpoints layer's ``FanOutSource`` -- ``state``

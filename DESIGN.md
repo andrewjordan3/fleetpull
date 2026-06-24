@@ -190,7 +190,7 @@ def window_dates(window: DateWindow) -> list[date]:
 
 **`persist` grows a keyword-only `window`.** The signature becomes
 `persist(definition, new_frame, dataset_root, *, window: DateWindow | None = None)`.
-The window is computed per-run by the driver (via `compute_resume`, §4) and passed
+The window is computed per-run by the driver (the resume resolver, §4) and passed
 in — never read off the definition — and `persist` validates the pairing against the
 sync mode: a `WatermarkMode` endpoint with `window is None` is a wiring bug and
 raises, and a `SnapshotMode` endpoint handed a non-`None` window also raises.
@@ -233,60 +233,55 @@ an endpoint can name a strategy without importing the SQLite layer.
 Serialization of a cursor to its SQLite form is owned by `state/`, not the
 cursor.
 
-**Resume value vs. cursor — and the pure function between them.** The stored
+**Resume value vs. cursor — and the pure functions between them.** The stored
 cursor (`DateWatermark` / `FeedToken`) is not what a request is built from; the
 resume value is. For a watermark endpoint that value is a `DateWindow` — the
 half-open `[start, end)` window the spec-builder fetches, a frozen carrier in
 `incremental/` beside the cursors, so an endpoint names it without importing
 `state/`. For a feed endpoint the resume value is the stored `FeedToken` itself,
-used directly — no transformation, so the feed arm needs no function. The
-watermark arm does: `compute_resume(watermark, lookback, now) -> DateWindow | None`
-is a pure function in `incremental/` mapping a `DateWatermark` to
-`DateWindow(watermark - lookback, now)` and `None` to `None`. It is watermark-only
-by design — the feed arm has neither a lookback nor a window to compute — and pure
-(no clock; `now` is injected), so it is a function, not a method on the endpoint
-definition and not a strategy. A returned `None` means only "no committed
-watermark"; the caller then resolves the start through the resume precedence below,
-so `compute_resume` is precedence arm (1) as code, with arms (2)–(3) remaining the
-caller's. The `DateWindow` carrier enforces its one structural invariant —
-`start < end`, well-ordered — and defers UTC validity to the codec boundary exactly
-as `DateWatermark` does. The half-open convention is what lets the delete-by-window
-predicate and the start-anchored append-filter share one boundary rule and never
-double-count at a window edge.
+used directly — no transformation, so the feed arm needs no resolver. The
+watermark arm resolves its window from three pure functions in
+`incremental/resolution.py` (`resolve_resume_start`, `resolve_trailing_edge`,
+`window_or_none`, below), not from the cursor alone — each pure (no clock, no
+I/O; the orchestrator does the SQLite and clock reads and feeds the values in),
+so window resolution is a composition of stateless leaves, not a method on the
+endpoint definition and not a strategy. The `DateWindow` carrier enforces its one
+structural invariant — `start < end`, well-ordered — and defers UTC validity to
+the codec boundary exactly as `DateWatermark` does. The half-open convention is
+what lets the delete-by-window predicate and the start-anchored append-filter
+share one boundary rule and never double-count at a window edge.
 
-**The window is cooked per-run by the driver, not stored.** `compute_resume` is
-precedence arm (1); the driver composes it with the end-cutoff and the resume
-precedence (§5) to produce each run's `DateWindow` fresh and hands it to `persist`
-(§3) — the frozen `EndpointDefinition` never carries a window. The window's `end` is
-`today - cutoff` rather than the literal `now`: `cutoff` is a config value (e.g. 1
-day, or 0 for "up to now") that holds the trailing edge back so a still-arriving day
-is not frozen prematurely — `compute_resume`'s injected `now` *is* this cutoff
-instant. `default_start_date` (config) is only the first-backfill anchor — arm (3) —
-and goes inert the moment observed data or completed coverage exists; thereafter the
+**The window is cooked per-run by the orchestrator, not stored.** The
+orchestrator resolves each run's `DateWindow` fresh from the three helpers and the
+resume precedence (§5) and drives the run's write with it (§3) — the frozen
+`EndpointDefinition` never carries a window. The window's `end` is `today - cutoff`
+rather than the literal `now`: `cutoff` is a config value (e.g. 1 day, or 0 for "up
+to now") that holds the trailing edge back so a still-arriving day is not frozen
+prematurely — it is the `now`/`cutoff` pair `resolve_trailing_edge` takes.
+`default_start_date` (config) is only the first-backfill anchor — arm (3) — and
+goes inert the moment observed data or completed coverage exists; thereafter the
 start is `max(observed) - lookback`. `lookback` and `cutoff` both sit on
 `WatermarkMode`, sourced per-provider from the provider config (`lookback_days` /
 `cutoff_days`) — the two ends of one provider-latency concern. The cold-start
 `default_start_date` — arm (3) — is sync-wide rather than per-endpoint, so it lives
 on the sync-level `SyncConfig`, not on every `WatermarkMode`.
 
-Window resolution decomposes into three pure helpers (this refines the
-`compute_resume` framing above). Rather than one function, the per-run window is
-computed by three single-concern pure functions in `incremental/`, composed by the
-orchestrator (which does the SQLite and clock reads and feeds the values in):
-`resolve_trailing_edge(now, cutoff)` — the end, `now` floored to its UTC midnight
-less the cutoff; `resolve_resume_start(watermark_start, frontier, default_start)` —
-the start by the resume precedence (arm 1's `watermark - lookback`, else the
-coverage frontier, else the cold-start default), the arms passed as pre-resolved
-datetimes so the helper stays pure datetime math with no cursor dependency; and
-`window_or_none(start, end)` — a `DateWindow` when `start < end`, else `None`. The
-`None` is the load-bearing change from `compute_resume`: a caught-up window
-(`start >= end`, e.g. a watermark sitting inside the still-arriving day) is a
-verdict meaning "no work this run", not the error `compute_resume` raises.
-`compute_resume` is arm (1) only, ends at the literal `now`, and raises on
-inversion — all superseded here; it is retained for now and removed when the
-orchestrator adopts these helpers. The future-watermark guard (a watermark dated
-past `now`, which would otherwise stall the endpoint as a permanent caught-up) is
-deliberately deferred to the orchestrator, not baked into these helpers.
+The per-run window is computed by three single-concern pure functions in
+`incremental/resolution.py`, composed by the orchestrator (which does the SQLite
+and clock reads and feeds the values in): `resolve_trailing_edge(now, cutoff)` —
+the end, `now` floored to its UTC midnight less the cutoff;
+`resolve_resume_start(watermark_start, frontier, default_start)` — the start by the
+resume precedence (arm 1's `watermark - lookback`, else the coverage frontier, else
+the cold-start default), the arms passed as pre-resolved datetimes so the helper
+stays pure datetime math with no cursor dependency; and
+`window_or_none(start, end)` — a `DateWindow` when `start < end`, else `None`. That
+`None` is load-bearing and is why the start is resolved as a verdict rather than a
+raise: a caught-up window (`start >= end`, e.g. a watermark sitting inside the
+still-arriving day) means "no work this run", which the orchestrator dispatches on
+— an inverted window is never a valid control-flow value here. The
+future-watermark guard — a watermark dated past `now`, which would otherwise stall
+the endpoint as a permanent caught-up — is deliberately not baked into these
+helpers; it lands in the orchestrator that adopts them.
 
 Each endpoint definition declares which strategy it uses. This is the single
 biggest architectural improvement over fleet-telemetry-hub, whose
@@ -1011,10 +1006,10 @@ fleetpull/
     clock.py       # injectable Clock Protocol; SystemClock and FrozenClock implementations
     sleeper.py     # injectable Sleeper Protocol; SystemSleeper backing TRANSIENT backoff waits
     codec.py       # pure UTC datetime <-> ISO-8601/date-string conversions (stdlib-only leaf)
-  incremental/     # per-endpoint resume state: cursors + window + deriving fn; pure leaf (§4)
+  incremental/     # per-endpoint resume state: cursors + window + resolution helpers; pure leaf (§4)
     cursor.py      # DateWatermark, FeedToken, IncrementalCursor tagged union
     window.py      # DateWindow — the half-open [start, end) watermark resume window (§4)
-    resume.py      # compute_resume — pure DateWatermark -> DateWindow resume function (§4)
+    resolution.py  # resolve_trailing_edge + resolve_resume_start + window_or_none — pure window resolution (§4)
   endpoints/       # per-endpoint bindings (the endpoints layer, below) — new fleetpull code
     shared/        # shared binding machinery (no auth here — auth is per-provider
                    #   ProviderProfile, resolved at the composition root)
@@ -1191,7 +1186,7 @@ endpoints.
 
 **Fetch assembly: the endpoint declares, the machinery is generic, the caller
 sequences.** For one fetch the caller looks up the `EndpointDefinition`, turns the
-stored cursor into a resume value (`compute_resume`, §4) and a `path_values`,
+stored cursor into a resume value (the resume resolver, §4) and a `path_values`,
 calls `build_spec` for the first `RequestSpec`, and hands that spec plus the
 endpoint's `PageDecoder`, the provider's `ProviderProfile`, and the
 `quota_scope` to the client. The client streams
