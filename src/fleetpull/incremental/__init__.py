@@ -11,7 +11,6 @@ from fleetpull.incremental.resolution import (
     resolve_trailing_edge,
     window_or_none,
 )
-from fleetpull.incremental.resume import compute_resume
 from fleetpull.incremental.window import DateWindow
 
 __all__: list[str] = [
@@ -19,7 +18,6 @@ __all__: list[str] = [
     'DateWindow',
     'FeedToken',
     'IncrementalCursor',
-    'compute_resume',
     'resolve_resume_start',
     'resolve_trailing_edge',
     'window_or_none',

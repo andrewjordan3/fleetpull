@@ -14,11 +14,10 @@ clock, a cursor store, a run ledger, or any I/O.
     - ``window_or_none`` -- the assembly: a ``DateWindow`` when ``start < end``, else
       ``None`` (caught up -- no work this run, not an error).
 
-These supersede ``compute_resume`` (DESIGN section 4): that function is arm (1) only,
-ends at the literal ``now``, and *raises* on an inverted window; the resolver
-floors-and-holds-back the end and returns ``None`` for a caught-up window instead of
-raising. ``compute_resume`` is retained for now and removed when the orchestrator
-adopts these helpers.
+Together they are the watermark resume mechanism (DESIGN section 4): the resolver
+floors-and-holds-back the trailing edge and returns ``None`` for a caught-up window
+(``start >= end``) rather than raising, so a watermark sitting inside the
+still-arriving day is a "no work this run" verdict, not an error.
 
 The start candidates are pre-resolved datetimes, not cursors: the orchestrator
 extracts the watermark moment and subtracts the lookback (arm 1's one line) before
