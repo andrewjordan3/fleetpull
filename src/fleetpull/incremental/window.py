@@ -4,8 +4,9 @@
 A pure, stdlib-only leaf beside the cursors (DESIGN §4). ``DateWindow`` is the
 *resume value* a watermark fetch is built from, distinct from the stored
 ``DateWatermark`` cursor: the cursor records the maximum event timestamp seen, and
-the window is what ``compute_resume`` derives from it (``watermark - lookback`` to
-``now``). A fetch is built from the window, never from the watermark directly.
+the window is what the resume resolver derives from it (``watermark - lookback`` up
+to the trailing edge). A fetch is built from the window, never from the watermark
+directly.
 
 The window is half-open, ``[start, end)`` — start inclusive, end exclusive — and
 that is the canonical internal form: the half-open boundary is what lets storage's
@@ -40,10 +41,11 @@ class DateWindow:
     Construction enforces the one structural invariant, ``start < end`` (strict,
     well-ordered, mirroring the run ledger's window). It lives here on the type,
     not deferred like ``DateWatermark``'s UTC check, because the ordering has no
-    downstream boundary to catch it — an inverted or empty window (a future
-    watermark produces one through ``compute_resume``) is a loud-failure bug, not a
-    value to carry. UTC validity is not checked here; it crosses the codec boundary
-    when a spec-builder serializes the bounds, and that boundary raises on
+    downstream boundary to catch it — an inverted or empty window is a loud-failure
+    bug, not a value to carry; the resume resolver returns ``None`` for a caught-up
+    ``start >= end`` rather than constructing one, so this invariant now backstops a
+    direct construction bug. UTC validity is not checked here; it crosses the codec
+    boundary when a spec-builder serializes the bounds, and that boundary raises on
     naive/non-UTC, exactly as for ``DateWatermark``.
 
     Attributes:

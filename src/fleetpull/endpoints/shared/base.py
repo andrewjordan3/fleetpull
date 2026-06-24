@@ -90,7 +90,7 @@ class WatermarkMode:
     resumes; the cursor is what it resumes from. Its write semantic is
     *delete-by-window, then append* — the refetched window is cleared and replaced,
     so late arrivals and in-window corrections land cleanly. ``lookback`` is the
-    margin ``compute_resume`` subtracts from the stored watermark (§4) so late-
+    margin the resume resolver subtracts from the stored watermark (§4) so late-
     arriving records inside it are re-fetched. ``cutoff`` is the complementary
     trailing-edge holdback: the window's end is held back this far from the clock
     so a still-arriving day is never frozen as a complete partition. Both express
@@ -126,16 +126,16 @@ class FeedMode:
 
 # The endpoint's sync-mode declaration (config): the caller matches on it to drive
 # both resume and write semantics — SnapshotMode -> no resume + full replace,
-# WatermarkMode -> compute_resume + delete-by-window-then-append, FeedMode -> the
+# WatermarkMode -> resume resolver + delete-by-window-then-append, FeedMode -> the
 # stored token + append. Storage layout (StorageKind) is the orthogonal axis.
 type SyncMode = SnapshotMode | WatermarkMode | FeedMode
 
 
-# The resume value a spec-builder consumes: a DateWindow (watermark, from
-# compute_resume), a FeedToken (feed, the stored token), or None — meaning no
+# The resume value a spec-builder consumes: a DateWindow (watermark, from the
+# resume resolver), a FeedToken (feed, the stored token), or None — meaning no
 # committed cursor, which covers a snapshot every run plus the watermark/feed
 # first-fetch bootstrap. Named here with SpecBuilder because it is the
-# spec-builder's input contract; compute_resume's own return stays the narrower
+# spec-builder's input contract; the resolver's own return stays the narrower
 # DateWindow | None (watermark arm).
 type ResumeValue = DateWindow | FeedToken | None
 
