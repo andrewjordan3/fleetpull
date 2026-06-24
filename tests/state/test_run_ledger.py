@@ -117,6 +117,38 @@ def _insert_raw_run(
         connection.close()
 
 
+def _insert_raw_succeeded_snapshot_run(
+    database_path: Path,
+    provider: str,
+    endpoint: str,
+    ended_at: str,
+) -> None:
+    """Insert a succeeded snapshot run directly with a chosen ``ended_at``.
+
+    A snapshot row carries no range, so the mode-keyed CHECK holds with the range
+    columns left NULL; ``ended_at`` is plain TEXT the STRICT schema accepts, its value
+    rejected only on read.
+    """
+    connection = sqlite3.connect(database_path)
+    try:
+        connection.execute(
+            'INSERT INTO runs '
+            '(provider, endpoint, status, mode, started_at, ended_at) '
+            'VALUES (?, ?, ?, ?, ?, ?)',
+            (
+                provider,
+                endpoint,
+                'succeeded',
+                'snapshot',
+                '2026-06-16T00:00:00Z',
+                ended_at,
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
 @pytest.fixture
 def frozen_clock() -> FrozenClock:
     """A clock fixed at FROZEN_INSTANT, shared with the run_ledger fixture."""
@@ -358,6 +390,82 @@ class TestCoverageFrontier:
         )
         with pytest.raises(ConfigurationError, match='unparseable run window_end'):
             run_ledger.coverage_frontier(Provider.SAMSARA, 'trips')
+
+
+class TestLastSuccessAt:
+    def test_returns_latest_ended_at_over_succeeded_runs(
+        self, run_ledger: RunLedger, frozen_clock: FrozenClock
+    ) -> None:
+        earlier = run_ledger.start_window_run(
+            Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
+        )
+        frozen_clock.advance(timedelta(hours=1))
+        run_ledger.complete_run(earlier, row_count=1)
+        frozen_clock.advance(timedelta(hours=1))
+        later = run_ledger.start_window_run(
+            Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
+        )
+        frozen_clock.advance(timedelta(hours=1))
+        run_ledger.complete_run(later, row_count=2)
+
+        assert run_ledger.last_success_at(Provider.SAMSARA, 'trips') == (
+            FROZEN_INSTANT + timedelta(hours=3)
+        )
+
+    def test_ignores_running_and_failed_runs(
+        self, run_ledger: RunLedger, frozen_clock: FrozenClock
+    ) -> None:
+        succeeded = run_ledger.start_window_run(
+            Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
+        )
+        frozen_clock.advance(timedelta(hours=1))
+        run_ledger.complete_run(succeeded, row_count=1)
+        success_time = FROZEN_INSTANT + timedelta(hours=1)
+        # A later failed run — ignored despite its later ended_at.
+        frozen_clock.advance(timedelta(hours=1))
+        failed = run_ledger.start_window_run(
+            Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
+        )
+        frozen_clock.advance(timedelta(hours=1))
+        run_ledger.fail_run(failed, error_detail='nope')
+        # A later running run carries no ended_at — ignored.
+        run_ledger.start_window_run(
+            Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
+        )
+
+        assert run_ledger.last_success_at(Provider.SAMSARA, 'trips') == success_time
+
+    def test_counts_a_succeeded_snapshot_run_unlike_coverage_frontier(
+        self, run_ledger: RunLedger, frozen_clock: FrozenClock
+    ) -> None:
+        run_id = run_ledger.start_snapshot_run(Provider.MOTIVE, 'vehicles')
+        frozen_clock.advance(timedelta(hours=2))
+        run_ledger.complete_run(run_id, row_count=1300)
+
+        assert run_ledger.last_success_at(Provider.MOTIVE, 'vehicles') == (
+            FROZEN_INSTANT + timedelta(hours=2)
+        )
+        # The snapshot has no window, so it never reaches the coverage frontier.
+        assert run_ledger.coverage_frontier(Provider.MOTIVE, 'vehicles') is None
+
+    def test_returns_none_when_no_succeeded_run_exists(
+        self, run_ledger: RunLedger
+    ) -> None:
+        failed = run_ledger.start_snapshot_run(Provider.GEOTAB, 'devices')
+        run_ledger.fail_run(failed, error_detail='nope')
+        assert run_ledger.last_success_at(Provider.GEOTAB, 'devices') is None
+
+    def test_corrupt_ended_at_raises(
+        self, run_ledger: RunLedger, tmp_path: Path
+    ) -> None:
+        _insert_raw_succeeded_snapshot_run(
+            _database_path(tmp_path),
+            Provider.SAMSARA.value,
+            'trips',
+            'not-a-datetime',
+        )
+        with pytest.raises(ConfigurationError, match='unparseable run ended_at'):
+            run_ledger.last_success_at(Provider.SAMSARA, 'trips')
 
 
 class TestModeKeyedCheck:
