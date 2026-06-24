@@ -351,6 +351,33 @@ class TestMigrateToHead:
             ).fetchone()
         assert same_start_count == (2,)
 
+    def test_creates_the_rosters_table(self, tmp_path: Path) -> None:
+        database = StateDatabase(_database_path(tmp_path))
+        database.initialize()
+
+        migrate_to_head(database)
+
+        with database.connect() as connection:
+            columns = {
+                row[1]
+                for row in connection.execute('PRAGMA table_info(rosters)').fetchall()
+            }
+        assert columns == {
+            'provider',
+            'source_endpoint',
+            'source_column',
+            'member',
+            'absence_count',
+        }
+
+    def test_rosters_rejects_a_negative_absence_count(self, tmp_path: Path) -> None:
+        _expect_insert_rejected(
+            tmp_path,
+            'rosters',
+            '(provider, source_endpoint, source_column, member, absence_count)',
+            ('motive', 'vehicles', 'vehicle_id', 'V1', -1),
+        )
+
     def test_is_idempotent(self, tmp_path: Path) -> None:
         database = StateDatabase(_database_path(tmp_path))
         database.initialize()

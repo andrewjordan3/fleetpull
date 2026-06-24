@@ -201,6 +201,23 @@ single `date=` partition holds the whole fleet's rows for that date — is the c
 open question for this write path (§13), as is `DatePartitionedLayout`'s exact
 interface, which is contingent on it.
 
+The fan-out key source is settled: a provider-listed roster in SQLite, not the
+feeder parquet. An endpoint that fans out declares a `FanOutSpec`
+(`EndpointDefinition.fan_out`, `None` = fetch once) naming a `FanOutSource` — the
+feeder endpoint and the frame column its keys come from. Keys are listed from the
+feeder, persisted to a `rosters` table keyed by `(provider, source_endpoint,
+source_column, member)`, and the fan-out reads the roster — never the feeder's
+output parquet, which is the user's product and not fleetpull's to depend on.
+Refresh is best-effort: a roster is re-listed when stale (the feeder's last success
+in `runs` older than a bound, `RunLedger.last_success_at`), and a failed re-list
+falls back to the existing roster rather than blocking the fan-out; an empty roster
+with no prior listing is a loud cold-start failure. A per-key absence counter gives
+eviction hysteresis — append-only is the degenerate (never-evict) case, and for
+permanent, absent-means-empty keys like vehicle ids the counter is an efficiency
+lever (stop fetching long-retired vehicles), not a correctness one. The pure
+reconcile/staleness logic and the `RosterStore` are built; the orchestrator wiring
+(when to list, the fan-out loop, the cold-start guard) remains open.
+
 ---
 
 ## 4. Incremental Model
@@ -402,8 +419,8 @@ structurally by making the chunk the write unit.
 `user_version`. A forward-only migration runner (`state/migrations.py`) brings a
 database to head at startup, after `initialize`, applying each step's DDL and its
 version bump in one atomic transaction; a database at a version newer than the
-running code is refused. Today head is v1: the cursors, runs, and work_units
-tables.
+running code is refused. Today head is v2: v1 is the cursors, runs, and
+work_units tables, and v2 adds the rosters table.
 
 **Cursor persistence (the cursor store, `state/cursors.py`).** The store
 translates between the `IncrementalCursor` union (§4) and `cursors`-table rows; it
@@ -1006,6 +1023,7 @@ fleetpull/
                    #   quota_scope, storage_kind, sync_mode, event_time_column) + the
                    #   SpecBuilder Protocol, the SyncMode union (SnapshotMode /
                    #   WatermarkMode / FeedMode), ResumeValue, and StorageKind
+      fan_out.py   # FanOutSource + FanOutSpec — the per-endpoint fan-out declaration
       spec_builders.py  # StaticGetSpecBuilder — the shared snapshot spec-builder
       url_paths.py  # render_url_path_template — strict {placeholder} URL-path rendering (fan-out)
     motive/
@@ -1033,6 +1051,7 @@ fleetpull/
     convert.py     # models_to_dataframe: the schema/flatten/build/normalize composition
     validation.py  # raw dicts -> validated models, fail-fast and loud
     event_time.py  # latest_event_time: the max event-time watermark candidate (raw datetime)
+    fan_out_keys.py # extract_fan_out_keys: a frame column's distinct values as fan-out keys
   storage/         # the storage layer: a records DataFrame -> parquet
     files.py       # storage path construction: data_file, partition_dir, partition_part_file, temp_sibling_path
     atomic.py      # atomic_write_parquet: the temp-then-rename durability primitive
@@ -1045,10 +1064,11 @@ fleetpull/
     writers.py     # DatasetWriter protocol + SingleFile/Partitioned ABCs + Snapshot/WatermarkPartitioned writers + select_writer (feed cells next, §3)
   state/           # SQLite operational state (§5)
     database.py    # StateDatabase shell + DB primitives (connect, verify, WAL)
-    migrations.py  # forward-only migration runner (user_version); v1 = cursors + runs + work_units
+    migrations.py  # forward-only migration runner (user_version); v1 = cursors + runs + work_units; v2 = rosters
     cursors.py     # CursorStore + CursorKind: IncrementalCursor <-> cursors rows
-    run_ledger.py  # RunLedger + RunStatus: per-run records + the coverage frontier
+    run_ledger.py  # RunLedger + RunStatus: per-run records + coverage frontier + last_success_at
     work_units.py  # WorkUnitStore: the backfill claim queue (enqueue/claim/complete/recover)
+    rosters.py     # RosterStore + reconcile + is_roster_stale + RosterDelta: the fan-out roster
   orchestrator/    # sync planner: builds work units, per-provider executors, per-endpoint writer threads
   cli.py           # fetch, sync
 ```
