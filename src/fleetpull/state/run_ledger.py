@@ -118,6 +118,11 @@ SELECT max(window_end) FROM runs
 WHERE provider = ? AND endpoint = ? AND status = ? AND window_end IS NOT NULL
 """
 
+_LAST_SUCCESS_SQL: Final[str] = """
+SELECT max(ended_at) FROM runs
+WHERE provider = ? AND endpoint = ? AND status = ?
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class _RunRange:
@@ -454,4 +459,53 @@ class RunLedger:
                 provider=provider.value,
                 endpoint=endpoint,
                 detail=f'run window_end {frontier_text!r} is not ISO-8601 UTC',
+            ) from error
+
+    def last_success_at(self, provider: Provider, endpoint: str) -> datetime | None:
+        """
+        Return when this endpoint last completed successfully, or ``None``.
+
+        ``max(ended_at)`` over this endpoint's ``succeeded`` runs -- the wall-clock
+        completion time of its most recent success, across any sync mode (a snapshot
+        feeder carries ``ended_at`` but no window). The roster's staleness bound reads
+        this to decide whether a feeder re-list is due; it is not a resume arm, so
+        unlike ``coverage_frontier`` it does not filter on ``window_end``. The lexical
+        ``max`` over the TEXT column is the chronological one because ``to_iso8601``
+        emits a fixed-width, zero-padded, ``Z``-suffixed form.
+
+        Args:
+            provider: The provider whose last success to read.
+            endpoint: The endpoint whose last success to read.
+
+        Returns:
+            The latest ``ended_at`` of a succeeded run as a UTC datetime, or ``None``
+            when no succeeded run exists for this (provider, endpoint).
+
+        Raises:
+            ConfigurationError: A stored ``ended_at`` is not parseable ISO-8601 UTC --
+                state-store corruption, the same stance as ``coverage_frontier``.
+            RuntimeError: The aggregated ``ended_at`` came back non-text, violating the
+                STRICT ``TEXT`` schema contract.
+
+        Side Effects:
+            Opens a connection and reads one aggregate row.
+        """
+        with self._database.connect() as connection:
+            row = connection.execute(
+                _LAST_SUCCESS_SQL,
+                (provider.value, endpoint, RunStatus.SUCCEEDED.value),
+            ).fetchone()
+        ended_at_text: SqliteScalar = row[0]
+        if ended_at_text is None:
+            return None
+        if not isinstance(ended_at_text, str):
+            raise RuntimeError(f'runs.ended_at was not text: {ended_at_text!r}')
+        try:
+            return from_iso8601(ended_at_text)
+        except ValueError as error:
+            raise ConfigurationError(
+                'state database holds an unparseable run ended_at',
+                provider=provider.value,
+                endpoint=endpoint,
+                detail=f'run ended_at {ended_at_text!r} is not ISO-8601 UTC',
             ) from error

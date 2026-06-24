@@ -8,6 +8,8 @@ import pytest
 
 from fleetpull.endpoints.shared import (
     EndpointDefinition,
+    FanOutSource,
+    FanOutSpec,
     FeedMode,
     ResumeValue,
     SnapshotMode,
@@ -58,6 +60,7 @@ def _make_endpoint(
     *,
     storage_kind: StorageKind = StorageKind.SINGLE,
     event_time_column: str | None = None,
+    fan_out: FanOutSpec | None = None,
 ) -> EndpointDefinition[_StubModel]:
     """Build an EndpointDefinition from the stubs and the given axes."""
     return EndpointDefinition(
@@ -70,6 +73,7 @@ def _make_endpoint(
         storage_kind=storage_kind,
         sync_mode=sync_mode,
         event_time_column=event_time_column,
+        fan_out=fan_out,
     )
 
 
@@ -104,6 +108,19 @@ class TestEndpointDefinition:
 
     def test_has_slots_no_dict(self) -> None:
         assert not hasattr(_make_endpoint(FeedMode()), '__dict__')
+
+    def test_constructs_with_a_fan_out(self) -> None:
+        spec = FanOutSpec(
+            source=FanOutSource(
+                provider=Provider.SAMSARA, endpoint='vehicles', column='vehicle_id'
+            ),
+            path_placeholder='vehicle_id',
+        )
+        endpoint = _make_endpoint(FeedMode(), fan_out=spec)
+        assert endpoint.fan_out == spec
+
+    def test_fan_out_defaults_to_none(self) -> None:
+        assert _make_endpoint(FeedMode()).fan_out is None
 
 
 class TestSyncMode:

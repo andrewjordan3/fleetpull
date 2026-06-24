@@ -24,6 +24,7 @@ from datetime import date, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Protocol, get_args
 
+from fleetpull.endpoints.shared.fan_out import FanOutSpec
 from fleetpull.incremental import DateWindow, FeedToken
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.contract import PageDecoder, RequestSpec
@@ -219,6 +220,10 @@ class EndpointDefinition[ModelT: ResponseModel]:
             for endpoints with no event-time dimension (every snapshot). Required
             for ``WatermarkMode`` / ``DATE_PARTITIONED``, forbidden for snapshots;
             validated against ``response_model`` at construction.
+        fan_out: The fan-out declaration (``FanOutSpec``) for an endpoint that fans
+            a request per key from a feeder endpoint (e.g. per-vehicle
+            ``vehicle_locations``); ``None`` for endpoints that fetch once. Read by
+            the orchestrator; not validated here.
     """
 
     provider: Provider
@@ -230,6 +235,7 @@ class EndpointDefinition[ModelT: ResponseModel]:
     storage_kind: StorageKind
     sync_mode: SyncMode
     event_time_column: str | None = None
+    fan_out: FanOutSpec | None = None
 
     def __post_init__(self) -> None:
         """Validate the binding's storage / sync / event-time coherence.

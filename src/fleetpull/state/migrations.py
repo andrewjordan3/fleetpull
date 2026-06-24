@@ -19,9 +19,9 @@ than this code's head is refused — the code is older than the file and cannot
 know the schema.
 
 This module owns schema evolution only; reading and writing the rows of any table
-(the ``cursors``, ``runs``, and ``work_units`` tables created here) belongs to
-the store layers built on top. Today the head is version 1: the ``cursors``,
-``runs``, and ``work_units`` tables.
+(the ``cursors``, ``runs``, ``work_units``, and ``rosters`` tables created here)
+belongs to the store layers built on top. Today the head is version 2: v1 is the
+``cursors``, ``runs``, and ``work_units`` tables; v2 adds the ``rosters`` table.
 """
 
 import logging
@@ -172,6 +172,25 @@ _WORK_UNITS_INDEX_DDLS: Final[tuple[str, ...]] = (
     """,
 )
 
+# The rosters table (joins schema v2): the persisted fan-out key set per feeder.
+# One row per fan-out key (``member``) sourced from one feeder identity
+# ``(provider, source_endpoint, source_column)`` -- the per-vehicle id set
+# ``vehicle_locations`` fans out over, listed from ``vehicles`` and kept here so the
+# fan-out reads the roster, never the feeder's output parquet (DESIGN §3/§5).
+# ``absence_count`` is the consecutive-miss hysteresis counter the reconcile logic
+# drives; the composite primary key makes a key a single-row upsert. STRICT enforces
+# the declared types; the non-negative CHECK is the DB-layer backstop on the counter.
+_ROSTERS_TABLE_DDL: Final[str] = """
+    CREATE TABLE rosters (
+        provider        TEXT NOT NULL,
+        source_endpoint TEXT NOT NULL,
+        source_column    TEXT NOT NULL,
+        member          TEXT NOT NULL,
+        absence_count   INTEGER NOT NULL DEFAULT 0 CHECK (absence_count >= 0),
+        PRIMARY KEY (provider, source_endpoint, source_column, member)
+    ) STRICT
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class _Migration:
@@ -231,6 +250,19 @@ def _create_work_units_table(connection: sqlite3.Connection) -> None:
         connection.execute(index_ddl)
 
 
+def _create_rosters_table(connection: sqlite3.Connection) -> None:
+    """
+    Create the ``rosters`` table (schema v2).
+
+    Args:
+        connection: An open connection, inside the migration's transaction.
+
+    Side Effects:
+        Executes ``CREATE TABLE`` on ``connection``.
+    """
+    connection.execute(_ROSTERS_TABLE_DDL)
+
+
 def _create_initial_schema(connection: sqlite3.Connection) -> None:
     """
     Apply schema v1: create the initial tables — ``cursors``, ``runs``, ``work_units``.
@@ -255,6 +287,7 @@ def _create_initial_schema(connection: sqlite3.Connection) -> None:
 # is migrated up to. A future schema change appends a new step.
 _MIGRATIONS: Final[tuple[_Migration, ...]] = (
     _Migration(version=1, apply=_create_initial_schema),
+    _Migration(version=2, apply=_create_rosters_table),
 )
 
 
