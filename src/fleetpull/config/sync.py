@@ -8,6 +8,7 @@ will join here when that layer is built. One module per config section (house ru
 
 import logging
 from datetime import UTC, date, datetime, time
+from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
@@ -28,11 +29,18 @@ class SyncConfig(BaseModel):
             our history begins", so it must be declared. It goes inert the moment
             observed data or completed coverage exists; thereafter the start is
             derived from those, never from this.
+        dataset_root: The root directory the dataset is written under
+            (``{root}/{provider}/{endpoint}/``, DESIGN section 3). Sync-wide -- one
+            output location for the whole sync -- so it lives here rather than being
+            threaded onto each runner. Required: there is no safe default for where
+            output lands. A string path coerces to ``Path``; the storage layer
+            normalizes it via ``resolve_path``.
     """
 
     model_config = ConfigDict(frozen=True, extra='forbid', validate_default=True)
 
     default_start_date: date
+    dataset_root: Path
 
     @property
     def default_start_datetime(self) -> datetime:
