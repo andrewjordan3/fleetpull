@@ -7,7 +7,7 @@ will join here when that layer is built. One module per config section (house ru
 """
 
 import logging
-from datetime import date
+from datetime import UTC, date, datetime, time
 
 from pydantic import BaseModel, ConfigDict
 
@@ -33,3 +33,20 @@ class SyncConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra='forbid', validate_default=True)
 
     default_start_date: date
+
+    @property
+    def default_start_datetime(self) -> datetime:
+        """The cold-start anchor as a timezone-aware UTC midnight instant.
+
+        ``default_start_date`` is the human-authored calendar date history
+        begins from; the resume resolver (``resolve_resume_start``) composes it
+        with watermark and frontier datetimes, so it is lifted to the start of
+        that UTC day here. Deriving it keeps the stored field a ``date`` (a
+        time-of-day on a backfill anchor is meaningless) while handing the
+        orchestrator the ``datetime`` it needs, the conversion defined in one
+        place.
+
+        Returns:
+            ``default_start_date`` at 00:00:00 with ``tzinfo`` ``datetime.UTC``.
+        """
+        return datetime.combine(self.default_start_date, time.min, tzinfo=UTC)

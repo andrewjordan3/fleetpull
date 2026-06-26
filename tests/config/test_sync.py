@@ -1,6 +1,6 @@
 """Tests for fleetpull.config.sync."""
 
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pytest
 from pydantic import ValidationError
@@ -35,3 +35,8 @@ class TestSyncConfig:
             SyncConfig(  # type: ignore[call-arg]
                 default_start_date=date(2024, 1, 1), unknown='x'
             )
+
+    def test_default_start_datetime_lifts_to_utc_midnight(self) -> None:
+        config = SyncConfig(default_start_date=date(2024, 1, 1))
+        assert config.default_start_datetime == datetime(2024, 1, 1, tzinfo=UTC)
+        assert config.default_start_datetime.tzinfo is UTC
