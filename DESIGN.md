@@ -1066,6 +1066,9 @@ fleetpull/
     work_units.py  # WorkUnitStore: the backfill claim queue (enqueue/claim/complete/recover)
     rosters.py     # RosterStore + reconcile + is_roster_stale + RosterDelta: the fan-out roster
   orchestrator/    # run executor + request drivers + fan-out coordinator (§14); concurrency executors (§7)
+    outcome.py     # RunOutcome: Executed | CaughtUp — the run result carrier (§14)
+    drivers.py     # RequestDriver Protocol + SingleRequestDriver — per-page record batches (§14)
+    runner.py      # EndpointRunner — one endpoint's run transaction; snapshot arm built (§14)
   cli.py           # fetch, sync
 ```
 
@@ -1252,17 +1255,20 @@ orchestration splits into three nested layers, by concern:
 
 - **`EndpointRunner`** (`orchestrator/runner.py`) owns one endpoint's run
   *transaction*: open the run (`RunLedger`), construct the writer (`select_writer`,
-  §3), call the request driver, consume each chain of records the driver yields
+  §3), call the request driver, consume each record batch the driver yields
   (validate -> frame -> guard -> `writer.write`), then `finalize` once, advance the
   cursor once, and complete the run once. It is cardinality-blind — it never knows,
   or branches on, how many requests a run makes.
-- **`RequestDriver`** (`orchestrator/drivers.py`) owns request *cardinality*.
-  `SingleRequestDriver` yields one chain built with `path_values={}`;
-  `FanOutRequestDriver` yields one chain per roster member, each with
-  `path_values={placeholder: member}`. A driver touches only the client (from the
-  registry) and the endpoint's `SpecBuilder`, and yields each chain's raw records;
-  it does no validation, framing, or writing. **`path_values` live only in the
-  driver** — the runner never writes them and the coordinator never supplies them.
+- **`RequestDriver`** (`orchestrator/drivers.py`) owns request *cardinality* and
+  yields the run's records as a stream of batches. `SingleRequestDriver` issues one
+  request chain (`path_values={}`) and yields its records a page at a time;
+  `FanOutRequestDriver` issues one request chain per roster member
+  (`path_values={placeholder: member}`), yielding each member's records as one batch.
+  The batch granularity is each driver's own choice; the runner consumes batches
+  uniformly. A driver touches only the client (from the registry) and the endpoint's
+  `SpecBuilder`, and yields raw records in batches; it does no validation, framing,
+  or writing. **`path_values` live only in the driver** — the runner never writes
+  them and the coordinator never supplies them.
 - **The fan-out coordinator** (built last) refreshes the roster when stale
   (`last_success_at` -> `is_roster_stale` -> `reconcile` -> `RosterStore.apply`,
   §5), reads the members, builds a `FanOutRequestDriver` from them, and hands it to
@@ -1328,10 +1334,10 @@ prevents that permanent litter; both guards are one rule ("no event-time after n
 applied at the two points it can surface.
 
 **What the runner tracks and returns.** The ledger's row count is `records_fetched`
-— the summed `len(records)` across chains — not `WriteResult.rows_written`; the write
+— the summed `len(models)` across batches — not `WriteResult.rows_written`; the write
 report's counts (dedup, pruning, partitions touched) are a different quantity, kept
 for logging. The watermark candidate is folded incrementally —
-`latest_event_time(frame, event_time_column)` per chain, combined with a
+`latest_event_time(frame, event_time_column)` per batch, combined with a
 None-tolerant `max` — never by retaining frames. `run()` returns a `RunOutcome`,
 never `None`: a frozen tagged union `Executed` (carrying `records_fetched` and the
 `WriteResult`) or `CaughtUp` (the window resolved to nothing — no fetch, no writer,
