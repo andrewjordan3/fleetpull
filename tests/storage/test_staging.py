@@ -6,7 +6,11 @@ from pathlib import Path
 import polars as pl
 
 from fleetpull.storage.files import partition_part_file, partition_staging_dir
-from fleetpull.storage.staging import compact_partition, stage_shard
+from fleetpull.storage.staging import (
+    clear_partition_staging,
+    compact_partition,
+    stage_shard,
+)
 
 
 def _frame(rows: list[tuple[datetime, int]]) -> pl.DataFrame:
@@ -105,3 +109,31 @@ class TestCompactPartition:
         compact_partition(tmp_path, partition_date, existing=existing)
         part = pl.read_parquet(partition_part_file(tmp_path, partition_date))
         assert sorted(part.get_column('id').to_list()) == [1, 9]
+
+
+def test_clears_staging_and_keeps_a_partition_with_data(tmp_path: Path) -> None:
+    date_dir = tmp_path / 'date=2026-06-01'
+    staging = date_dir / 'staging'
+    staging.mkdir(parents=True)
+    (staging / 'shard-x.shard').write_bytes(b'x')
+    (date_dir / 'part.parquet').write_bytes(b'data')
+    clear_partition_staging(tmp_path, [date(2026, 6, 1)])
+    assert not staging.exists()
+    assert (date_dir / 'part.parquet').exists()
+
+
+def test_clears_staging_and_removes_a_now_empty_partition_dir(
+    tmp_path: Path,
+) -> None:
+    date_dir = tmp_path / 'date=2026-06-01'
+    staging = date_dir / 'staging'
+    staging.mkdir(parents=True)
+    (staging / 'shard-x.shard').write_bytes(b'x')
+    clear_partition_staging(tmp_path, [date(2026, 6, 1)])
+    assert not date_dir.exists()
+
+
+def test_clear_partition_staging_is_lenient_when_absent(tmp_path: Path) -> None:
+    # No staging directory under the date: clearing is a no-op, not an error.
+    clear_partition_staging(tmp_path, [date(2026, 6, 1)])
+    assert not (tmp_path / 'date=2026-06-01').exists()

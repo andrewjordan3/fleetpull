@@ -40,10 +40,14 @@ from fleetpull.paths import PathInput, endpoint_directory
 from fleetpull.storage.atomic import atomic_write_parquet
 from fleetpull.storage.files import data_file, partition_part_file
 from fleetpull.storage.frames import drop_exact_duplicates
-from fleetpull.storage.partitioning import prune_window_partitions
+from fleetpull.storage.partitioning import prune_window_partitions, window_dates
 from fleetpull.storage.read import read_parquet_if_exists
 from fleetpull.storage.result import WriteResult
-from fleetpull.storage.staging import compact_partition, stage_shard
+from fleetpull.storage.staging import (
+    clear_partition_staging,
+    compact_partition,
+    stage_shard,
+)
 
 __all__: list[str] = [
     'DatasetWriter',
@@ -217,19 +221,34 @@ class PartitionedWriter(ABC):
     ) -> None:
         """Bind the writer to an endpoint directory, event-time column, and window.
 
+        Clears any stale shards a prior crashed run left under the window's covered
+        dates before staging anything, so a later ``compact_partition`` folds only
+        this run's shards, not a superseded row's pre-edit version. A covered date
+        the clear empties (a crash before any ``part.parquet`` existed) has its
+        now-empty ``date=`` directory removed too, upholding the
+        no-empty-partition-directory invariant (DESIGN §3/§14).
+
+        Assumes no overlapping writer for the same endpoint and window runs
+        concurrently: the construction-time clear is destructive, so overlapping
+        runs could delete each other's live staging. Orchestration must prevent
+        overlapping runs for one endpoint.
+
         Args:
             target_dir: The endpoint directory holding the ``date=`` partitions.
             event_time_column: The UTC datetime column whose date keys the
                 partitions.
-            window: The run's half-open resume window -- the prune's bound.
+            window: The run's half-open resume window -- the prune's bound and the
+                covered-date set the construction-time staging clear sweeps.
 
         Side Effects:
-            None.
+            Removes any existing ``staging/`` directory under the window's covered
+            dates, and any ``date=`` directory the clear leaves empty.
         """
         self._target_dir = target_dir
         self._event_time_column = event_time_column
         self._window = window
         self._written_dates: set[date] = set()
+        clear_partition_staging(target_dir, window_dates(window))
 
     def write(self, frame: pl.DataFrame) -> None:
         """Stage one fetched piece as date-split shards.
