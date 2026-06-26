@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import polars as pl
 
 from fleetpull.incremental import DateWindow
+from fleetpull.storage import in_window as face_in_window
 from fleetpull.storage.frames import drop_exact_duplicates, in_window
 
 
@@ -60,3 +61,8 @@ def test_in_window_negation_is_the_complement() -> None:
     )
     outside = frame.filter(~in_window('located_at', window))
     assert outside.get_column('id').to_list() == [1, 3]
+
+
+def test_in_window_is_exported_from_the_storage_face() -> None:
+    # A cross-package caller (orchestrator/batch.py) routes through the face.
+    assert face_in_window is in_window
