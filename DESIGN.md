@@ -144,11 +144,17 @@ whether the partition grain equals the window grain.** The full mechanism matrix
 
 **The date-partitioned date-window cell touches no parquet bytes.** Because the
 partition grain *equals* the window dimension — date partitions, a date window —
-every `date=` partition is wholly inside or wholly outside `[start, end)`; there is
-no sub-partition row-filtering. Clearing the window is therefore a *directory*
-operation (delete whole `date=` folders), not a data operation — which is why
-`in_window` (the row-level predicate) is used only in the single-file date-window
-and feed cells, never in this one.
+every `date=` partition the cell writes is wholly inside or wholly outside
+`[start, end)`; there is no sub-partition row-filtering in the cell, so clearing the
+window is a *directory* operation (delete whole `date=` folders), not a data
+operation. That every written partition is in-window is upheld one layer up, not by
+the cell: an overlap-anchored provider can return records whose single
+`event_time_column` falls outside `[start, end)`, so the watermark arm filters each
+fetched frame to `in_window` before `split_by_date` — only in-window dates are ever
+staged, compacted, or pruned — and the fold uses the filtered maximum, so the
+watermark never advances past the trailing edge. `in_window` (the row-level
+predicate) is therefore applied by the watermark arm and by the single-file
+date-window and feed cells, but never inside this directory-only cell.
 
 **The write+delete for that cell is two steps.** (1) Write every
 `split_by_date(new_frame)` partition through `atomic_write_parquet` —
@@ -1070,6 +1076,7 @@ fleetpull/
     drivers.py     # RequestDriver Protocol + SingleRequestDriver — per-page record batches (§14)
     runner.py      # EndpointRunner — one endpoint's run transaction; snapshot arm built (§14)
     batch.py       # process_batch: per-batch validate/frame/window + fold (§14)
+    resume.py      # resolve_watermark_start + should_advance_watermark (§14)
   cli.py           # fetch, sync
 ```
 
@@ -1307,14 +1314,17 @@ chain's records — never a RAM buffer holding the fleet. Backfill chunk sizing 
 remains the one open piece.
 
 **The run is constructed, not self-assembling.** The `EndpointRunner` is injected
-with its collaborators — the `ProviderClientRegistry`, the `RunLedger`, the
-`Clock`, and `dataset_root`; the watermark arm adds the `CursorStore` and
-`SyncConfig`. The `EndpointDefinition` and the driver are `run()` arguments, not
-constructor fields, so one runner instance runs `vehicles`, then `vehicle_locations`,
-each with the driver its caller built. The runner constructs no clients and reads no
-credentials. One `Clock` instance is shared by the runner, the `RunLedger`, the
-`CursorStore`, and the limiter inside the registry's runtime — otherwise run
-timestamps, window resolution, and the future guards skew apart.
+with five collaborators — the `ProviderClientRegistry` (client source), the
+`RunLedger` (run recorder), the `Clock`, the `CursorStore` (cursor access), and the
+`SyncConfig`, which now carries both the dataset root and the cold-start anchor (a
+sync-wide setting belongs on the sync config, not threaded per-runner — and it keeps
+the constructor at five flat parameters). The `EndpointDefinition` and the driver are
+`run()` arguments, not constructor fields, so one runner instance runs `vehicles`,
+then `vehicle_locations`, each with the driver its caller built. The runner
+constructs no clients and reads no credentials. One `Clock` instance is shared by the
+runner, the `RunLedger`, the `CursorStore`, and the limiter inside the registry's
+runtime — otherwise run timestamps, window resolution, and the future guards skew
+apart.
 
 **`ProviderClientRegistry`** (`network/client/registry.py`) owns
 `{provider: TransportClient}` and answers `client_for(provider)`. It is a
@@ -1329,6 +1339,23 @@ auth/classifier/pool) from endpoint execution (decoder, quota scope, model, stor
 sync mode — all carried by the `EndpointDefinition`): the runner asks the registry
 for `definition.provider`'s client, and the endpoint supplies the rest.
 
+**The watermark arm resolves its window from pure functions, then orchestrates.**
+Each run resolves a fresh window: `resolve_trailing_edge(now, cutoff)` floors `now`
+to its UTC midnight and holds it back by the cutoff (the end); the start is the
+resume precedence — `resolve_watermark_start` turns the stored cursor into arm 1
+(`watermark - lookback`, carrying Guard A and the cross-mode feed-cursor rejection),
+else the coverage frontier (arm 2), else `default_start_date` (arm 3), composed by
+`resolve_resume_start`; `window_or_none(start, end)` yields the `DateWindow` or
+`None` (caught up → `CaughtUp`, no run opened). These decisions are pure and live in
+`orchestrator/resume.py` (cursor interpretation and its guards) and
+`incremental/resolution.py` (cursor-free date math); the runner reads the cursor,
+the clock, and the frontier, calls them, and writes — no resume logic on the class,
+the same split as `process_batch` in `orchestrator/batch.py`. After the fetch the run
+advances the cursor only when `should_advance_watermark` confirms the folded in-window
+maximum is strictly past the stored watermark (the monotonicity the cursor store
+omits) and only when the run observed at least one in-window event; the `set_cursor`
+write is inline in the runner, between `finalize` and `complete_run`.
+
 **Crash-safety ordering — parquet, then cursor, then ledger.** §5 fixes
 parquet-before-cursor; the run executor adds a second ordering, cursor before run
 completion. A succeeded watermark run feeds `coverage_frontier` (resume arm 2, §4),
@@ -1341,18 +1368,21 @@ advanced (arm 1, lookback applies) and the run merely `running` (diagnostic-only
 the frontier filters `succeeded`), which is the protective state. Snapshots are
 unaffected: they hold no cursor and never reach the frontier.
 
-**Two future-time guards, both the runner's.** The `CursorStore` enforces no advance
-discipline by design (§5), so the runner owns the future-time checks. *Guard A*, in
-the watermark head before window resolution: a persisted `watermark > now` is
+**Two future-time guards, one rule applied where it can surface.** The `CursorStore`
+enforces no advance discipline by design (§5), so the watermark arm owns the
+future-time checks — both in the pure helpers it calls. *Guard A*, in
+`resolve_watermark_start` before window resolution: a persisted `watermark > now` is
 corruption and raises `ConfigurationError` — otherwise a future-dated cursor becomes
-a permanent "caught up". *Guard B*, in the consume loop after framing and **before**
-`writer.write`: an observed event-time maximum past the run's captured `now` fails
-the run before any parquet is written — because a future-dated row would
-`split_by_date` into a `date=<future>` partition outside the resume window, which the
-window-bounded `prune_window_partitions` (§3) never reaches, leaving an orphan
-partition beyond the prune horizon. Failing before the write is the only thing that
-prevents that permanent litter; both guards are one rule ("no event-time after now")
-applied at the two points it can surface.
+a permanent "caught up". *Guard B*, inside `process_batch` on the raw frame **before**
+the window filter: an observed event-time maximum past the run's captured `now` raises
+`ProviderResponseError` before any parquet is written — because a future-dated row
+would `split_by_date` into a `date=<future>` partition outside the resume window,
+which the window-bounded `prune_window_partitions` (§3) never reaches, leaving an
+orphan partition beyond the prune horizon. Guarding the *raw* frame is what surfaces
+the anomaly: the window's end is held back to at or before `now`, so a future-dated
+record falls outside `[start, end)` and the window filter would otherwise drop it
+silently. Both guards are one rule ("no event-time after now") at the two points it
+can surface.
 
 **What the runner tracks and returns.** The ledger's row count is `records_fetched`
 — the summed `len(models)` across batches — not `WriteResult.rows_written`; the write
