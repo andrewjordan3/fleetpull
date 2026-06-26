@@ -1241,6 +1241,26 @@ lives in `state/`). The per-chunk DataFrame is a value, not a stateful component
 - **Backfill chunking as a config value.** Splitting one large window (e.g. 2024→today) into sub-window units of N days (e.g. 7) does not exist yet and would be user config. It maps onto the `work_units` queue (built): each sub-window is a work unit, claimed and executed in turn. Tied to the deciding factor above.
 - **`DatePartitionedLayout`'s exact interface, contingent on the partition-assembly question above.** How it slots against the `Layout` protocol, where the delete step (§3) sits relative to the writes, and whether it receives an accumulated frame or coordinates staging are all unresolved until that settles.
 
+- **Fan-out empty roster and the work-unit transaction boundary (deferred to the
+  fan-out coordinator prompt).** Two coupled, still-open questions for when
+  `FanOutRequestDriver` and the coordinator land. *Empty roster:* the coordinator
+  reads the roster (the driver does not, §14), so it short-circuits before
+  `runner.run()` — an empty roster raises `ConfigurationError` by default, unless the
+  endpoint's `FanOutSpec.allow_empty_roster` is set, in which case it returns the
+  no-op outcome without building a zero-member driver. Error-by-default because a
+  feeder that silently returned nothing is a failure to surface, not an empty dataset
+  to emit; this also keeps the writer's "`write` called ≥1 time" precondition intact
+  without a separate "tolerate zero writes" path (a snapshot always yields ≥1
+  page-batch, a fan-out with ≥1 member yields ≥1 batch, and the only zero-batch case
+  never reaches the runner). *Transaction boundary:* whether one fan-out run is a
+  single transaction (`finalize`/cursor/`complete` once — a mid-run crash refetches
+  the whole roster, no per-member resumability, `WorkUnitStore` unused on this path)
+  or per-member transactions (`finalize` + commit per member — resumable via
+  `WorkUnitStore`, but the watermark-advances-once model and per-member commits must
+  be reconciled). This decides where progress commits live and whether the driver's
+  batch granularity interacts with them; it is the coordinator prompt's first
+  question.
+
 ---
 
 ## 14. Orchestration: the run executor, the request driver, and the client registry
