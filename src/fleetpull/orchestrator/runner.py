@@ -27,10 +27,10 @@ from fleetpull.endpoints.shared import (
 )
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import TransportClient
+from fleetpull.orchestrator.batch import process_batch
 from fleetpull.orchestrator.drivers import RequestDriver
 from fleetpull.orchestrator.outcome import Executed, RunOutcome
 from fleetpull.paths import PathInput
-from fleetpull.records import models_to_dataframe, validate_records
 from fleetpull.storage import select_writer
 from fleetpull.vocabulary import Provider
 
@@ -151,10 +151,9 @@ class EndpointRunner:
             writer = select_writer(definition, self._dataset_root)
             records_fetched = 0
             for batch in driver.record_batches(definition, client, resume=None):
-                models = validate_records(batch, definition.response_model)
-                frame = models_to_dataframe(models, definition.response_model)
-                writer.write(frame)
-                records_fetched += len(models)
+                processed = process_batch(batch, definition, context=None)
+                writer.write(processed.frame)
+                records_fetched += processed.frame.height
             write = writer.finalize()
             self._run_recorder.complete_run(run_id, row_count=records_fetched)
             return Executed(records_fetched=records_fetched, write=write)
