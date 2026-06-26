@@ -1069,6 +1069,7 @@ fleetpull/
     outcome.py     # RunOutcome: Executed | CaughtUp — the run result carrier (§14)
     drivers.py     # RequestDriver Protocol + SingleRequestDriver — per-page record batches (§14)
     runner.py      # EndpointRunner — one endpoint's run transaction; snapshot arm built (§14)
+    batch.py       # process_batch: per-batch validate/frame/window + fold (§14)
   cli.py           # fetch, sync
 ```
 
