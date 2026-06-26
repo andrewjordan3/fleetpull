@@ -194,6 +194,37 @@ class TestWatermarkPartitionedWriter:
         assert result.deleted_partitions == [date(2026, 6, 1)]
         assert (tmp_path / 'date=2026-06-02' / 'part.parquet').exists()
 
+    def test_clears_stale_staging_shards_at_construction(self, tmp_path: Path) -> None:
+        window = DateWindow(
+            start=datetime(2026, 6, 1, tzinfo=UTC),
+            end=datetime(2026, 6, 2, tzinfo=UTC),
+        )
+        # A prior run crashed after staging but before compaction: a stale shard
+        # (id=99) sits under the covered date's staging directory.
+        staging = tmp_path / 'date=2026-06-01' / 'staging'
+        staging.mkdir(parents=True)
+        pl.DataFrame(
+            {'located_at': [datetime(2026, 6, 1, 1, tzinfo=UTC)], 'id': [99]}
+        ).write_parquet(staging / 'shard-stale.shard')
+        writer = WatermarkPartitionedWriter(tmp_path, 'located_at', window)
+        writer.write(_located_frame([(datetime(2026, 6, 1, 8, tzinfo=UTC), 1)]))
+        writer.finalize()
+        part = pl.read_parquet(tmp_path / 'date=2026-06-01' / 'part.parquet')
+        assert part.get_column('id').to_list() == [1]
+
+    def test_leaves_staging_outside_the_window_untouched(self, tmp_path: Path) -> None:
+        window = DateWindow(
+            start=datetime(2026, 6, 1, tzinfo=UTC),
+            end=datetime(2026, 6, 2, tzinfo=UTC),
+        )
+        # Staging for a date the window does not cover survives construction.
+        outside = tmp_path / 'date=2026-06-05' / 'staging'
+        outside.mkdir(parents=True)
+        stale_shard = outside / 'shard-stale.shard'
+        stale_shard.write_bytes(b'stale')
+        WatermarkPartitionedWriter(tmp_path, 'located_at', window)
+        assert stale_shard.exists()
+
 
 class TestSelectWriter:
     def test_returns_snapshot_writer_for_snapshot_single(self, tmp_path: Path) -> None:

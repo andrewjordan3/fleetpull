@@ -6,7 +6,7 @@ A date-partitioned watermark endpoint fans out -- the writer receives this run's
 records one piece at a time. ``stage_shard`` lands each piece immediately as
 date-split shards under ``date=YYYY-MM-DD/staging/``, so no piece is held in memory
 waiting for the rest; ``compact_partition`` then folds each date's shards into that
-date's single ``part.parquet`` and clears the staging directory. Two stateless
+date's single ``part.parquet`` and clears the staging directory. Three stateless
 functions; the writer (``writers.py``) orchestrates them and decides per cell
 whether compaction folds in the existing partition and whether the run prunes
 (DESIGN §3).
@@ -23,6 +23,7 @@ High-volume endpoints stay in bounds by a smaller date-chunk, not by streaming.
 """
 
 import shutil
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -31,6 +32,7 @@ import polars as pl
 
 from fleetpull.storage.atomic import atomic_write_parquet
 from fleetpull.storage.files import (
+    partition_dir,
     partition_part_file,
     partition_staging_dir,
     partition_staging_shard,
@@ -38,7 +40,12 @@ from fleetpull.storage.files import (
 from fleetpull.storage.frames import drop_exact_duplicates
 from fleetpull.storage.partition import split_by_date
 
-__all__: list[str] = ['CompactionResult', 'compact_partition', 'stage_shard']
+__all__: list[str] = [
+    'CompactionResult',
+    'clear_partition_staging',
+    'compact_partition',
+    'stage_shard',
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,3 +130,40 @@ def compact_partition(
     return CompactionResult(
         rows_written=deduped.height, duplicates_dropped=before - deduped.height
     )
+
+
+def clear_partition_staging(
+    endpoint_dir: Path, partition_dates: Collection[date]
+) -> None:
+    """Remove any staged shards a crashed prior run left under these dates.
+
+    For each date, removes its ``staging/`` directory if present, then removes the
+    enclosing ``date=`` directory if that left it empty. A crash that died after the
+    first ``stage_shard`` but before any ``compact_partition`` wrote a
+    ``part.parquet`` leaves a ``date=`` holding only ``staging/``; an empty ``date=``
+    directory must not survive (it would read as a partition with no data, the
+    invariant ``delete_partition`` upholds), so the now-empty directory goes too.
+    Only a genuinely empty directory is removed -- a surviving ``part.parquet`` or a
+    crashed atomic-write temp keeps it. Lenient on a missing ``staging/``: a clean
+    prior run removes its own staging at compaction, so absence is the normal case,
+    the opposite stance from ``delete_partition``'s strictness. Called at writer
+    construction, before any ``stage_shard``, so the only shards a later
+    ``compact_partition`` folds are the live run's own (DESIGN §3/§14).
+
+    Args:
+        endpoint_dir: The endpoint directory holding the ``date=`` partitions.
+        partition_dates: The dates whose staging to clear (the window's covered
+            dates).
+
+    Side Effects:
+        Removes any existing ``staging/`` directory under those dates, and any
+        ``date=`` directory left empty by that removal.
+    """
+    for partition_date in partition_dates:
+        staging_dir = partition_staging_dir(endpoint_dir, partition_date)
+        if not staging_dir.exists():
+            continue
+        shutil.rmtree(staging_dir)
+        date_dir = partition_dir(endpoint_dir, partition_date)
+        if not any(date_dir.iterdir()):
+            date_dir.rmdir()
