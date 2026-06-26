@@ -382,5 +382,5 @@ def select_writer(
             raise NotImplementedError(
                 f'no writer for storage_kind={definition.storage_kind} '
                 f'sync_mode={type(definition.sync_mode).__name__} yet '
-                f'(partitioned and feed writers land in Part 2)'
+                f'(the single-file watermark cell and the feed cells are not built)'
             )
