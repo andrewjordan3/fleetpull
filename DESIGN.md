@@ -967,6 +967,7 @@ fleetpull/
   network/         # organizational namespace; the surfaces live in the subpackages
     client/        # HTTP transport, retry policy, limiter consultation; consumes the page-decoder abstraction
       transport.py   # TransportClient — the assembled fetch loop and per-attempt pipeline
+      registry.py    # ProviderClientRegistry — provider -> TransportClient, opened/closed as a unit (§14)
       profile.py     # ProviderProfile — per-provider auth + classifier bundle
       runtime.py     # ClientRuntime — process-global configs, limiter registry, jitter, sleeper
       page.py        # FetchedPage — the emit type (records + durable_progress)
