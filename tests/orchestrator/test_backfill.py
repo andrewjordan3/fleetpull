@@ -8,7 +8,7 @@ from fleetpull.incremental import DateWindow
 from fleetpull.orchestrator.backfill import (
     _date_chunks,
     _is_utc_midnight,
-    plan_partitioned_backfill_units,
+    plan_backfill_units,
 )
 from fleetpull.state import WorkUnitSpec
 from fleetpull.vocabulary import Provider
@@ -99,48 +99,34 @@ class TestDateChunks:
             _date_chunks(span, timedelta(days=30))
 
 
-class TestPlanPartitionedBackfillUnits:
-    def test_crosses_chunks_with_members(self) -> None:
-        units = plan_partitioned_backfill_units(
-            Provider.MOTIVE, 'locations', ['v1', 'v2'], _span(90), timedelta(days=30)
+class TestPlanBackfillUnits:
+    def test_one_unit_per_chunk(self) -> None:
+        units = plan_backfill_units(
+            Provider.MOTIVE, 'locations', _span(90), timedelta(days=30)
         )
-        assert len(units) == 6  # three chunks x two members
+        assert len(units) == 3
 
-    def test_is_chunk_major(self) -> None:
-        units = plan_partitioned_backfill_units(
-            Provider.MOTIVE, 'locations', ['v1', 'v2'], _span(90), timedelta(days=30)
+    def test_partition_key_is_none_on_every_unit(self) -> None:
+        units = plan_backfill_units(
+            Provider.MOTIVE, 'locations', _span(90), timedelta(days=30)
         )
-        chunk_zero = _MIDNIGHT
-        chunk_one = _MIDNIGHT + timedelta(days=30)
-        chunk_two = _MIDNIGHT + timedelta(days=60)
-        assert [(unit.partition_key, unit.chunk_start) for unit in units] == [
-            ('v1', chunk_zero),
-            ('v2', chunk_zero),
-            ('v1', chunk_one),
-            ('v2', chunk_one),
-            ('v1', chunk_two),
-            ('v2', chunk_two),
-        ]
+        assert [unit.partition_key for unit in units] == [None, None, None]
 
     def test_propagates_identity_and_chunk_bounds(self) -> None:
-        units = plan_partitioned_backfill_units(
-            Provider.MOTIVE, 'locations', ['v1'], _span(30), timedelta(days=30)
+        span = _span(70)
+        units = plan_backfill_units(
+            Provider.MOTIVE, 'locations', span, timedelta(days=30)
         )
         assert units == [
             WorkUnitSpec(
                 provider=Provider.MOTIVE,
                 endpoint='locations',
-                partition_key='v1',
-                chunk_start=_MIDNIGHT,
-                chunk_end=_MIDNIGHT + timedelta(days=30),
+                partition_key=None,
+                chunk_start=chunk_start,
+                chunk_end=chunk_end,
             )
+            for chunk_start, chunk_end in _date_chunks(span, timedelta(days=30))
         ]
-
-    def test_empty_members_yields_no_units(self) -> None:
-        units = plan_partitioned_backfill_units(
-            Provider.MOTIVE, 'locations', [], _span(90), timedelta(days=30)
-        )
-        assert units == []
 
     def test_invalid_span_propagates_value_error(self) -> None:
         span = DateWindow(
@@ -148,12 +134,10 @@ class TestPlanPartitionedBackfillUnits:
             end=datetime(2026, 1, 31, 6, tzinfo=UTC),
         )
         with pytest.raises(ValueError, match='midnight UTC'):
-            plan_partitioned_backfill_units(
-                Provider.MOTIVE, 'locations', ['v1'], span, timedelta(days=30)
-            )
+            plan_backfill_units(Provider.MOTIVE, 'locations', span, timedelta(days=30))
 
     def test_invalid_chunk_propagates_value_error(self) -> None:
         with pytest.raises(ValueError, match='whole number of days'):
-            plan_partitioned_backfill_units(
-                Provider.MOTIVE, 'locations', ['v1'], _span(30), timedelta(hours=36)
+            plan_backfill_units(
+                Provider.MOTIVE, 'locations', _span(30), timedelta(hours=36)
             )
