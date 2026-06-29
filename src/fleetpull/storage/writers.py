@@ -264,7 +264,7 @@ class PartitionedWriter(ABC):
         )
 
     def finalize(self) -> WriteResult:
-        """Compact every touched partition, prune if the cell prunes, and report.
+        """Compact each partition, clear staging, prune if the cell prunes, and report.
 
         Returns:
             The write report -- rows and duplicates summed across the compacted
@@ -289,6 +289,7 @@ class PartitionedWriter(ABC):
             result = compact_partition(self._target_dir, partition_date, existing)
             rows_written += result.rows_written
             duplicates_dropped += result.duplicates_dropped
+        clear_partition_staging(self._target_dir, self._written_dates)
         deleted_partitions = (
             prune_window_partitions(self._target_dir, self._window, self._written_dates)
             if self._prunes
