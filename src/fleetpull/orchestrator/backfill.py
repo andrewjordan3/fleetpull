@@ -1,23 +1,21 @@
-"""Backfill decomposition: a range and a roster into work units.
+"""Backfill decomposition: a range into per-chunk work units.
 
-The caller-side planning the work-unit store defers to its driver (DESIGN §5).
-A watermark endpoint's history is backfilled by decomposing its
-(provider, endpoint) range into whole-UTC-day chunks -- crossed, for a
-partitioned endpoint, with the roster -- so each piece is bounded in both the
-time and the entity dimension and becomes one claimable unit. Whole-day chunks
-because the date-partitioned writer replaces whole date partitions; a mid-day
-boundary would corrupt them. Pure functions only: the coordinator computes the
-span, calls these to plan, and drives the queue.
+The caller-side planning the work-unit store defers to its driver (DESIGN §5). A
+watermark endpoint's history is backfilled by tiling its (provider, endpoint)
+range into whole-UTC-day chunks, one unit per chunk. A chunk fans the whole
+roster at execution, so the unit carries no member -- one planner serves fan-out
+and non-fan-out watermark endpoints alike, the fan-out distinction being the
+loop's, not the unit's. Pure functions only: the coordinator computes the span,
+calls these to plan, and drives the queue.
 """
 
-from collections.abc import Sequence
 from datetime import datetime, timedelta
 
 from fleetpull.incremental import DateWindow
 from fleetpull.state import WorkUnitSpec
 from fleetpull.vocabulary import Provider
 
-__all__: list[str] = ['plan_partitioned_backfill_units']
+__all__: list[str] = ['plan_backfill_units']
 
 
 def _is_utc_midnight(value: datetime) -> bool:
@@ -82,57 +80,46 @@ def _date_chunks(span: DateWindow, chunk: timedelta) -> list[tuple[datetime, dat
     return chunks
 
 
-def plan_partitioned_backfill_units(
+def plan_backfill_units(
     provider: Provider,
     endpoint: str,
-    members: Sequence[str],
     span: DateWindow,
     chunk: timedelta,
 ) -> list[WorkUnitSpec]:
-    """Decompose a partitioned backfill into per-(member, chunk) work units.
+    """Decompose a backfill into one work unit per whole-UTC-day chunk.
 
     The caller-side decomposition the work-unit store leaves to its driver
-    (DESIGN §5): chunk the span into whole UTC days, then cross the chunks with
-    the members so every ``(member, chunk)`` becomes one unit -- the largest
-    piece bounded in both the time and the entity dimension. Chunk-major order
-    (all members of the earliest chunk first) so the queue's FIFO claim walks
-    coverage forward chronologically. Pure: it returns the specs; enqueuing them
-    idempotently is the coordinator's, kept separate so the plan can be inspected
-    and the enqueue stays the store's one write.
-
-    Empty ``members`` yields no units -- an empty roster is the coordinator's
-    loud failure to make, not the planner's. This is the partitioned shape (a
-    per-entity endpoint such as ``vehicle_locations``); the unpartitioned variant
-    -- ``plan_unpartitioned_backfill_units``, ``partition_key=None``, no members
-    -- lands when a non-fan-out watermark endpoint needs it.
+    (DESIGN §5): tile the span into whole-UTC-day chunks, one unit per chunk. A
+    backfill chunk fans the whole roster at execution, so the unit carries no
+    member (``partition_key=None``); the loop reads the roster and builds the
+    fan-out driver when it runs the chunk. So one planner serves fan-out and
+    non-fan-out watermark endpoints alike; the fan-out distinction is the loop's,
+    not the unit's. Pure: it returns the specs; enqueuing them idempotently is the
+    coordinator's, kept separate so the plan can be inspected and the enqueue stays
+    the store's one write.
 
     Args:
         provider: The provider being backfilled.
         endpoint: The endpoint being backfilled.
-        members: The fan-out keys (the roster) to partition by, in the order the
-            queue should claim them within a chunk.
         span: The full backfill range, half-open and midnight-UTC on both bounds
             (the coordinator builds it from the configured start and the trailing
             edge).
         chunk: The width of each date chunk; a positive whole number of days.
 
     Returns:
-        One ``WorkUnitSpec`` per ``(member, chunk)``, chunk-major, ready to
-        enqueue.
+        One ``WorkUnitSpec`` per chunk, in chronological order, ready to enqueue.
 
     Raises:
-        ValueError: When the span bounds are not midnight UTC or ``chunk`` is not
-            a positive whole number of days (from :func:`_date_chunks`).
+        ValueError: When the span bounds are not midnight UTC or ``chunk`` is not a
+            positive whole number of days (from :func:`_date_chunks`).
     """
-    chunks = _date_chunks(span, chunk)
     return [
         WorkUnitSpec(
             provider=provider,
             endpoint=endpoint,
-            partition_key=member,
+            partition_key=None,
             chunk_start=chunk_start,
             chunk_end=chunk_end,
         )
-        for chunk_start, chunk_end in chunks
-        for member in members
+        for chunk_start, chunk_end in _date_chunks(span, chunk)
     ]
