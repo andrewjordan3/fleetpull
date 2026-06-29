@@ -3,13 +3,14 @@
 path (the prune in ``partitioning.py`` is the delete half).
 
 A date-partitioned watermark endpoint fans out -- the writer receives this run's
-records one piece at a time. ``stage_shard`` lands each piece immediately as
-date-split shards under ``date=YYYY-MM-DD/staging/``, so no piece is held in memory
-waiting for the rest; ``compact_partition`` then folds each date's shards into that
-date's single ``part.parquet`` and clears the staging directory. Three stateless
-functions; the writer (``writers.py``) orchestrates them and decides per cell
-whether compaction folds in the existing partition and whether the run prunes
-(DESIGN §3).
+records one piece at a time. ``stage_shard`` lands each piece immediately as date-split shards under
+``date=YYYY-MM-DD/staging/``, so no piece is held in memory waiting for the rest;
+``compact_partition`` folds each date's shards into that date's single
+``part.parquet``; ``clear_partition_staging`` removes staging the writer is done with
+-- at construction a crashed run's stale shards, at finalize the shards just folded.
+Three stateless functions, each one concern; the writer (``writers.py``) orchestrates
+them and decides per cell whether compaction folds in the existing partition and
+whether the run prunes (DESIGN §3).
 
 Shards carry a ``.shard`` extension, not ``.parquet``, so a hive read of the live
 dataset (``scan_parquet`` globbing ``**/*.parquet``, a BigQuery external table)
@@ -95,26 +96,28 @@ def stage_shard(
 def compact_partition(
     endpoint_dir: Path, partition_date: date, existing: pl.DataFrame | None
 ) -> CompactionResult:
-    """Fold one date's staged shards into its ``part.parquet`` and clear staging.
+    """Fold one date's staged shards into its ``part.parquet``.
 
     Reads every ``.shard`` under the date's ``staging/`` directory, concatenates
     them (and ``existing`` if the cell folds in the prior partition), drops exact
-    duplicates, writes the result atomically to ``part.parquet`` -- replacing any
-    prior file -- and removes the staging directory. The whole partition is
-    materialized here; it is bounded by the chunk (DESIGN §3), not the endpoint.
+    duplicates, and writes the result atomically to ``part.parquet``, replacing any
+    prior file. The whole partition is materialized here; it is bounded by the chunk
+    (DESIGN §3), not the endpoint. Folds and nothing else -- the writer clears the
+    staging afterward (``clear_partition_staging``), keeping this single-concern.
 
     Args:
         endpoint_dir: The endpoint directory holding the ``date=`` partitions.
         partition_date: The date whose staged shards to compact; its ``staging/``
             directory must hold at least one shard.
-        existing: The prior ``part.parquet`` contents to fold in (append cells),
-            or ``None`` to replace the partition wholesale (watermark cells).
+        existing: The prior ``part.parquet`` contents to fold in (append cells), or
+            ``None`` to replace the partition wholesale (watermark cells).
 
     Returns:
         The written partition's row counts.
 
     Side Effects:
-        Writes ``part.parquet``; deletes the date's ``staging/`` directory.
+        Writes ``part.parquet``. Leaves the staging shards in place for the caller
+        to clear.
     """
     staging_dir = partition_staging_dir(endpoint_dir, partition_date)
     shard_frames = [
@@ -126,7 +129,6 @@ def compact_partition(
     before = combined.height
     deduped = drop_exact_duplicates(combined)
     atomic_write_parquet(deduped, partition_part_file(endpoint_dir, partition_date))
-    shutil.rmtree(staging_dir)
     return CompactionResult(
         rows_written=deduped.height, duplicates_dropped=before - deduped.height
     )
@@ -135,29 +137,28 @@ def compact_partition(
 def clear_partition_staging(
     endpoint_dir: Path, partition_dates: Collection[date]
 ) -> None:
-    """Remove any staged shards a crashed prior run left under these dates.
+    """Remove these dates' staging, dropping any ``date=`` directory it empties.
 
-    For each date, removes its ``staging/`` directory if present, then removes the
-    enclosing ``date=`` directory if that left it empty. A crash that died after the
-    first ``stage_shard`` but before any ``compact_partition`` wrote a
-    ``part.parquet`` leaves a ``date=`` holding only ``staging/``; an empty ``date=``
-    directory must not survive (it would read as a partition with no data, the
-    invariant ``delete_partition`` upholds), so the now-empty directory goes too.
-    Only a genuinely empty directory is removed -- a surviving ``part.parquet`` or a
-    crashed atomic-write temp keeps it. Lenient on a missing ``staging/``: a clean
-    prior run removes its own staging at compaction, so absence is the normal case,
-    the opposite stance from ``delete_partition``'s strictness. Called at writer
-    construction, before any ``stage_shard``, so the only shards a later
-    ``compact_partition`` folds are the live run's own (DESIGN §3/§14).
+    For each date: remove its ``staging/`` directory if present, then remove the
+    enclosing ``date=`` directory if that left it empty. The writer calls this in two
+    places. At construction, to sweep a crashed prior run's stale shards before
+    staging anything, so a later ``compact_partition`` folds only the live run's
+    shards; a date that died after ``stage_shard`` but before any ``part.parquet``
+    holds only ``staging/``, and an empty ``date=`` directory must not survive (it
+    would read as a partition with no data, the invariant ``delete_partition``
+    upholds), so it goes too. At finalize, to clear the shards ``compact_partition``
+    just folded; that date now holds a ``part.parquet``, so its directory survives.
+    Only a genuinely empty directory is removed -- a ``part.parquet`` or a crashed
+    atomic-write temp keeps it. Lenient on a missing ``staging/``: a date with none
+    is a no-op, not an error (DESIGN §3/§14).
 
     Args:
         endpoint_dir: The endpoint directory holding the ``date=`` partitions.
-        partition_dates: The dates whose staging to clear (the window's covered
-            dates).
+        partition_dates: The dates whose staging to clear.
 
     Side Effects:
-        Removes any existing ``staging/`` directory under those dates, and any
-        ``date=`` directory left empty by that removal.
+        Removes any ``staging/`` directory under those dates, and any ``date=``
+        directory left empty by that removal.
     """
     for partition_date in partition_dates:
         staging_dir = partition_staging_dir(endpoint_dir, partition_date)

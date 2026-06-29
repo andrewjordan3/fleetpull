@@ -50,7 +50,7 @@ class TestStageShard:
 
 
 class TestCompactPartition:
-    def test_replace_writes_part_and_clears_staging(self, tmp_path: Path) -> None:
+    def test_replace_writes_part(self, tmp_path: Path) -> None:
         partition_date = date(2026, 6, 1)
         stage_shard(
             tmp_path,
@@ -65,9 +65,18 @@ class TestCompactPartition:
         result = compact_partition(tmp_path, partition_date, existing=None)
         part = pl.read_parquet(partition_part_file(tmp_path, partition_date))
         assert part.get_column('id').to_list() == [1, 2]
-        assert not partition_staging_dir(tmp_path, partition_date).exists()
         assert result.rows_written == 2
         assert result.duplicates_dropped == 0
+
+    def test_leaves_staging_for_the_caller(self, tmp_path: Path) -> None:
+        # compact_partition folds only; the writer clears staging afterward.
+        partition_date = date(2026, 6, 1)
+        stage_shard(
+            tmp_path, _frame([(datetime(2026, 6, 1, 8, tzinfo=UTC), 1)]), 'located_at'
+        )
+        compact_partition(tmp_path, partition_date, existing=None)
+        assert partition_part_file(tmp_path, partition_date).exists()
+        assert partition_staging_dir(tmp_path, partition_date).exists()
 
     def test_multiple_shards_fold_into_one_partition(self, tmp_path: Path) -> None:
         partition_date = date(2026, 6, 1)
