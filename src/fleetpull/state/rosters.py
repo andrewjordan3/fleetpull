@@ -15,8 +15,8 @@ functions sit beside their store, the same shape as the resolution helpers besid
 cursors: the import discipline permits a pure function in ``state/``, and keeping the
 threshold and staleness logic next to the store it serves beats scattering it.
 ``RosterStore`` takes the feeder identity as ``(provider, source_endpoint,
-source_column)`` primitives, not the endpoints layer's ``FanOutSource`` -- ``state``
-sits below ``endpoints`` and cannot import it; the orchestrator unpacks the spec.
+source_column)`` primitives; the typed declaration (``RosterDefinition`` in the
+``roster/`` leaf) carries those fields, and the orchestrator unpacks them.
 
 Refresh is reconcile-then-apply: list the feeder, ``reconcile`` the listing against the
 current roster into a three-set delta (reset, increment, evict), and ``apply`` it in one
@@ -84,8 +84,8 @@ def reconcile(
 
     Args:
         current: The roster as ``{member: absence_count}`` (from ``read_counts``).
-        listed: The keys the feeder just produced (``extract_fan_out_keys``); duplicates
-            collapse.
+        listed: The keys the feeder just produced (``extract_roster_members``);
+            duplicates collapse.
         eviction_threshold: Consecutive-miss count past which a member is evicted, or
             ``None`` for append-only (never evict).
 
@@ -178,8 +178,8 @@ class RosterStore:
     Translates between the fan-out's needs and ``rosters`` rows, scoped per feeder
     ``(provider, source_endpoint, source_column)``. Holds a ``StateDatabase`` and
     nothing else; runs after ``migrate_to_head`` (the ``rosters`` table must exist,
-    schema v2). The feeder identity is three primitives, not the endpoints layer's
-    ``FanOutSource`` -- ``state`` cannot import ``endpoints``.
+    schema v2). The feeder identity is three primitives, unpacked by the orchestrator
+    from the roster declaration (``RosterDefinition``, the ``roster/`` leaf).
     """
 
     def __init__(self, database: StateDatabase) -> None:

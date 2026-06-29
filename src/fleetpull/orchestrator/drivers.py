@@ -143,7 +143,7 @@ class FanOutRequestDriver:
     Attributes:
         members: The fan-out keys to issue one chain each for, in order.
         path_placeholder: The URL-path template placeholder each member fills
-            (from the endpoint's ``FanOutSpec.path_placeholder``).
+            (from the endpoint's ``FanOutBinding.path_placeholder``).
     """
 
     members: Sequence[str]
