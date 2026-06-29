@@ -1073,7 +1073,7 @@ fleetpull/
     rosters.py     # RosterStore + reconcile + is_roster_stale + RosterDelta: the fan-out roster
   orchestrator/    # run executor + request drivers + fan-out coordinator (§14); concurrency executors (§7)
     outcome.py     # RunOutcome: Executed | CaughtUp — the run result carrier (§14)
-    drivers.py     # RequestDriver Protocol + SingleRequestDriver — per-page record batches (§14)
+    drivers.py     # RequestDriver Protocol + SingleRequestDriver + FanOutRequestDriver — yields FetchedPage per batch (§14)
     runner.py      # EndpointRunner — one endpoint's run transaction; snapshot arm built (§14)
     batch.py       # process_batch: per-batch validate/frame/window + fold (§14)
     resume.py      # resolve_watermark_start + should_advance_watermark (§14)
@@ -1288,15 +1288,18 @@ orchestration splits into three nested layers, by concern:
   cursor once, and complete the run once. It is cardinality-blind — it never knows,
   or branches on, how many requests a run makes.
 - **`RequestDriver`** (`orchestrator/drivers.py`) owns request *cardinality* and
-  yields the run's records as a stream of batches. `SingleRequestDriver` issues one
-  request chain (`path_values={}`) and yields its records a page at a time;
-  `FanOutRequestDriver` issues one request chain per roster member
-  (`path_values={placeholder: member}`), yielding each member's records as one batch.
-  The batch granularity is each driver's own choice; the runner consumes batches
-  uniformly. A driver touches only the client (from the registry) and the endpoint's
-  `SpecBuilder`, and yields raw records in batches; it does no validation, framing,
-  or writing. **`path_values` live only in the driver** — the runner never writes
-  them and the coordinator never supplies them.
+  yields the run's fetched pages (records and durable progress) as a stream of
+  batches — the run executor reads the records to validate/frame/write and the
+  durable progress to advance a feed cursor. `SingleRequestDriver` issues one
+  request chain (`path_values={}`) and yields its pages a page at a time;
+  `FanOutRequestDriver` issues one request chain per member
+  (`path_values={path_placeholder: member}`), yielding each member's pages — the
+  member list the caller's, one member per backfill unit, the whole roster per
+  incremental run. Both drivers yield one page per batch; the runner consumes
+  batches uniformly. A driver touches only the client (from the registry) and the
+  endpoint's `SpecBuilder`, and yields whole fetched pages; it does no validation,
+  framing, or writing. **`path_values` live only in the driver** — the runner never
+  writes them and the coordinator never supplies them.
 - **The fan-out coordinator** (built last) refreshes the roster when stale
   (`last_success_at` -> `is_roster_stale` -> `reconcile` -> `RosterStore.apply`,
   §5), reads the members, builds a `FanOutRequestDriver` from them, and hands it to
