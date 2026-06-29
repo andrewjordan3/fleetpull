@@ -205,8 +205,8 @@ class EndpointRunner:
         try:
             writer = select_writer(definition, self._dataset_root)
             records_fetched = 0
-            for batch in driver.record_batches(definition, client, resume=None):
-                processed = process_batch(batch, definition, context=None)
+            for page in driver.record_batches(definition, client, resume=None):
+                processed = process_batch(page.records, definition, context=None)
                 writer.write(processed.frame)
                 records_fetched += processed.frame.height
             write = writer.finalize()
@@ -290,8 +290,8 @@ class EndpointRunner:
             )
             records_fetched = 0
             latest_observed: datetime | None = None
-            for batch in driver.record_batches(definition, client, resume=window):
-                processed = process_batch(batch, definition, context)
+            for page in driver.record_batches(definition, client, resume=window):
+                processed = process_batch(page.records, definition, context)
                 writer.write(processed.frame)
                 records_fetched += processed.frame.height
                 latest_observed = combine_latest_event_time(
