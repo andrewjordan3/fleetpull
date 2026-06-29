@@ -21,6 +21,7 @@ the provider's client.
 """
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
@@ -34,6 +35,7 @@ from fleetpull.endpoints.shared import (
 from fleetpull.exceptions import ConfigurationError
 from fleetpull.incremental import (
     DateWatermark,
+    DateWindow,
     IncrementalCursor,
     resolve_resume_start,
     resolve_trailing_edge,
@@ -109,6 +111,49 @@ class CursorAccess(Protocol):
         ...
 
 
+def _window_context(
+    definition: EndpointDefinition[ResponseModel], window: DateWindow, now: datetime
+) -> WindowContext:
+    """Build the per-batch transform context, asserting the event-time column.
+
+    A watermark endpoint always declares an ``event_time_column`` (the endpoint
+    definition forbids otherwise); this narrows it for the type checker and fails
+    loudly if that invariant is ever broken.
+
+    Args:
+        definition: The watermark endpoint being run.
+        window: The run's half-open window.
+        now: The run instant (the future-event guard's bound).
+
+    Returns:
+        The ``WindowContext`` for ``process_batch``.
+
+    Raises:
+        ConfigurationError: The endpoint declares no event-time column.
+    """
+    event_time_column = definition.event_time_column
+    if event_time_column is None:
+        raise ConfigurationError(
+            'watermark endpoint has no event_time_column',
+            provider=definition.provider.value,
+            endpoint=definition.name,
+        )
+    return WindowContext(window=window, now=now, event_time_column=event_time_column)
+
+
+@dataclass(frozen=True, slots=True)
+class _WatermarkAdvance:
+    """The watermark arm's intent to advance the cursor past its prior value.
+
+    Distinguishes the watermark arm (advance, when the fold is strictly past
+    ``prior``) from a backfill chunk (no advance -- ``_execute_window`` receives
+    ``None``). ``prior`` is the stored cursor the fold must out-step (``None`` on a
+    cold start, which any in-window observation out-steps).
+    """
+
+    prior: IncrementalCursor | None
+
+
 class EndpointRunner:
     """Runs one endpoint to completion, dispatching on its sync mode.
 
@@ -172,6 +217,40 @@ class EndpointRunner:
                     f'{type(definition.sync_mode).__name__} is not yet executable'
                 )
 
+    def run_backfill_unit(
+        self,
+        definition: EndpointDefinition[ResponseModel],
+        driver: RequestDriver,
+        window: DateWindow,
+    ) -> Executed:
+        """Run one backfill chunk over a caller-given window, advancing no cursor.
+
+        The backfill loop claims a chunk, builds a whole-roster fan-out driver and
+        the chunk's window, and calls this. It runs the same window spine as the
+        watermark arm -- the chunk run fans the whole roster, so the partition is
+        replaced with every member's rows, exactly the in-full refetch the
+        partitioned writer assumes -- but advances no global watermark: out-of-order
+        chunks can't track a single max-event-time watermark, so the watermark is set
+        once at backfill completion. The run is still recorded, so the coverage
+        frontier advances date-wise.
+
+        Args:
+            definition: The watermark endpoint being backfilled.
+            driver: The whole-roster fan-out driver for this chunk.
+            window: The chunk's half-open window (the caller's, not resolved here).
+
+        Returns:
+            ``Executed`` with the fetched-row count and the write report.
+
+        Raises:
+            FleetpullError: A fetch, validation, write, or completion failure -- the
+                run is recorded failed and the original error re-raised.
+        """
+        client = self._client_source.client_for(definition.provider)
+        now = self._clock.now_utc()
+        context = _window_context(definition, window, now)
+        return self._execute_window(definition, driver, client, context, advance=None)
+
     def _run_snapshot(
         self,
         definition: EndpointDefinition[ResponseModel],
@@ -222,20 +301,17 @@ class EndpointRunner:
         driver: RequestDriver,
         mode: WatermarkMode,
     ) -> RunOutcome:
-        """Run the watermark arm: resolve the window, fetch, write, advance.
+        """Run the watermark arm: resolve the window, then execute, advancing.
 
-        Resolves the resume window from the stored watermark (less lookback),
-        else the coverage frontier, else the cold-start anchor, with the end
-        held back by the cutoff. A window that resolves to nothing is a
-        ``CaughtUp`` no-op with no run opened. Otherwise opens a window run and,
-        in one protected block, writes each batch's in-window frame, folds the
-        observed maximum, finalizes, advances the cursor (when the observation is
-        a strictly-forward advance), and completes the run -- in that order, so a
-        crash never leaves a frontier ahead of a committed watermark.
+        Resolves the resume window from the stored watermark (less lookback), else
+        the coverage frontier, else the cold-start anchor, with the end held back by
+        the cutoff. A window that resolves to nothing is a ``CaughtUp`` no-op with no
+        run opened. Otherwise it hands the resolved window to the shared spine,
+        advancing the cursor on a strictly-forward observation.
 
         Args:
             definition: The watermark endpoint to run.
-            driver: The request driver supplying the run's record batches.
+            driver: The request driver supplying the run's batches.
             mode: The endpoint's watermark mode (lookback and cutoff).
 
         Returns:
@@ -243,22 +319,13 @@ class EndpointRunner:
             point had already reached the trailing edge.
 
         Raises:
-            ConfigurationError: A stored watermark dated after ``now`` (Guard
-                A), a cross-mode feed cursor on this endpoint, or a missing
-                event-time column.
-            FleetpullError: A fetch, validation, write, guard, or completion
-                failure -- the run is recorded failed and the error re-raised.
+            ConfigurationError: A stored watermark dated after ``now`` (Guard A), a
+                cross-mode feed cursor on this endpoint, or a missing event-time
+                column.
+            FleetpullError: A fetch, validation, write, guard, or completion failure
+                -- the run is recorded failed and the error re-raised.
         """
         client = self._client_source.client_for(definition.provider)
-        event_time_column = definition.event_time_column
-        if event_time_column is None:
-            # EndpointDefinition forbids this for WatermarkMode; this narrows
-            # for the type checker and fails loudly if that invariant breaks.
-            raise ConfigurationError(
-                'watermark endpoint has no event_time_column',
-                provider=definition.provider.value,
-                endpoint=definition.name,
-            )
         now = self._clock.now_utc()
         end = resolve_trailing_edge(now, mode.cutoff)
         stored = self._cursor_access.get_cursor(definition.provider, definition.name)
@@ -278,16 +345,50 @@ class EndpointRunner:
                 definition.name,
             )
             return CaughtUp()
+        context = _window_context(definition, window, now)
+        return self._execute_window(
+            definition, driver, client, context, _WatermarkAdvance(prior=stored)
+        )
+
+    def _execute_window(
+        self,
+        definition: EndpointDefinition[ResponseModel],
+        driver: RequestDriver,
+        client: TransportClient,
+        context: WindowContext,
+        advance: _WatermarkAdvance | None,
+    ) -> Executed:
+        """Run one window: open, drive/write/finalize, optionally advance, complete.
+
+        The spine the watermark arm and a backfill chunk share. Opens a window run,
+        writes each batch's in-window frame, folds the observed maximum, finalizes,
+        and -- in the parquet -> cursor -> ledger crash order -- advances the cursor
+        (when ``advance`` is given and the fold is a strictly-forward step past its
+        prior) before completing the run. ``advance`` is the watermark arm's intent;
+        ``None`` is a backfill chunk, which records the run and the coverage frontier
+        but advances no global watermark.
+
+        Args:
+            definition: The endpoint being run.
+            driver: The request driver supplying the run's batches.
+            client: The provider's open transport client.
+            context: The window, run instant, and event-time column for the
+                per-batch transform.
+            advance: The cursor-advance intent, or ``None`` to advance nothing.
+
+        Returns:
+            ``Executed`` with the fetched-row count and the write report.
+
+        Raises:
+            FleetpullError: A fetch, validation, write, or completion failure -- the
+                run is recorded failed and the original error re-raised.
+        """
+        window = context.window
         run_id = self._run_recorder.start_window_run(
-            definition.provider,
-            definition.name,
-            window=(window.start, window.end),
+            definition.provider, definition.name, window=(window.start, window.end)
         )
         try:
             writer = select_writer(definition, self._dataset_root, window=window)
-            context = WindowContext(
-                window=window, now=now, event_time_column=event_time_column
-            )
             records_fetched = 0
             latest_observed: datetime | None = None
             for page in driver.record_batches(definition, client, resume=window):
@@ -298,8 +399,10 @@ class EndpointRunner:
                     latest_observed, processed.latest_event_time
                 )
             write = writer.finalize()
-            if latest_observed is not None and should_advance_watermark(
-                stored, latest_observed
+            if (
+                advance is not None
+                and latest_observed is not None
+                and should_advance_watermark(advance.prior, latest_observed)
             ):
                 self._cursor_access.set_cursor(
                     definition.provider,
