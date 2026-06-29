@@ -20,7 +20,7 @@ from fleetpull.endpoints.shared import (
 from fleetpull.exceptions import ConfigurationError, ProviderResponseError
 from fleetpull.incremental import DateWatermark, FeedToken, IncrementalCursor
 from fleetpull.model_contract import ResponseModel
-from fleetpull.network.client import TransportClient
+from fleetpull.network.client import FetchedPage, TransportClient
 from fleetpull.network.contract import (
     DecodedPage,
     JsonObject,
@@ -146,7 +146,7 @@ class _StubCursorAccess:
 
 
 class _CannedDriver:
-    """A RequestDriver yielding pre-set record batches, ignoring the client."""
+    """A RequestDriver yielding pre-set record pages, ignoring the client."""
 
     def __init__(self, batches: list[list[JsonObject]]) -> None:
         self._batches = batches
@@ -156,8 +156,9 @@ class _CannedDriver:
         definition: EndpointDefinition[ResponseModel],
         client: TransportClient,
         resume: ResumeValue,
-    ) -> Iterator[list[JsonObject]]:
-        yield from self._batches
+    ) -> Iterator[FetchedPage]:
+        for batch in self._batches:
+            yield FetchedPage(records=batch, durable_progress=None)
 
 
 class _FailingDriver:
@@ -168,7 +169,7 @@ class _FailingDriver:
         definition: EndpointDefinition[ResponseModel],
         client: TransportClient,
         resume: ResumeValue,
-    ) -> Iterator[list[JsonObject]]:
+    ) -> Iterator[FetchedPage]:
         raise RuntimeError('fetch blew up')
 
 
