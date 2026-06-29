@@ -6,11 +6,11 @@ entry points; the driver composes validation with the network client."""
 
 from fleetpull.records.convert import models_to_dataframe
 from fleetpull.records.event_time import latest_event_time
-from fleetpull.records.fan_out_keys import extract_fan_out_keys
+from fleetpull.records.roster_members import extract_roster_members
 from fleetpull.records.validation import validate_records
 
 __all__: list[str] = [
-    'extract_fan_out_keys',
+    'extract_roster_members',
     'latest_event_time',
     'models_to_dataframe',
     'validate_records',
