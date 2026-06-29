@@ -203,9 +203,19 @@ raises, and a `SnapshotMode` endpoint handed a non-`None` window also raises.
 
 **How the fleet's rows for one date are assembled across the per-vehicle fan-out** —
 `vehicle_locations` fetches per vehicle (~1,459 `GET .../{vehicle_id}` calls) but a
-single `date=` partition holds the whole fleet's rows for that date — is the central
-open question for this write path (§13), as is `DatePartitionedLayout`'s exact
-interface, which is contingent on it.
+single `date=` partition holds the whole fleet's rows for that date — is settled. A
+backfill decomposes into per-chunk work units (`partition_key=None`, §5); a chunk
+fans the whole roster at execution, so the partition is replaced with every member's
+rows; and the write half (`storage/staging.py`) stages each fetched piece to disk on
+arrival (`stage_shard`), folds each date's shards into its `part.parquet` at finalize
+(`compact_partition`), and clears the staging afterward. Peak memory is bounded by
+the chunk, not the endpoint — a high-volume endpoint stays in bounds via a smaller
+chunk, not by streaming. Per-vehicle multi-part files (`part-{uuid}.parquet`, no
+coalesce) were rejected for the small-files problem partitioning exists to prevent:
+at this fleet's ~1,459 vehicles × ~7 window-days that is ≈ 10k tiny files per
+refresh, compounding every refresh, and tens of thousands of few-KB files degrade
+BigQuery external tables and `scan_parquet` badly — so each date folds to one
+`part.parquet`.
 
 The fan-out key source is settled: a provider-listed roster in SQLite, not the
 feeder parquet. An endpoint that fans out declares a `FanOutSpec`
@@ -1081,6 +1091,7 @@ fleetpull/
     drivers.py     # RequestDriver Protocol + SingleRequestDriver + FanOutRequestDriver — yields FetchedPage per batch (§14)
     runner.py      # EndpointRunner — one endpoint's run transaction; snapshot arm built (§14)
     batch.py       # process_batch: per-batch validate/frame/window + fold (§14)
+    streaming.py   # stream_processed_batches: a driver's pages, validated and framed per batch (§14)
     resume.py      # resolve_watermark_start + should_advance_watermark (§14)
     backfill.py    # plan_backfill_units: whole-UTC-day chunk -> WorkUnitSpecs (§5)
   cli.py           # fetch, sync
@@ -1248,12 +1259,6 @@ lives in `state/`). The per-chunk DataFrame is a value, not a stateful component
 - Real rate-limit values for Motive/Samsara (YAML numbers above are placeholders)
 - Whether any endpoint actually warrants the flattening opt-out
 - Per-endpoint quota scopes for Samsara: a provider metering one endpoint apart adds a `QuotaScope` member (code), while that scope's limits stay config — a code-plus-config change, not config-only.
-- **How `date_partitioned` partitions are assembled across the per-vehicle fan-out — the central open question for the `vehicle_locations` write path (§3).** The fan-out is per-vehicle (~1,459 separate `GET .../{vehicle_id}` calls), but a single `date=` partition holds the *whole fleet's* rows for that date, assembled across all those fetches. Options (A) and (B) produce the *same* output — one clean `part.parquet` per date — and differ only in the memory mechanism (RAM buffer vs. disk shards + coalesce); the real question is whether disk-spill is needed or whether small backfill chunks plus a RAM buffer suffice. Deciding factor: backfill chunk sizing (next item) — if backfill is chunked small, each chunk is bounded and a buffer may be enough (A); staging (B) is robust to any volume regardless of chunk size. The tradeoff is staging complexity vs. chunk-sizing discipline atop the existing `work_units` queue.
-    - **(A) RAM buffer.** Accumulate one window's fleet data in memory, `split_by_date`, write one `part.parquet` per date at the end. Bounded by window size in steady state; breaks for backfill (e.g. 2024→today is not bounded by `lookback`).
-    - **(B) Staging / spill-to-disk (tentative lean).** On run start create a staging area; append each vehicle to a buffer; at a row threshold (e.g. ~500k) split by date and flush shards (`shard-000001.parquet`, …) into per-date staging; at the end `pl.scan_parquet` each date's shards and coalesce (streamed via sink) to the final `part.parquet`, then delete staging. Peak memory is the threshold knob, independent of total volume — handles backfill and avoids the small-files problem in one mechanism. Cost: shard lifecycle, the coalesce step, and staging crash-recovery (clear stale staging on restart; the final `part.parquet`, written atomically at coalesce, is the only durable artifact).
-    - **(REJECTED) Per-vehicle multi-part** (`part-{uuid}.parquet`, no coalesce): ~1,459 vehicles × ~7 window-days ≈ 10k tiny files per refresh, compounding every refresh — the small-files problem partitioning exists to prevent. Tens of thousands of few-KB files degrade BigQuery external tables and `scan_parquet` badly. Not viable at breadcrumb scale.
-- **Backfill chunking as a config value.** Splitting one large window (e.g. 2024→today) into sub-window units of N days (e.g. 7) does not exist yet and would be user config. It maps onto the `work_units` queue (built): each sub-window is a work unit, claimed and executed in turn. Tied to the deciding factor above.
-- **`DatePartitionedLayout`'s exact interface, contingent on the partition-assembly question above.** How it slots against the `Layout` protocol, where the delete step (§3) sits relative to the writes, and whether it receives an accumulated frame or coordinates staging are all unresolved until that settles.
 
 - **Fan-out empty roster and the work-unit transaction boundary (deferred to the
   fan-out coordinator prompt).** Two coupled, still-open questions for when
@@ -1306,6 +1311,17 @@ orchestration splits into three nested layers, by concern:
   endpoint's `SpecBuilder`, and yields whole fetched pages; it does no validation,
   framing, or writing. **`path_values` live only in the driver** — the runner never
   writes them and the coordinator never supplies them.
+
+**`stream_processed_batches`** (`orchestrator/streaming.py`) is the fetch-and-frame
+pipe between the driver and the writer: it drives the request driver's pages and
+runs each through `process_batch`, yielding one `ProcessedBatch` per page as a lazy
+generator — each page framed and handed off before the next is fetched, preserving
+the partitioned writer's per-page memory bound. Both run-executor arms drive it, the
+snapshot arm with `context=None` and the watermark arm with a `WindowContext`, and
+the roster refresh will drive it to harvest a feeder's frames without writing. It
+owns no state and resolves no client; the conductor opens the run, picks the client,
+and consumes the stream.
+
 - **The fan-out coordinator** (built last) refreshes the roster when stale
   (`last_success_at` -> `is_roster_stale` -> `reconcile` -> `RosterStore.apply`,
   §5), reads the members, builds a `FanOutRequestDriver` from them, and hands it to
@@ -1434,7 +1450,7 @@ the coordinator follow, wiring `vehicle_locations.fan_out`.
 ## 15. Next Steps
 
 1. Review/amend this document
-2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → retry policy (done, `config/retry.py` + `network/retry/`) → page-decoder abstraction (done, `network/contract/page_decoder.py` + `decoders/`) → HTTP config + the real GeoTab authenticator (done, `config/http.py` + `network/auth/authenticate.py`) → `network/client/` (done) → `endpoints/shared/base.py` (done) → `records` (done) → `storage` (done: `snapshot`+`single` plus the date-partitioned/watermark leaf primitives; `DatePartitionedLayout` pending — §3/§13) → `state` (done in full — §5) → `orchestrator` → `cli.py`
+2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → retry policy (done, `config/retry.py` + `network/retry/`) → page-decoder abstraction (done, `network/contract/page_decoder.py` + `decoders/`) → HTTP config + the real GeoTab authenticator (done, `config/http.py` + `network/auth/authenticate.py`) → `network/client/` (done) → `endpoints/shared/base.py` (done) → `records` (done) → `storage` (done: `snapshot`+`single` plus the date-partitioned/watermark writer, §3) → `state` (done in full — §5) → `orchestrator` → `cli.py`
 
 The `network/client/` step inherits a recorded agenda: classify
 prepare-time transport exceptions (the authenticator propagates
@@ -1450,7 +1466,7 @@ page decoder and quota scope to arrive on each `fetch_pages` call.
 end-to-end (`client → validate_records → models_to_dataframe → persist`, exercised
 by a throwaway hand-run driver). The Motive `vehicle_locations`
 date-partitioned/watermark vertical is in progress: the leaf primitives are built
-(§3), and what remains is `DatePartitionedLayout` (its interface open, §13), the
+(§3), and what remains is the
 net-new watermark spec-builder, the `persist` window parameter and the
 `event_time_column` field, and the trivial `VehicleLocation` model port — the last
 step of the vertical.
