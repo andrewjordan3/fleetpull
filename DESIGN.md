@@ -1091,6 +1091,7 @@ fleetpull/
     drivers.py     # RequestDriver Protocol + SingleRequestDriver + FanOutRequestDriver — yields FetchedPage per batch (§14)
     runner.py      # EndpointRunner — one endpoint's run transaction; snapshot arm built (§14)
     batch.py       # process_batch: per-batch validate/frame/window + fold (§14)
+    streaming.py   # stream_processed_batches: a driver's pages, validated and framed per batch (§14)
     resume.py      # resolve_watermark_start + should_advance_watermark (§14)
     backfill.py    # plan_backfill_units: whole-UTC-day chunk -> WorkUnitSpecs (§5)
   cli.py           # fetch, sync
@@ -1310,6 +1311,17 @@ orchestration splits into three nested layers, by concern:
   endpoint's `SpecBuilder`, and yields whole fetched pages; it does no validation,
   framing, or writing. **`path_values` live only in the driver** — the runner never
   writes them and the coordinator never supplies them.
+
+**`stream_processed_batches`** (`orchestrator/streaming.py`) is the fetch-and-frame
+pipe between the driver and the writer: it drives the request driver's pages and
+runs each through `process_batch`, yielding one `ProcessedBatch` per page as a lazy
+generator — each page framed and handed off before the next is fetched, preserving
+the partitioned writer's per-page memory bound. Both run-executor arms drive it, the
+snapshot arm with `context=None` and the watermark arm with a `WindowContext`, and
+the roster refresh will drive it to harvest a feeder's frames without writing. It
+owns no state and resolves no client; the conductor opens the run, picks the client,
+and consumes the stream.
+
 - **The fan-out coordinator** (built last) refreshes the roster when stale
   (`last_success_at` -> `is_roster_stale` -> `reconcile` -> `RosterStore.apply`,
   §5), reads the members, builds a `FanOutRequestDriver` from them, and hands it to

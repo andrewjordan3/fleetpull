@@ -43,17 +43,14 @@ from fleetpull.incremental import (
 )
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import TransportClient
-from fleetpull.orchestrator.batch import (
-    WindowContext,
-    combine_latest_event_time,
-    process_batch,
-)
+from fleetpull.orchestrator.batch import WindowContext, combine_latest_event_time
 from fleetpull.orchestrator.drivers import RequestDriver
 from fleetpull.orchestrator.outcome import CaughtUp, Executed, RunOutcome
 from fleetpull.orchestrator.resume import (
     resolve_watermark_start,
     should_advance_watermark,
 )
+from fleetpull.orchestrator.streaming import stream_processed_batches
 from fleetpull.storage import select_writer
 from fleetpull.timing import Clock
 from fleetpull.vocabulary import Provider
@@ -284,8 +281,9 @@ class EndpointRunner:
         try:
             writer = select_writer(definition, self._dataset_root)
             records_fetched = 0
-            for page in driver.record_batches(definition, client, resume=None):
-                processed = process_batch(page.records, definition, context=None)
+            for processed in stream_processed_batches(
+                definition, driver, client, resume=None, context=None
+            ):
                 writer.write(processed.frame)
                 records_fetched += processed.frame.height
             write = writer.finalize()
@@ -391,8 +389,9 @@ class EndpointRunner:
             writer = select_writer(definition, self._dataset_root, window=window)
             records_fetched = 0
             latest_observed: datetime | None = None
-            for page in driver.record_batches(definition, client, resume=window):
-                processed = process_batch(page.records, definition, context)
+            for processed in stream_processed_batches(
+                definition, driver, client, resume=window, context=context
+            ):
                 writer.write(processed.frame)
                 records_fetched += processed.frame.height
                 latest_observed = combine_latest_event_time(
