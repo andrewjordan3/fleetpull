@@ -508,7 +508,10 @@ the claim queue over them. The caller plans the decomposition (chunk size,
 range, partition list) and drives the queue; the store only persists units,
 hands them out, and records outcomes — it knows nothing about HTTP, parquet,
 chunking, or what a partition key represents (that is the endpoint definition's
-concern). The date-window dimension is intrinsic: this queue is the
+concern). The partitioned decomposition aligns chunks to whole UTC days, because
+the date-partitioned writer replaces whole date partitions and a mid-day chunk
+boundary would drive partial-day replacement and corrupt them. The date-window
+dimension is intrinsic: this queue is the
 parallelizable backfill mechanism, i.e. the watermark endpoints; feed endpoints
 sweep the version-token stream sequentially and do not use it. Each unit's
 execution records a run in the run ledger, so coverage stays single-sourced
@@ -1077,6 +1080,7 @@ fleetpull/
     runner.py      # EndpointRunner — one endpoint's run transaction; snapshot arm built (§14)
     batch.py       # process_batch: per-batch validate/frame/window + fold (§14)
     resume.py      # resolve_watermark_start + should_advance_watermark (§14)
+    backfill.py    # plan_partitioned_backfill_units: whole-UTC-day chunk × roster -> WorkUnitSpecs (§5)
   cli.py           # fetch, sync
 ```
 
