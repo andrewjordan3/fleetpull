@@ -1357,11 +1357,20 @@ else the coverage frontier (arm 2), else `default_start_date` (arm 3), composed 
 `orchestrator/resume.py` (cursor interpretation and its guards) and
 `incremental/resolution.py` (cursor-free date math); the runner reads the cursor,
 the clock, and the frontier, calls them, and writes — no resume logic on the class,
-the same split as `process_batch` in `orchestrator/batch.py`. After the fetch the run
-advances the cursor only when `should_advance_watermark` confirms the folded in-window
-maximum is strictly past the stored watermark (the monotonicity the cursor store
-omits) and only when the run observed at least one in-window event; the `set_cursor`
-write is inline in the runner, between `finalize` and `complete_run`.
+the same split as `process_batch` in `orchestrator/batch.py`. The window transaction
+itself — open the run, drive/write/finalize, optionally advance the cursor, complete
+— is the shared spine `_execute_window`, in the parquet -> cursor -> ledger order
+below. `_run_watermark` resolves the window (above) then calls the spine with its
+advance intent; the cursor advances only when `should_advance_watermark` confirms the
+folded in-window maximum is strictly past the stored watermark (the monotonicity the
+cursor store omits) and only when the run observed at least one in-window event; the
+`set_cursor` write is inline, between `finalize` and `complete_run`.
+`run_backfill_unit` runs the same spine over a caller-given chunk window with the
+advance suppressed: it records the run (so the coverage frontier advances date-wise)
+but no global watermark — out-of-order chunks can't track a single max-event-time
+watermark, so it is set once at backfill completion. A backfill chunk fans the whole
+roster, so the partition is replaced with every member's rows, exactly the in-full
+refetch the partitioned writer already assumes — the writer is unchanged.
 
 **Crash-safety ordering — parquet, then cursor, then ledger.** §5 fixes
 parquet-before-cursor; the run executor adds a second ordering, cursor before run
