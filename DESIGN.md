@@ -500,24 +500,26 @@ resume). A `window_end` that fails to parse is state-store corruption and raises
 resume correctness rests on the cursor and the work-units queue). Reconciling or
 reaping stale `running` rows is deferred.
 
-**Work units (`state/work_units.py`).** A backfill decomposes a
-(provider, endpoint) range into chunks — `(endpoint, chunk)`, or
-`(endpoint, partition-key, chunk)` for endpoints partitioned by an entity (a
-vehicle id, a driver id, or any per-endpoint key) — and the work-units store is
-the claim queue over them. The caller plans the decomposition (chunk size,
-range, partition list) and drives the queue; the store only persists units,
+**Work units (`state/work_units.py`).** A backfill decomposes into one unit per
+date chunk — `(provider, endpoint, chunk)` with a null `partition_key`; a fan-out
+endpoint's chunk fans the whole roster at execution (the unit carries no member).
+The `partition_key` column is retained for a genuinely per-entity decomposition
+later. The unit is the chunk, not per member, because the date-partitioned writer
+replaces each covered date in full, so a unit must cover every member for its dates
+— which the chunk run, fanning the whole roster, does. The work-units store is the
+claim queue over them. The caller plans the decomposition (chunk size and range)
+and drives the queue; the store only persists units,
 hands them out, and records outcomes — it knows nothing about HTTP, parquet,
 chunking, or what a partition key represents (that is the endpoint definition's
-concern). The partitioned decomposition aligns chunks to whole UTC days, because
+concern). The backfill decomposition aligns chunks to whole UTC days, because
 the date-partitioned writer replaces whole date partitions and a mid-day chunk
 boundary would drive partial-day replacement and corrupt them. The date-window
 dimension is intrinsic: this queue is the
 parallelizable backfill mechanism, i.e. the watermark endpoints; feed endpoints
 sweep the version-token stream sequentially and do not use it. Each unit's
 execution records a run in the run ledger, so coverage stays single-sourced
-there; per-partition completeness, however, lives here (each
-`(partition-key, chunk)` is its own unit), while the ledger's coverage frontier
-stays date-only. Enqueue is idempotent (`INSERT OR IGNORE` on the natural key,
+there; per-chunk completeness lives in the queue (each chunk its own unit), while
+the ledger's coverage frontier stays date-only. Enqueue is idempotent (`INSERT OR IGNORE` on the natural key,
 with partial unique indexes so a null partition key still dedups), so re-running
 a backfill plan never duplicates units. A worker claims the next unit atomically
 — a single `UPDATE ... WHERE unit_id = (SELECT ... LIMIT 1) RETURNING ...`, safe
@@ -1080,7 +1082,7 @@ fleetpull/
     runner.py      # EndpointRunner — one endpoint's run transaction; snapshot arm built (§14)
     batch.py       # process_batch: per-batch validate/frame/window + fold (§14)
     resume.py      # resolve_watermark_start + should_advance_watermark (§14)
-    backfill.py    # plan_partitioned_backfill_units: whole-UTC-day chunk × roster -> WorkUnitSpecs (§5)
+    backfill.py    # plan_backfill_units: whole-UTC-day chunk -> WorkUnitSpecs (§5)
   cli.py           # fetch, sync
 ```
 
@@ -1357,11 +1359,20 @@ else the coverage frontier (arm 2), else `default_start_date` (arm 3), composed 
 `orchestrator/resume.py` (cursor interpretation and its guards) and
 `incremental/resolution.py` (cursor-free date math); the runner reads the cursor,
 the clock, and the frontier, calls them, and writes — no resume logic on the class,
-the same split as `process_batch` in `orchestrator/batch.py`. After the fetch the run
-advances the cursor only when `should_advance_watermark` confirms the folded in-window
-maximum is strictly past the stored watermark (the monotonicity the cursor store
-omits) and only when the run observed at least one in-window event; the `set_cursor`
-write is inline in the runner, between `finalize` and `complete_run`.
+the same split as `process_batch` in `orchestrator/batch.py`. The window transaction
+itself — open the run, drive/write/finalize, optionally advance the cursor, complete
+— is the shared spine `_execute_window`, in the parquet -> cursor -> ledger order
+below. `_run_watermark` resolves the window (above) then calls the spine with its
+advance intent; the cursor advances only when `should_advance_watermark` confirms the
+folded in-window maximum is strictly past the stored watermark (the monotonicity the
+cursor store omits) and only when the run observed at least one in-window event; the
+`set_cursor` write is inline, between `finalize` and `complete_run`.
+`run_backfill_unit` runs the same spine over a caller-given chunk window with the
+advance suppressed: it records the run (so the coverage frontier advances date-wise)
+but no global watermark — out-of-order chunks can't track a single max-event-time
+watermark, so it is set once at backfill completion. A backfill chunk fans the whole
+roster, so the partition is replaced with every member's rows, exactly the in-full
+refetch the partitioned writer already assumes — the writer is unchanged.
 
 **Crash-safety ordering — parquet, then cursor, then ledger.** §5 fixes
 parquet-before-cursor; the run executor adds a second ordering, cursor before run
