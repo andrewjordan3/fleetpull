@@ -223,8 +223,8 @@ feeder parquet. An endpoint that fans out declares a `FanOutBinding`
 `RosterRegistry` maps that key to a `RosterDefinition` — the feeder endpoint and
 frame column its members come from, plus the staleness and eviction policy. The
 consumer carries only the key, never the feeder. Keys are listed from the
-feeder, persisted to a `rosters` table keyed by `(provider, source_endpoint,
-source_column, member)`, and the fan-out reads the roster — never the feeder's
+feeder, persisted to a `rosters` table keyed by `RosterKey` `(provider, name)` plus
+`member`, and the fan-out reads the roster — never the feeder's
 output parquet, which is the user's product and not fleetpull's to depend on.
 Refresh is best-effort: a roster is re-listed when stale (the feeder's last success
 in `runs` older than a bound, `RunLedger.last_success_at`), and a failed re-list
