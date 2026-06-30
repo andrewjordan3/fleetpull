@@ -172,22 +172,23 @@ _WORK_UNITS_INDEX_DDLS: Final[tuple[str, ...]] = (
     """,
 )
 
-# The rosters table (joins schema v2): the persisted fan-out key set per feeder.
-# One row per fan-out key (``member``) sourced from one feeder identity
-# ``(provider, source_endpoint, source_column)`` -- the per-vehicle id set
-# ``vehicle_locations`` fans out over, listed from ``vehicles`` and kept here so the
-# fan-out reads the roster, never the feeder's output parquet (DESIGN §3/§5).
-# ``absence_count`` is the consecutive-miss hysteresis counter the reconcile logic
-# drives; the composite primary key makes a key a single-row upsert. STRICT enforces
-# the declared types; the non-negative CHECK is the DB-layer backstop on the counter.
+# The rosters table (joins schema v2): the persisted fan-out roster members.
+# One row per fan-out member (``member``) of one roster, identified by a
+# ``RosterKey`` ``(provider, name)`` -- the per-vehicle id set ``vehicle_locations``
+# fans out over, listed from the ``vehicles`` feeder and kept here so the fan-out
+# reads the roster, never the feeder's output parquet (DESIGN §3/§5). The roster's
+# source endpoint and column are not stored here; they live in its
+# ``RosterDefinition``. ``absence_count`` is the consecutive-miss hysteresis counter
+# the reconcile logic drives; the composite primary key makes a member a single-row
+# upsert. STRICT enforces the declared types; the non-negative CHECK is the DB-layer
+# backstop on the counter.
 _ROSTERS_TABLE_DDL: Final[str] = """
     CREATE TABLE rosters (
-        provider        TEXT NOT NULL,
-        source_endpoint TEXT NOT NULL,
-        source_column    TEXT NOT NULL,
-        member          TEXT NOT NULL,
-        absence_count   INTEGER NOT NULL DEFAULT 0 CHECK (absence_count >= 0),
-        PRIMARY KEY (provider, source_endpoint, source_column, member)
+        provider      TEXT NOT NULL,
+        name          TEXT NOT NULL,
+        member        TEXT NOT NULL,
+        absence_count INTEGER NOT NULL DEFAULT 0 CHECK (absence_count >= 0),
+        PRIMARY KEY (provider, name, member)
     ) STRICT
 """
 

@@ -1,22 +1,23 @@
 # src/fleetpull/state/rosters.py
-"""The fan-out roster: the persisted set of fan-out keys per feeder source.
+"""The fan-out roster: the persisted set of fan-out keys, keyed by ``RosterKey``.
 
-A ``rosters`` row is one fan-out key (``member``) sourced from one feeder identity
-``(provider, source_endpoint, source_column)`` -- the per-vehicle id set
-``vehicle_locations`` fans out over, listed from the ``vehicles`` endpoint and kept
-here so the fan-out reads the roster, never the feeder's output parquet (the user's
-product, not fleetpull's control plane). The keys are opaque strings; fleetpull never
-maps a key back to a VIN -- the VIN rides the fan-out response and the mapping is
-irrelevant to the call.
+A ``rosters`` row is one member (``member``) of one roster, identified by a
+``RosterKey`` ``(provider, name)`` -- the per-vehicle id set ``vehicle_locations``
+fans out over, listed from the ``vehicles`` feeder and kept here so the fan-out reads
+the roster, never the feeder's output parquet (the user's product, not fleetpull's
+control plane). The roster's source endpoint and column are not stored here; they live
+in its ``RosterDefinition``. Members are opaque strings; fleetpull never maps one back
+to a VIN -- the VIN rides the fan-out response and the mapping is irrelevant to the
+call.
 
 This module ships ``RosterDelta`` (a reconciliation result), the pure ``reconcile`` and
 ``is_roster_stale``, and ``RosterStore`` (the table's read/write orchestrator). The pure
 functions sit beside their store, the same shape as the resolution helpers beside the
 cursors: the import discipline permits a pure function in ``state/``, and keeping the
 threshold and staleness logic next to the store it serves beats scattering it.
-``RosterStore`` takes the feeder identity as ``(provider, source_endpoint,
-source_column)`` primitives; the typed declaration (``RosterDefinition`` in the
-``roster/`` leaf) carries those fields, and the orchestrator unpacks them.
+``RosterStore`` keys by ``RosterKey`` (the ``roster/`` leaf), which ``state`` may
+import since the leaf sits below it; the roster's source endpoint and column are not
+the store's concern -- they live in the ``RosterDefinition`` the registry holds.
 
 Refresh is reconcile-then-apply: list the feeder, ``reconcile`` the listing against the
 current roster into a three-set delta (reset, increment, evict), and ``apply`` it in one
@@ -34,8 +35,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Final
 
+from fleetpull.roster import RosterKey
 from fleetpull.state.database import SqliteScalar, StateDatabase
-from fleetpull.vocabulary import Provider
 
 __all__: list[str] = [
     'RosterDelta',
@@ -144,42 +145,42 @@ def is_roster_stale(
 
 _READ_COUNTS_SQL: Final[str] = """
 SELECT member, absence_count FROM rosters
-WHERE provider = ? AND source_endpoint = ? AND source_column = ?
+WHERE provider = ? AND name = ?
 """
 
 _READ_MEMBERS_SQL: Final[str] = """
 SELECT member FROM rosters
-WHERE provider = ? AND source_endpoint = ? AND source_column = ?
+WHERE provider = ? AND name = ?
 ORDER BY member
 """
 
 _UPSERT_ZERO_SQL: Final[str] = """
-INSERT INTO rosters
-    (provider, source_endpoint, source_column, member, absence_count)
-VALUES (?, ?, ?, ?, 0)
-ON CONFLICT (provider, source_endpoint, source_column, member)
+INSERT INTO rosters (provider, name, member, absence_count)
+VALUES (?, ?, ?, 0)
+ON CONFLICT (provider, name, member)
 DO UPDATE SET absence_count = 0
 """
 
 _INCREMENT_SQL: Final[str] = """
 UPDATE rosters SET absence_count = absence_count + 1
-WHERE provider = ? AND source_endpoint = ? AND source_column = ? AND member = ?
+WHERE provider = ? AND name = ? AND member = ?
 """
 
 _DELETE_SQL: Final[str] = """
 DELETE FROM rosters
-WHERE provider = ? AND source_endpoint = ? AND source_column = ? AND member = ?
+WHERE provider = ? AND name = ? AND member = ?
 """
 
 
 class RosterStore:
     """Read/write orchestrator for the ``rosters`` table.
 
-    Translates between the fan-out's needs and ``rosters`` rows, scoped per feeder
-    ``(provider, source_endpoint, source_column)``. Holds a ``StateDatabase`` and
-    nothing else; runs after ``migrate_to_head`` (the ``rosters`` table must exist,
-    schema v2). The feeder identity is three primitives, unpacked by the orchestrator
-    from the roster declaration (``RosterDefinition``, the ``roster/`` leaf).
+    Translates between the fan-out's needs and ``rosters`` rows, scoped per roster by
+    ``RosterKey``. Holds a ``StateDatabase`` and nothing else; runs after
+    ``migrate_to_head`` (the ``rosters`` table must exist). The store keys by
+    ``RosterKey`` from the ``roster/`` leaf -- ``state`` may import the leaf, which
+    sits below both ``state`` and ``endpoints``; the source endpoint and column live
+    in the ``RosterDefinition``.
     """
 
     def __init__(self, database: StateDatabase) -> None:
@@ -187,23 +188,19 @@ class RosterStore:
 
         Args:
             database: The state database whose ``rosters`` table this reads and writes;
-                must already be migrated (schema v2).
+                must already be migrated (the ``rosters`` table must exist).
         """
         self._database = database
 
-    def read_counts(
-        self, provider: Provider, source_endpoint: str, source_column: str
-    ) -> dict[str, int]:
+    def read_counts(self, key: RosterKey) -> dict[str, int]:
         """Read the roster as ``{member: absence_count}`` for ``reconcile``.
 
         Args:
-            provider: The feeder's provider.
-            source_endpoint: The feeder endpoint.
-            source_column: The feeder frame column the keys come from.
+            key: The roster to read.
 
         Returns:
-            Every roster member mapped to its absence count; empty when the roster holds
-            no rows for this feeder.
+            Every roster member mapped to its absence count; empty when the roster
+            holds no rows.
 
         Raises:
             RuntimeError: A row's ``member`` or ``absence_count`` came back the wrong
@@ -214,7 +211,7 @@ class RosterStore:
         """
         with self._database.connect() as connection:
             rows = connection.execute(
-                _READ_COUNTS_SQL, (provider.value, source_endpoint, source_column)
+                _READ_COUNTS_SQL, (key.provider.value, key.name)
             ).fetchall()
         counts: dict[str, int] = {}
         for row in rows:
@@ -229,19 +226,15 @@ class RosterStore:
             counts[member] = count
         return counts
 
-    def read_members(
-        self, provider: Provider, source_endpoint: str, source_column: str
-    ) -> list[str]:
+    def read_members(self, key: RosterKey) -> list[str]:
         """Read the roster's members for the fan-out, ascending.
 
         Args:
-            provider: The feeder's provider.
-            source_endpoint: The feeder endpoint.
-            source_column: The feeder frame column the keys come from.
+            key: The roster to read.
 
         Returns:
             The roster members as strings, ordered ascending for a deterministic
-            fan-out; empty when the roster holds no rows for this feeder.
+            fan-out; empty when the roster holds no rows.
 
         Raises:
             RuntimeError: A row's ``member`` came back non-text, violating the STRICT
@@ -252,7 +245,7 @@ class RosterStore:
         """
         with self._database.connect() as connection:
             rows = connection.execute(
-                _READ_MEMBERS_SQL, (provider.value, source_endpoint, source_column)
+                _READ_MEMBERS_SQL, (key.provider.value, key.name)
             ).fetchall()
         members: list[str] = []
         for row in rows:
@@ -262,13 +255,7 @@ class RosterStore:
             members.append(member)
         return members
 
-    def apply(
-        self,
-        provider: Provider,
-        source_endpoint: str,
-        source_column: str,
-        delta: RosterDelta,
-    ) -> None:
+    def apply(self, key: RosterKey, delta: RosterDelta) -> None:
         """Apply a reconciliation delta in one transaction.
 
         Upserts ``to_zero`` at count zero, increments ``to_increment``, deletes
@@ -276,15 +263,13 @@ class RosterStore:
         set is a no-op batch; an all-empty delta touches nothing.
 
         Args:
-            provider: The feeder's provider.
-            source_endpoint: The feeder endpoint.
-            source_column: The feeder frame column the keys come from.
+            key: The roster to apply the delta to.
             delta: The reset / increment / evict sets from ``reconcile``.
 
         Side Effects:
             Opens a connection, writes up to three statement batches, and commits.
         """
-        scope = (provider.value, source_endpoint, source_column)
+        scope = (key.provider.value, key.name)
         with self._database.connect() as connection:
             connection.executemany(
                 _UPSERT_ZERO_SQL, [(*scope, member) for member in delta.to_zero]
