@@ -4,6 +4,7 @@ from fleetpull.config.geotab import GeotabAuthConfig
 from fleetpull.config.http import HttpConfig
 from fleetpull.config.logger import LoggerConfig
 from fleetpull.config.motive import MotiveConfig
+from fleetpull.config.provider import ProviderConfig
 from fleetpull.config.retry import RetryConfig
 from fleetpull.config.sync import SyncConfig
 
@@ -12,6 +13,7 @@ __all__: list[str] = [
     'HttpConfig',
     'LoggerConfig',
     'MotiveConfig',
+    'ProviderConfig',
     'RetryConfig',
     'SyncConfig',
 ]
