@@ -8,7 +8,9 @@ surfaces are built. One module per config section (house rule).
 
 import logging
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import Field, field_validator
+
+from fleetpull.config.provider import ProviderConfig
 
 __all__: list[str] = ['MotiveConfig']
 
@@ -20,7 +22,7 @@ _MOTIVE_DEFAULT_LOOKBACK_DAYS: int = 7
 _MOTIVE_DEFAULT_CUTOFF_DAYS: int = 0
 
 
-class MotiveConfig(BaseModel):
+class MotiveConfig(ProviderConfig):
     """
     User-facing Motive provider settings, one instance per run.
 
@@ -47,8 +49,6 @@ class MotiveConfig(BaseModel):
             defaults to 0. Non-negative, where zero adds no holdback beyond
             the resolver's own date alignment.
     """
-
-    model_config = ConfigDict(frozen=True, extra='forbid', validate_default=True)
 
     base_url: str = Field(default=_MOTIVE_DEFAULT_BASE_URL)
     records_per_page: int = Field(

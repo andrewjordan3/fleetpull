@@ -7,7 +7,7 @@ import pytest
 from fleetpull.config import MotiveConfig
 from fleetpull.endpoints.motive.vehicle_locations import (
     MotiveVehicleLocationsSpecBuilder,
-    build_vehicle_locations_endpoint,
+    build_endpoint,
 )
 from fleetpull.endpoints.shared import (
     EndpointDefinition,
@@ -77,9 +77,7 @@ class TestMotiveVehicleLocationsSpecBuilder:
 
 
 def _build_endpoint() -> EndpointDefinition[VehicleLocation]:
-    return build_vehicle_locations_endpoint(
-        MotiveConfig(base_url='https://api.example.test')
-    )
+    return build_endpoint(MotiveConfig(base_url='https://api.example.test'))
 
 
 class TestBuildVehicleLocationsEndpoint:
@@ -97,7 +95,7 @@ class TestBuildVehicleLocationsEndpoint:
         default_endpoint = _build_endpoint()
         assert isinstance(default_endpoint.sync_mode, WatermarkMode)
         assert default_endpoint.sync_mode.lookback == timedelta(days=7)
-        custom = build_vehicle_locations_endpoint(MotiveConfig(lookback_days=2))
+        custom = build_endpoint(MotiveConfig(lookback_days=2))
         assert isinstance(custom.sync_mode, WatermarkMode)
         assert custom.sync_mode.lookback == timedelta(days=2)
 
@@ -114,7 +112,7 @@ class TestBuildVehicleLocationsEndpoint:
         assert spec.url == 'https://api.example.test/v3/vehicle_locations/543180'
 
     def test_base_url_default_flows_through(self) -> None:
-        endpoint = build_vehicle_locations_endpoint(MotiveConfig())
+        endpoint = build_endpoint(MotiveConfig())
         spec = endpoint.spec_builder.build_spec(
             resume=_window(), path_values={'vehicle_id': '1'}
         )
@@ -123,5 +121,5 @@ class TestBuildVehicleLocationsEndpoint:
     def test_constructs_without_raising(self) -> None:
         # The WatermarkMode + DATE_PARTITIONED + event_time_column='located_at'
         # triple passes EndpointDefinition's construction validation.
-        endpoint = build_vehicle_locations_endpoint(MotiveConfig())
+        endpoint = build_endpoint(MotiveConfig())
         assert endpoint.name == 'vehicle_locations'
