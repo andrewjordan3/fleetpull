@@ -52,7 +52,7 @@ from fleetpull.vocabulary import Provider, QuotaScope
 
 __all__: list[str] = [
     'MotiveVehicleLocationsSpecBuilder',
-    'build_vehicle_locations_endpoint',
+    'build_endpoint',
 ]
 
 logger = logging.getLogger(__name__)
@@ -118,9 +118,7 @@ class MotiveVehicleLocationsSpecBuilder:
         return RequestSpec(method=HttpMethod.GET, url=url, params=params)
 
 
-def build_vehicle_locations_endpoint(
-    config: MotiveConfig,
-) -> EndpointDefinition[VehicleLocation]:
+def build_endpoint(config: MotiveConfig) -> EndpointDefinition[VehicleLocation]:
     """Build the Motive vehicle_locations watermark binding.
 
     A per-vehicle breadcrumb history fetched incrementally: the run resumes from a

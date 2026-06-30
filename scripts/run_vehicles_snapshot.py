@@ -15,7 +15,7 @@ import random
 from pydantic import SecretStr
 
 from fleetpull.config import HttpConfig, MotiveConfig, RetryConfig
-from fleetpull.endpoints.motive import build_vehicles_endpoint
+from fleetpull.endpoints.motive.vehicles import build_endpoint
 from fleetpull.models.motive import Vehicle
 from fleetpull.network.auth import StaticHeaderAuth
 from fleetpull.network.classifiers import MotiveResponseClassifier
@@ -60,7 +60,7 @@ def main() -> None:
     motive_config: MotiveConfig = MotiveConfig(
         base_url=MOTIVE_BASE_URL, records_per_page=RECORDS_PER_PAGE
     )
-    definition = build_vehicles_endpoint(motive_config)
+    definition = build_endpoint(motive_config)
     scope: str = definition.quota_scope.value
 
     profile: ProviderProfile = ProviderProfile(

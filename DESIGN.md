@@ -115,7 +115,7 @@ half). `vehicle_locations` is fully bound. Its page decoder is
 verdict, net-new because neither existing decoder fit: `SinglePageDecoder` does not
 strip the per-item wrapper, and `MotiveWrappedListPageDecoder` requires a
 `pagination` block this unpaginated endpoint lacks.
-`build_vehicle_locations_endpoint` composes the spec-builder and decoder with
+`build_endpoint` composes the spec-builder and decoder with
 `DATE_PARTITIONED`, `WatermarkMode` (its lookback from the provider config), and
 `event_time_column='located_at'`. The per-vehicle fan-out over the vehicle list is
 the orchestrator's, next.
@@ -1046,10 +1046,11 @@ fleetpull/
       spec_builders.py  # StaticGetSpecBuilder — the shared snapshot spec-builder
       url_paths.py  # render_url_path_template — strict {placeholder} URL-path rendering (fan-out)
     motive/
-      vehicles.py  # build_vehicles_endpoint — the Motive vehicles snapshot factory
-      vehicle_locations.py  # MotiveVehicleLocationsSpecBuilder + build_vehicle_locations_endpoint — the watermark binding
+      vehicles.py  # build_endpoint — the Motive vehicles snapshot factory
+      vehicle_locations.py  # MotiveVehicleLocationsSpecBuilder + build_endpoint — the watermark binding
     samsara/       # net-new when its endpoints land
     geotab/        # net-new; follows the GeoTab removals probe
+    registry.py  # EndpointRegistry + build_endpoint_registry — the (provider, name) catalog; discovers leaves by walking endpoints.<provider>
   polars_typing/   # quarantined re-export boundary for Polars type aliases with no public
                    #   equivalent (e.g. ParquetCompression) — the sole importer of polars._typing
     __init__.py    # re-exports ParquetCompression
@@ -1179,7 +1180,7 @@ drop a trailing slash, the page size defaulting to Motive's documented maximum.
 Because those values are known only after config loads, a binding cannot be a
 module-level constant — capturing config at import would freeze a default and
 module-level mutable state is forbidden — so each endpoint is a factory
-(`build_vehicles_endpoint(MotiveConfig)`) returning the frozen `EndpointDefinition`
+(`build_endpoint(MotiveConfig)`) returning the frozen `EndpointDefinition`
 the composition root builds for the enabled endpoints and hands to the client.
 
 **Dataclass for the binding, Protocols for the slots — and never a per-provider
@@ -1215,9 +1216,10 @@ in `endpoints/shared/`. The split keeps models a clean block-lift and the "model
 are pure mirrors" invariant crisp, and lets records import the model package
 generically. A directory per provider — rather than one module per provider —
 keeps each endpoint a small file (one model plus a short binding factory), matches
-the file-per-responsibility house rule, and makes a provider package's face the
-gather point for exactly that provider's factories when the orchestrator enables
-endpoints.
+the file-per-responsibility house rule, and lets each endpoint leaf expose a uniform
+`build_endpoint(ProviderConfig)` factory that `build_endpoint_registry` discovers by
+walking the provider packages — so adding an endpoint is adding one leaf module, with
+no provider face or manifest to update.
 
 **Fetch assembly: the endpoint declares, the machinery is generic, the caller
 sequences.** For one fetch the caller looks up the `EndpointDefinition`, turns the
@@ -1232,6 +1234,24 @@ records into the response model, hands them to records for
 generic flattening to Polars, to storage for the merge, and to state for the
 advance (cursor after parquet, §5). No layer below the caller holds endpoint
 knowledge.
+
+**The endpoint catalog: discovery, not a manifest.** `EndpointRegistry` is a
+dumb immutable map from `(provider, name)` to an `EndpointDefinition`, answering
+`get(provider, name)` and rejecting a duplicate key at construction with a
+`ConfigurationError`. `build_endpoint_registry(configs)` is the one place
+endpoints are enumerated: it discovers every leaf by walking the
+`endpoints.<provider>` packages for modules exposing the uniform `build_endpoint`
+factory, injects each factory's provider config by matching its annotated config
+type against the supplied configs (exact-type keying), and indexes the results.
+Adding an endpoint is adding one leaf module — no provider list, no registration,
+no manifest. The walk reaches leaf modules dynamically rather than through
+provider faces; this is a named, deliberate exception to the clause-3
+face-routing rule the import-discipline test enforces, justified because the walk
+depends only on the `build_endpoint` contract, not on any specific module. Its
+replacement guardrail is the structural contract test, which fails loudly if any
+leaf lacks a well-formed `build_endpoint`. A new `ProviderConfig` base in
+`config/` carries the shared config-model policy (frozen, `extra='forbid'`,
+validate-default) and types that config bag; each provider config subclasses it.
 
 **State is concentrated; almost everything is stateless.** Stateless: the
 `EndpointDefinition`, the `SpecBuilder`, the `PageDecoder` (pagination

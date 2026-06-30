@@ -23,7 +23,7 @@ from fleetpull.models.motive import Vehicle
 from fleetpull.network.decoders import MotiveWrappedListPageDecoder
 from fleetpull.vocabulary import Provider, QuotaScope
 
-__all__: list[str] = ['build_vehicles_endpoint']
+__all__: list[str] = ['build_endpoint']
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ _VEHICLES_LIST_KEY: str = 'vehicles'
 _VEHICLES_ITEM_KEY: str = 'vehicle'
 
 
-def build_vehicles_endpoint(config: MotiveConfig) -> EndpointDefinition[Vehicle]:
+def build_endpoint(config: MotiveConfig) -> EndpointDefinition[Vehicle]:
     """Build the Motive vehicles snapshot binding.
 
     A full-dataset snapshot of the fleet's vehicles: no resume, a single
