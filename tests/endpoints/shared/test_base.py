@@ -8,8 +8,7 @@ import pytest
 
 from fleetpull.endpoints.shared import (
     EndpointDefinition,
-    FanOutSource,
-    FanOutSpec,
+    FanOutBinding,
     FeedMode,
     ResumeValue,
     SnapshotMode,
@@ -25,6 +24,7 @@ from fleetpull.network.contract import (
     PageAdvance,
     RequestSpec,
 )
+from fleetpull.roster import RosterKey
 from fleetpull.vocabulary import Provider, QuotaScope
 
 
@@ -60,7 +60,7 @@ def _make_endpoint(
     *,
     storage_kind: StorageKind = StorageKind.SINGLE,
     event_time_column: str | None = None,
-    fan_out: FanOutSpec | None = None,
+    fan_out: FanOutBinding | None = None,
 ) -> EndpointDefinition[_StubModel]:
     """Build an EndpointDefinition from the stubs and the given axes."""
     return EndpointDefinition(
@@ -110,14 +110,12 @@ class TestEndpointDefinition:
         assert not hasattr(_make_endpoint(FeedMode()), '__dict__')
 
     def test_constructs_with_a_fan_out(self) -> None:
-        spec = FanOutSpec(
-            source=FanOutSource(
-                provider=Provider.SAMSARA, endpoint='vehicles', column='vehicle_id'
-            ),
+        binding = FanOutBinding(
+            roster=RosterKey(Provider.SAMSARA, 'vehicle_ids'),
             path_placeholder='vehicle_id',
         )
-        endpoint = _make_endpoint(FeedMode(), fan_out=spec)
-        assert endpoint.fan_out == spec
+        endpoint = _make_endpoint(FeedMode(), fan_out=binding)
+        assert endpoint.fan_out == binding
 
     def test_fan_out_defaults_to_none(self) -> None:
         assert _make_endpoint(FeedMode()).fan_out is None
