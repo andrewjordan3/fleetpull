@@ -364,8 +364,7 @@ class TestMigrateToHead:
             }
         assert columns == {
             'provider',
-            'source_endpoint',
-            'source_column',
+            'name',
             'member',
             'absence_count',
         }
@@ -374,8 +373,8 @@ class TestMigrateToHead:
         _expect_insert_rejected(
             tmp_path,
             'rosters',
-            '(provider, source_endpoint, source_column, member, absence_count)',
-            ('motive', 'vehicles', 'vehicle_id', 'V1', -1),
+            '(provider, name, member, absence_count)',
+            ('motive', 'vehicle_ids', 'V1', -1),
         )
 
     def test_is_idempotent(self, tmp_path: Path) -> None:
