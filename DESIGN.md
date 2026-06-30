@@ -1099,6 +1099,7 @@ fleetpull/
     runner.py      # EndpointRunner — one endpoint's run transaction; snapshot arm built (§14)
     batch.py       # process_batch: per-batch validate/frame/window + fold (§14)
     streaming.py   # stream_processed_batches: a driver's pages, validated and framed per batch (§14)
+    roster_harvest.py # harvest_roster_members: a feeder's complete membership as roster members (drives streaming, no write)
     resume.py      # resolve_watermark_start + should_advance_watermark (§14)
     backfill.py    # plan_backfill_units: whole-UTC-day chunk -> WorkUnitSpecs (§5)
   cli.py           # fetch, sync
@@ -1344,7 +1345,8 @@ runs each through `process_batch`, yielding one `ProcessedBatch` per page as a l
 generator — each page framed and handed off before the next is fetched, preserving
 the partitioned writer's per-page memory bound. Both run-executor arms drive it, the
 snapshot arm with `context=None` and the watermark arm with a `WindowContext`, and
-the roster refresh will drive it to harvest a feeder's frames without writing. It
+`harvest_roster_members` (`orchestrator/roster_harvest.py`) drives it to list a
+feeder's complete membership without writing. It
 owns no state and resolves no client; the conductor opens the run, picks the client,
 and consumes the stream.
 
