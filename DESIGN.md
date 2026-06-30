@@ -218,9 +218,11 @@ BigQuery external tables and `scan_parquet` badly — so each date folds to one
 `part.parquet`.
 
 The fan-out key source is settled: a provider-listed roster in SQLite, not the
-feeder parquet. An endpoint that fans out declares a `FanOutSpec`
-(`EndpointDefinition.fan_out`, `None` = fetch once) naming a `FanOutSource` — the
-feeder endpoint and the frame column its keys come from. Keys are listed from the
+feeder parquet. An endpoint that fans out declares a `FanOutBinding`
+(`EndpointDefinition.fan_out`, `None` = fetch once) naming a `RosterKey`; the
+`RosterRegistry` maps that key to a `RosterDefinition` — the feeder endpoint and
+frame column its members come from, plus the staleness and eviction policy. The
+consumer carries only the key, never the feeder. Keys are listed from the
 feeder, persisted to a `rosters` table keyed by `(provider, source_endpoint,
 source_column, member)`, and the fan-out reads the roster — never the feeder's
 output parquet, which is the user's product and not fleetpull's to depend on.
@@ -1040,7 +1042,7 @@ fleetpull/
                    #   quota_scope, storage_kind, sync_mode, event_time_column) + the
                    #   SpecBuilder Protocol, the SyncMode union (SnapshotMode /
                    #   WatermarkMode / FeedMode), ResumeValue, and StorageKind
-      fan_out.py   # FanOutSource + FanOutSpec — the per-endpoint fan-out declaration
+      fan_out.py   # FanOutBinding — the per-endpoint fan-out declaration (names a RosterKey)
       spec_builders.py  # StaticGetSpecBuilder — the shared snapshot spec-builder
       url_paths.py  # render_url_path_template — strict {placeholder} URL-path rendering (fan-out)
     motive/
@@ -1053,6 +1055,10 @@ fleetpull/
     __init__.py    # re-exports ParquetCompression
   model_contract/  # pure dependency-free leaf: the response-model config policy
     response.py    # ResponseModel config-policy base (frozen, extra=ignore, populate_by_name, strip)
+  roster/          # the fan-out roster leaf: identity, declaration, catalog (imports only vocabulary/exceptions)
+    key.py         # RosterKey: the opaque (provider, name) handle a consumer references
+    definition.py  # RosterDefinition: a key's source endpoint + column + refresh policy
+    registry.py    # RosterRegistry: RosterKey -> RosterDefinition (forward lookup)
   models/          # pure API mirrors per provider (Motive/Samsara ported from fleet-telemetry-hub)
     motive/        # the Motive model package — a directory per provider (§11 prose below)
       shared.py    # DriverSummary, EldDeviceInfo — embedded shapes shared across endpoints
@@ -1068,7 +1074,7 @@ fleetpull/
     convert.py     # models_to_dataframe: the schema/flatten/build/normalize composition
     validation.py  # raw dicts -> validated models, fail-fast and loud
     event_time.py  # latest_event_time: the max event-time watermark candidate (raw datetime)
-    fan_out_keys.py # extract_fan_out_keys: a frame column's distinct values as fan-out keys
+    roster_members.py # extract_roster_members: a frame column's distinct values as roster members
   storage/         # the storage layer: a records DataFrame -> parquet
     files.py       # storage path construction: data_file, partition_dir, partition_part_file, temp_sibling_path
     atomic.py      # atomic_write_parquet: the temp-then-rename durability primitive
@@ -1265,7 +1271,7 @@ lives in `state/`). The per-chunk DataFrame is a value, not a stateful component
   `FanOutRequestDriver` and the coordinator land. *Empty roster:* the coordinator
   reads the roster (the driver does not, §14), so it short-circuits before
   `runner.run()` — an empty roster raises `ConfigurationError` by default, unless the
-  endpoint's `FanOutSpec.allow_empty_roster` is set, in which case it returns the
+  endpoint's `FanOutBinding.allow_empty_roster` is set, in which case it returns the
   no-op outcome without building a zero-member driver. Error-by-default because a
   feeder that silently returned nothing is a failure to surface, not an empty dataset
   to emit; this also keeps the writer's "`write` called ≥1 time" precondition intact
