@@ -233,8 +233,8 @@ with no prior listing is a loud cold-start failure. A per-key absence counter gi
 eviction hysteresis — append-only is the degenerate (never-evict) case, and for
 permanent, absent-means-empty keys like vehicle ids the counter is an efficiency
 lever (stop fetching long-retired vehicles), not a correctness one. The pure
-reconcile/staleness logic and the `RosterStore` are built; the orchestrator wiring
-(when to list, the fan-out loop, the cold-start guard) remains open.
+reconcile/staleness logic, the `RosterStore`, and the roster refresh coordinator
+(when to list, the cold-start guard) are built; the fan-out loop remains open.
 
 ---
 
@@ -1093,13 +1093,14 @@ fleetpull/
     run_ledger.py  # RunLedger + RunStatus: per-run records + coverage frontier + last_success_at
     work_units.py  # WorkUnitStore: the backfill claim queue (enqueue/claim/complete/recover)
     rosters.py     # RosterStore + reconcile + is_roster_stale + RosterDelta: the fan-out roster
-  orchestrator/    # run executor + request drivers + fan-out coordinator (§14); concurrency executors (§7)
+  orchestrator/    # run executor + request drivers + roster refresh + fan-out coordinators (§14); concurrency executors (§7)
     outcome.py     # RunOutcome: Executed | CaughtUp — the run result carrier (§14)
     drivers.py     # RequestDriver Protocol + SingleRequestDriver + FanOutRequestDriver — yields FetchedPage per batch (§14)
     runner.py      # EndpointRunner — one endpoint's run transaction; snapshot arm built (§14)
     batch.py       # process_batch: per-batch validate/frame/window + fold (§14)
     streaming.py   # stream_processed_batches: a driver's pages, validated and framed per batch (§14)
     roster_harvest.py # harvest_roster_members: a feeder's complete membership as roster members (drives streaming, no write)
+    roster_refresh.py # RosterRefreshCoordinator: refresh a roster when stale (staleness -> harvest -> reconcile -> apply); refresh only, not fan-out
     resume.py      # resolve_watermark_start + should_advance_watermark (§14)
     backfill.py    # plan_backfill_units: whole-UTC-day chunk -> WorkUnitSpecs (§5)
   cli.py           # fetch, sync
@@ -1350,10 +1351,15 @@ feeder's complete membership without writing. It
 owns no state and resolves no client; the conductor opens the run, picks the client,
 and consumes the stream.
 
-- **The fan-out coordinator** (built last) refreshes the roster when stale
-  (`last_success_at` -> `is_roster_stale` -> `reconcile` -> `RosterStore.apply`,
-  §5), reads the members, builds a `FanOutRequestDriver` from them, and hands it to
-  the runner. `EndpointDefinition.fan_out` is read in exactly one place: here.
+**The roster refresh coordinator** (`RosterRefreshCoordinator`) makes a stale roster
+current on demand: `last_success_at` -> `is_roster_stale` -> harvest the feeder ->
+`reconcile` -> `RosterStore.apply` (§5), guarding that the feeder is a snapshot
+endpoint and degrading to the existing roster when a refresh attempt fails
+(re-raising only on cold start, where there is no roster to fall back to). It is
+handed the resolved `RosterDefinition`, the way the runner is handed a resolved
+`EndpointDefinition`. **The fan-out coordinator** (built later) then reads the
+refreshed members, builds a `FanOutRequestDriver` from them, and hands it to the
+runner. `EndpointDefinition.fan_out` is read in exactly one place: there.
 
 The driver is the missing adapter between one endpoint run and one-or-many request
 chains, and it matches grain the existing layers already have: a `SpecBuilder`
