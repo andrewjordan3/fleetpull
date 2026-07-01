@@ -85,3 +85,5 @@ copilot_instructions_raw.*
 # fixtures are synthetic and inline, never parquet files)
 logs/
 *.parquet
+# the SQLite operational-state store (DESIGN §5 default: <dataset_root>/.fleetpull/)
+.fleetpull/
