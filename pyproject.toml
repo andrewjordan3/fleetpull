@@ -285,3 +285,28 @@ layers = [
     "fleetpull.models | fleetpull.network.contract | fleetpull.incremental",
     "fleetpull.vocabulary | fleetpull.model_contract",
 ]
+
+[[tool.importlinter.contracts]]
+name = "The package-wide vertical: every top-level package sits in its layer"
+type = "layers"
+layers = [
+    "fleetpull.orchestrator",
+    "fleetpull.storage",
+    "fleetpull.endpoints | fleetpull.records | fleetpull.state",
+    "fleetpull.models | fleetpull.network",
+    "fleetpull.logger",
+    "fleetpull.config | fleetpull.roster",
+    "fleetpull.exceptions",
+    "fleetpull.vocabulary | fleetpull.incremental | fleetpull.timing | fleetpull.model_contract | fleetpull.polars_typing | fleetpull.paths",
+]
+
+[[tool.importlinter.contracts]]
+name = "Orchestrator never touches the rate limiter directly"
+type = "forbidden"
+source_modules = ["fleetpull.orchestrator"]
+forbidden_modules = ["fleetpull.network.limits"]
+# Direct imports only: the client legitimately consults the limiter
+# internally (network/client/runtime.py) -- that transitive path through
+# fleetpull.network.client is fine. Only orchestrator reaching past the
+# client's face to import the limiter itself is forbidden (§7).
+allow_indirect_imports = true

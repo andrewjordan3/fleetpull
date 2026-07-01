@@ -1125,6 +1125,39 @@ Boundary rules:
 - `storage` knows nothing about state; `state` knows nothing about parquet. The orchestrator sequences them (parquet-then-watermark ordering, §5).
 - `network/client/` consumes the page-decoder abstraction (`network/contract/page_decoder.py`). Retry and limiter consultation stay interleaved per-request concerns inside the client — splitting them away from the request loop is how the token-per-attempt / token-per-page rules get violated.
 - The orchestrator never touches the limiter (§7).
+- `state` and `endpoints` are same-tier siblings and never import each other — this is why the run ledger's `RunMode` shadows the endpoints layer's `SyncMode` instead of importing it (§5, `state/run_ledger.py`).
+
+**Import-linter coverage.** The rules above are mechanically enforced, not
+just documented. `pyproject.toml`'s `[tool.importlinter]` carries a
+package-wide vertical `layers` contract over every top-level module under
+`fleetpull/`:
+
+```
+orchestrator
+storage
+endpoints | records | state
+models | network
+logger
+config | roster
+exceptions
+vocabulary | incremental | timing | model_contract | polars_typing | paths
+```
+
+Read top-down: a layer may import any layer strictly below it; a lower
+layer may never import a higher one; modules joined by `|` share a tier
+and may not import each other (this is what keeps `state` off `endpoints`,
+and `records`/`endpoints` off each other). `network` and `endpoints` are
+each treated as one opaque node here — their internals are layered
+separately (the narrower `network` contract already in `pyproject.toml`,
+and `tests/test_import_discipline.py`'s clause-3 face-routing check for
+`endpoints`'s provider leaves). Alongside the vertical, a `forbidden`
+contract bars `orchestrator` from directly importing `network.limits`,
+scoped to direct imports only (`allow_indirect_imports = true`) so the
+client's own internal limiter consultation — a legitimate transitive path
+through `network.client` — doesn't trip it. `uv run lint-imports` runs
+these as the fourth of the five verification gates (CLAUDE.md); an
+accidental upward edge fails the build there rather than surfacing later
+as a design regression no single change would have noticed.
 
 ### The endpoints layer
 
