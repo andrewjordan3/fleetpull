@@ -1,6 +1,6 @@
 """Tests for fleetpull.endpoints.motive.vehicle_locations."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -16,10 +16,16 @@ from fleetpull.endpoints.shared import (
     UrlPathTemplateError,
     WatermarkMode,
 )
-from fleetpull.incremental import DateWindow
+from fleetpull.incremental import (
+    DateWindow,
+    resolve_resume_start,
+    resolve_trailing_edge,
+    window_or_none,
+)
 from fleetpull.models.motive import VehicleLocation
 from fleetpull.network.contract import HttpMethod
 from fleetpull.network.decoders import MotiveWrappedSinglePageDecoder
+from fleetpull.storage.partitioning import window_dates
 from fleetpull.vocabulary import Provider, QuotaScope
 
 
@@ -74,6 +80,33 @@ class TestMotiveVehicleLocationsSpecBuilder:
         )
         assert spec.headers == {}
         assert spec.json_body is None
+
+    def test_request_dates_equal_the_resolved_windows_covered_dates(self) -> None:
+        # The seam where request, filter, and partition coverage must agree:
+        # a window resolved through the real chain (a late-day watermark arm,
+        # floored at resolution) must request exactly the dates
+        # window_dates(window) covers -- what the fetch returns is what the
+        # filter keeps and what the writer replaces and prunes.
+        unfloored_arm = datetime(2026, 6, 29, 23, 59, 59, tzinfo=UTC)
+        start = resolve_resume_start(
+            unfloored_arm, None, datetime(2026, 1, 1, tzinfo=UTC)
+        )
+        end = resolve_trailing_edge(
+            datetime(2026, 7, 2, 9, 0, tzinfo=UTC), timedelta(0)
+        )
+        window = window_or_none(start, end)
+        assert window is not None
+        spec = _build_builder().build_spec(
+            resume=window, path_values={'vehicle_id': '543180'}
+        )
+        assert spec.params is not None
+        start_date = date.fromisoformat(spec.params['start_date'])
+        end_date = date.fromisoformat(spec.params['end_date'])
+        requested_dates = [
+            start_date + timedelta(days=offset)
+            for offset in range((end_date - start_date).days + 1)
+        ]
+        assert requested_dates == window_dates(window)
 
 
 def _build_endpoint() -> EndpointDefinition[VehicleLocation]:

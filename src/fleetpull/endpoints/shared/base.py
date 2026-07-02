@@ -91,7 +91,9 @@ class WatermarkMode:
     *delete-by-window, then append* — the refetched window is cleared and replaced,
     so late arrivals and in-window corrections land cleanly. ``lookback`` is the
     margin the resume resolver subtracts from the stored watermark (§4) so late-
-    arriving records inside it are re-fetched. ``cutoff`` is the complementary
+    arriving records inside it are re-fetched; the resolver then floors the
+    start to its UTC midnight, so a lookback of N days re-covers N whole days
+    before the watermark's day. ``cutoff`` is the complementary
     trailing-edge holdback: the window's end is held back this far from the clock
     so a still-arriving day is never frozen as a complete partition. Both express
     one physical concern -- provider data latency -- from opposite ends, so both

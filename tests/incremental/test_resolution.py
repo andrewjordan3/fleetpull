@@ -51,6 +51,28 @@ class TestResolveResumeStart:
         start = resolve_resume_start(None, None, self.DEFAULT)
         assert start == self.DEFAULT
 
+    def test_floors_the_watermark_arm_to_its_utc_midnight(self) -> None:
+        # The live sliver defect: a watermark of 2026-06-30T23:59:59 less a
+        # 1-day lookback yielded this unfloored arm, covering its boundary
+        # date by one second -- the day-granular fetch returned the whole day
+        # and the window filter kept only the sliver. Floored, lookback means
+        # "re-cover N whole days before the watermark's day".
+        unfloored_arm = datetime(2026, 6, 29, 23, 59, 59, tzinfo=UTC)
+        start = resolve_resume_start(unfloored_arm, None, self.DEFAULT)
+        assert start == datetime(2026, 6, 29, 0, 0, 0, tzinfo=UTC)
+        assert start.tzinfo is UTC
+
+    def test_floors_a_mid_day_frontier_to_its_utc_midnight(self) -> None:
+        mid_day_frontier = datetime(2026, 3, 1, 12, 30, 45, tzinfo=UTC)
+        start = resolve_resume_start(None, mid_day_frontier, self.DEFAULT)
+        assert start == datetime(2026, 3, 1, 0, 0, 0, tzinfo=UTC)
+        assert start.tzinfo is UTC
+
+    def test_a_midnight_arm_floors_to_itself(self) -> None:
+        start = resolve_resume_start(self.WATERMARK_START, None, self.DEFAULT)
+        assert start == self.WATERMARK_START
+        assert start.tzinfo is UTC
+
 
 class TestWindowOrNone:
     EARLIER = datetime(2026, 6, 1, 0, 0, 0, tzinfo=UTC)
