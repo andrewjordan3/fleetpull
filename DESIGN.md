@@ -235,7 +235,16 @@ eviction hysteresis — append-only is the degenerate (never-evict) case, and fo
 permanent, absent-means-empty keys like vehicle ids the counter is an efficiency
 lever (stop fetching long-retired vehicles), not a correctness one. The pure
 reconcile/staleness logic, the `RosterStore`, and the roster refresh coordinator
-(when to list, the cold-start guard) are built; the fan-out loop remains open.
+(when to list, the cold-start guard) are built, and the fan-out loop is closed
+by the orchestration entry (`run_endpoint`, §14): a declared binding resolves
+its key through the `RosterRegistry`, refreshes via the coordinator, reads the
+members from the store, and fans out — the caller sees none of it. Roster
+registration is explicit construction at the composition root
+(`RosterRegistry([VEHICLE_IDS_ROSTER, ...])`); the Motive `vehicle_ids`
+declaration lives beside its feeder in `endpoints/motive/vehicles.py`. The
+include-inactive guarantee binds at the feeder population — `/v1/vehicles`
+lists inactive and retired vehicles — not at eviction policy, so historical
+windows cover vehicles that are inactive today.
 
 ---
 
@@ -1407,25 +1416,26 @@ tzinfo-construction rules mechanically.
   with a docs note: `dataset_root` should be a real filesystem path, not a
   live cloud-synced folder.
 
-- **Fan-out empty roster and the work-unit transaction boundary (deferred to the
-  fan-out coordinator prompt).** Two coupled, still-open questions for when
-  `FanOutRequestDriver` and the coordinator land. *Empty roster:* the coordinator
-  reads the roster (the driver does not, §14), so it short-circuits before
-  `runner.run()` — an empty roster raises `ConfigurationError` by default, unless the
-  endpoint's `FanOutBinding.allow_empty_roster` is set, in which case it returns the
-  no-op outcome without building a zero-member driver. Error-by-default because a
-  feeder that silently returned nothing is a failure to surface, not an empty dataset
-  to emit; this also keeps the writer's "`write` called ≥1 time" precondition intact
-  without a separate "tolerate zero writes" path (a snapshot always yields ≥1
-  page-batch, a fan-out with ≥1 member yields ≥1 batch, and the only zero-batch case
-  never reaches the runner). *Transaction boundary:* whether one fan-out run is a
+- **The work-unit transaction boundary (still open; its empty-roster twin is
+  settled).** *Empty roster — settled and implemented:* the orchestration entry
+  reads the roster (the driver does not, §14) and short-circuits before
+  `runner.run()` — an empty roster after refresh raises `ConfigurationError`.
+  Error-by-default because a feeder that silently returned nothing is a failure
+  to surface, not an empty dataset to emit; this also keeps the writer's
+  "`write` called ≥1 time" precondition intact without a separate "tolerate
+  zero writes" path (a snapshot always yields ≥1 page-batch, a fan-out with ≥1
+  member yields ≥1 batch, and the only zero-batch case never reaches the
+  runner). The `FanOutBinding.allow_empty_roster` escape is deliberately not
+  built — it joins the binding when an endpoint genuinely needs it, not before.
+  *Transaction boundary — open:* whether one fan-out run is a
   single transaction (`finalize`/cursor/`complete` once — a mid-run crash refetches
   the whole roster, no per-member resumability, `WorkUnitStore` unused on this path)
   or per-member transactions (`finalize` + commit per member — resumable via
   `WorkUnitStore`, but the watermark-advances-once model and per-member commits must
   be reconciled). This decides where progress commits live and whether the driver's
-  batch granularity interacts with them; it is the coordinator prompt's first
-  question.
+  batch granularity interacts with them; today's entry runs whole-roster
+  single-transaction (the incremental path), and the question governs the
+  backfill loop when it lands.
 
 ---
 
@@ -1435,6 +1445,24 @@ The layer that sequences fetch, records, storage (§3), and state (§5) into one
 endpoint's run. The network, `records/`, `storage/`, and `state/` layers are all
 built; this is the layer that drives them, and the only major vertical still
 unbuilt.
+
+**The orchestrator-boundary principle: higher-level orchestrators and tools are
+polymorphic — provider-agnostic and endpoint-agnostic.** A caller invoking an
+endpoint never knows, or branches on, the provider, whether the endpoint fans
+out, its sync mode, its storage cell, or its record identity; every dispatch
+keys off `EndpointDefinition` declarations. `FanOutBinding` (fan-out is a
+declared fact, never an identity branch), `select_writer` (the declared
+storage/sync cell routes), and the runner's `sync_mode` match all state this
+for their seams; `run_endpoint` (`orchestrator/entry.py`) extends it to driver
+resolution — the caller boundary that resolves a definition's declared driver
+(fan-out via the roster machinery, else single-fetch) and runs. Driver
+resolution is module-private inside the entry: exposing a resolve-driver step
+to callers would leak exactly the fan-out/single-fetch distinction the
+declarations hide. The entry never reasons about roster freshness (the refresh
+coordinator owns that policy whole), and an empty roster after refresh raises
+`ConfigurationError` — error-by-default (§13): a feeder that listed nothing is
+a failure to surface, and the short-circuit keeps the writer's
+write-called-at-least-once precondition intact.
 
 **The carve: a run executor under which a request driver owns cardinality.** The
 orchestration splits into three nested layers, by concern:
@@ -1476,9 +1504,10 @@ current on demand: `last_success_at` -> `is_roster_stale` -> harvest the feeder 
 endpoint and degrading to the existing roster when a refresh attempt fails
 (re-raising only on cold start, where there is no roster to fall back to). It is
 handed the resolved `RosterDefinition`, the way the runner is handed a resolved
-`EndpointDefinition`. **The fan-out coordinator** (built later) then reads the
-refreshed members, builds a `FanOutRequestDriver` from them, and hands it to the
-runner. `EndpointDefinition.fan_out` is read in exactly one place: there.
+`EndpointDefinition`. **The orchestration entry** (`run_endpoint`,
+`orchestrator/entry.py`) is the consume half: it reads the refreshed members,
+builds a `FanOutRequestDriver` from them, and hands it to the runner.
+`EndpointDefinition.fan_out` is read in exactly one place: there.
 
 The driver is the missing adapter between one endpoint run and one-or-many request
 chains, and it matches grain the existing layers already have: a `SpecBuilder`
@@ -1657,18 +1686,19 @@ resolution (item 1, done).
    (e.g. HOS periods crossing midnight) need their own boundary policy when
    they arrive and must not blindly reuse it (recorded on
    `resolve_resume_start` and in §4).
-2. **Fan-out composition root.** Nothing in `src/` resolves
-   `EndpointDefinition.fan_out` today — the diagnostic script harvested
-   vehicle ids itself and handed them to `FanOutRequestDriver` directly.
-   Before the public API, a composition root must resolve fan-out through the
-   roster machinery (`RosterRefreshCoordinator` was built to serve exactly
-   this). Settled constraint: the fan-out roster enumerates the full
-   `vehicles` harvest *including inactive/retired vehicles* — a vehicle
-   inactive today may have been active during the historical window being
-   fetched, so an active-only population silently truncates history. The
-   module docstring on `endpoints/motive/vehicle_locations.py` currently
-   describes fan-out as wired end-to-end; it is not — correcting it is part
-   of this item.
+2. **Fan-out composition root (done — the orchestration entry, §14).**
+   `run_endpoint` (`orchestrator/entry.py`) resolves a definition's declared
+   `fan_out` through the roster machinery — registry → coordinator refresh →
+   store members → `FanOutRequestDriver` — or hands a `fan_out=None`
+   definition the single-fetch driver; the caller never sees the distinction
+   (the orchestrator-boundary principle, §14). The `vehicle_ids` roster is
+   declared beside its feeder (`endpoints/motive/vehicles.py`,
+   `VEHICLE_IDS_ROSTER`), vehicle_locations declares its binding, and the
+   diagnostic script composes the entry instead of hand-harvesting. The
+   settled constraint holds at the feeder population: `/v1/vehicles` lists
+   inactive and retired vehicles, so the roster covers vehicles active during
+   historical windows even if inactive today. The vehicle_locations module
+   docstring now describes the real wiring.
 3. **Public API design** (conversational; precedes any audit or build): the
    fluent method-chaining `fetch`/`sync` surface (§10). The pattern is
    decided; the design pass settles what the chains look like and what each
