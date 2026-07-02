@@ -212,6 +212,21 @@ class TestWatermarkPartitionedWriter:
         part = pl.read_parquet(tmp_path / 'date=2026-06-01' / 'part.parquet')
         assert part.get_column('id').to_list() == [1]
 
+    def test_write_rejects_a_staged_date_outside_the_window(
+        self, tmp_path: Path
+    ) -> None:
+        # The interior tripwire: a staged partition date outside
+        # window_dates(window) means an upstream window filter missed rows;
+        # wholesale replacement and the prune must not proceed on a date the
+        # run had no right to touch.
+        window = DateWindow(
+            start=datetime(2026, 6, 1, tzinfo=UTC),
+            end=datetime(2026, 6, 2, tzinfo=UTC),
+        )
+        writer = WatermarkPartitionedWriter(tmp_path, 'located_at', window)
+        with pytest.raises(ValueError, match='outside the resume window'):
+            writer.write(_located_frame([(datetime(2026, 6, 5, 8, tzinfo=UTC), 1)]))
+
     def test_leaves_staging_outside_the_window_untouched(self, tmp_path: Path) -> None:
         window = DateWindow(
             start=datetime(2026, 6, 1, tzinfo=UTC),

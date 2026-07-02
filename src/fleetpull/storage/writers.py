@@ -202,6 +202,14 @@ class PartitionedWriter(ABC):
     refresh authoritatively replaces its window, so it prunes; an append-only feed
     does not). The ABC owns the staging and the finalize orchestration; the
     per-partition compaction is the shared ``compact_partition`` it drives.
+
+    ``write`` carries the window tripwire: every staged partition date must lie
+    in ``window_dates(window)``. Upstream, the resume window is day-aligned at
+    resolution and the orchestrator window-filters each batch before writing,
+    so a staged date outside the window means an upstream boundary was missed
+    -- the require-inside half of the normalize-at-boundary doctrine (the
+    canonical-UTC stance), raised loudly here rather than silently replacing or
+    pruning a partition the run had no right to touch.
     """
 
     @property
@@ -247,21 +255,36 @@ class PartitionedWriter(ABC):
         self._target_dir = target_dir
         self._event_time_column = event_time_column
         self._window = window
+        self._covered_dates: frozenset[date] = frozenset(window_dates(window))
         self._written_dates: set[date] = set()
-        clear_partition_staging(target_dir, window_dates(window))
+        clear_partition_staging(target_dir, self._covered_dates)
 
     def write(self, frame: pl.DataFrame) -> None:
-        """Stage one fetched piece as date-split shards.
+        """Stage one fetched piece as date-split shards, inside the window only.
 
         Args:
             frame: One fetched piece (e.g. one vehicle's rows over the window).
 
+        Raises:
+            ValueError: A staged partition date lies outside the window's
+                covered dates -- an upstream window filter missed rows (the
+                interior tripwire; see the class docstring). The run fails
+                loudly; the orphaned out-of-window shards are inert (``.shard``
+                files are invisible to hive ``*.parquet`` reads) until a later
+                run whose window covers that date sweeps them at construction.
+
         Side Effects:
             Writes ``.shard`` files under the touched dates' staging directories.
         """
-        self._written_dates.update(
-            stage_shard(self._target_dir, frame, self._event_time_column)
-        )
+        touched_dates = stage_shard(self._target_dir, frame, self._event_time_column)
+        out_of_window = touched_dates - self._covered_dates
+        if out_of_window:
+            raise ValueError(
+                f'staged partition dates outside the resume window: '
+                f'{sorted(out_of_window)} not in {sorted(self._covered_dates)} '
+                f'-- an upstream window filter missed these rows'
+            )
+        self._written_dates.update(touched_dates)
 
     def finalize(self) -> WriteResult:
         """Compact each partition, clear staging, prune if the cell prunes, and report.

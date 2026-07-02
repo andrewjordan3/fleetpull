@@ -302,9 +302,10 @@ class EndpointRunner:
         """Run the watermark arm: resolve the window, then execute, advancing.
 
         Resolves the resume window from the stored watermark (less lookback), else
-        the coverage frontier, else the cold-start anchor, with the end held back by
-        the cutoff. A window that resolves to nothing is a ``CaughtUp`` no-op with no
-        run opened. Otherwise it hands the resolved window to the shared spine,
+        the coverage frontier, else the cold-start anchor — the chosen start
+        floored to its UTC midnight — with the end held back by the cutoff. A
+        window that resolves to nothing is a ``CaughtUp`` no-op with no run
+        opened. Otherwise it hands the resolved window to the shared spine,
         advancing the cursor on a strictly-forward observation.
 
         Args:
