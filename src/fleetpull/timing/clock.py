@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Protocol, runtime_checkable
 
+from fleetpull.timing.canon import require_utc
+
 __all__: list[str] = [
     'Clock',
     'FrozenClock',
@@ -132,17 +134,14 @@ class FrozenClock:
             start_monotonic_seconds: Initial monotonic value (non-negative).
 
         Raises:
-            ValueError: If start_time_utc is naive or not UTC.
+            ValueError: If start_time_utc is naive or not UTC (the
+                ``require_utc`` canonical-UTC guard).
             ValueError: If start_monotonic_seconds is negative.
         """
-        if start_time_utc.tzinfo is None:
-            raise ValueError('start_time_utc must be timezone-aware (UTC)')
-        if start_time_utc.tzinfo is not UTC:
-            raise ValueError('start_time_utc must use datetime.UTC')
         if start_monotonic_seconds < 0.0:
             raise ValueError('start_monotonic_seconds must be non-negative')
 
-        self._current_time_utc: datetime = start_time_utc
+        self._current_time_utc: datetime = require_utc(start_time_utc)
         self._current_monotonic_seconds: float = start_monotonic_seconds
 
     def now_utc(self) -> datetime:
@@ -187,11 +186,7 @@ class FrozenClock:
             new_time_utc: New time (must be timezone-aware UTC).
 
         Raises:
-            ValueError: If new_time_utc is naive or not UTC.
+            ValueError: If new_time_utc is naive or not UTC (the
+                ``require_utc`` canonical-UTC guard).
         """
-        if new_time_utc.tzinfo is None:
-            raise ValueError('new_time_utc must be timezone-aware (UTC)')
-        if new_time_utc.tzinfo is not UTC:
-            raise ValueError('new_time_utc must use datetime.UTC')
-
-        self._current_time_utc = new_time_utc
+        self._current_time_utc = require_utc(new_time_utc)
