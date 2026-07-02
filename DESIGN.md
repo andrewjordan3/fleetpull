@@ -1029,7 +1029,9 @@ fleetpull/
   timing/
     clock.py       # injectable Clock Protocol; SystemClock and FrozenClock implementations
     sleeper.py     # injectable Sleeper Protocol; SystemSleeper backing TRANSIENT backoff waits
-    codec.py       # pure UTC datetime <-> ISO-8601/date-string conversions (stdlib-only leaf)
+    codec.py       # pure UTC datetime <-> ISO-8601/date-string conversions (guards via canon)
+    canon.py       # the canonical-UTC surface: ensure_utc (ingress normalizes) +
+                   #   require_utc (interior/egress requires, identity) — §12 doctrine
   incremental/     # per-endpoint resume state: cursors + window + resolution helpers; pure leaf (§4)
     cursor.py      # DateWatermark, FeedToken, IncrementalCursor tagged union
     window.py      # DateWindow — the half-open [start, end) watermark resume window (§4)
@@ -1158,6 +1160,18 @@ through `network.client` — doesn't trip it. `uv run lint-imports` runs
 these as the fourth of the five verification gates (CLAUDE.md); an
 accidental upward edge fails the build there rather than surfacing later
 as a design regression no single change would have noticed.
+
+**Temporal discipline.** `tests/test_temporal_discipline.py` (AST-based,
+riding the `pytest` gate like the import-discipline test) enforces the
+canonical-UTC doctrine (§12) mechanically over `src/fleetpull/`: no direct
+wall-clock reads outside `timing/` — `datetime.now(...)` even tz-aware
+(legal by ruff's DTZ rules, yet it bypasses the injectable `Clock` seam),
+`datetime.today()`, `date.today()`, `datetime.utcnow()` — and no foreign
+tzinfo entering the domain (`zoneinfo` imports, `timezone(...)`
+construction). Referencing the canonical constant (`datetime.UTC`) stays
+legal everywhere; `timing/` itself is the allowlist (it owns `SystemClock`
+and the canonicalization surface); tests are exempt (they construct foreign
+tzinfo to exercise rejection).
 
 ### The endpoints layer
 
@@ -1311,6 +1325,29 @@ lives in `state/`). The per-chunk DataFrame is a value, not a stateful component
 - Explicit timeouts on all network calls; specific exception handling
 - Blast-radius minimization over DRY where coupling risk is real
 - `StrEnum` for enums
+
+**Canonical UTC (the temporal doctrine).** The interior temporal form is
+exactly one: a timezone-aware `datetime` whose `tzinfo is datetime.UTC` —
+identity, not offset-equality. `datetime.date` serves calendar concepts
+(timezone-free by nature); strings exist only at wire/storage edges via
+`timing/codec.py`. The `timing/canon.py` surface enforces the form in two
+verbs: **ingress normalizes** (`ensure_utc` — any function bringing a
+temporal value into the domain converts it to canonical form, rejecting only
+the genuinely ambiguous naive value, never assumed UTC; `from_iso8601` is
+the string-ingress twin), and **interior and egress require** (`require_utc`
+— the strict identity guard, never loosened; a strict failure in the
+interior means an ingress was missed, and the fix is adding the missing
+ingress, not weakening the guard). Identity rather than offset-equality is
+deliberate: a zero-offset foreign tzinfo (Polars materializes
+`zoneinfo.ZoneInfo('UTC')` out of a frame; pydantic-core tags parsed
+datetimes with its own `TzInfo`) is the fingerprint of a value that entered
+without normalizing — offset-equality would mask the missed ingress, and
+identity is what caught the live watermark-serialization crash. Known
+ingress boundaries: `from_iso8601` (strings), `records/event_time.py`'s
+`latest_event_time` (the sole site materializing a `datetime` out of a
+Polars frame), and `SystemClock` (the wall clock). The
+`tests/test_temporal_discipline.py` check (§11) enforces the wall-clock and
+tzinfo-construction rules mechanically.
 
 ---
 
