@@ -1,6 +1,6 @@
 # fleetpull — Design Document
 
-**Status:** Design settled through module layout; implementation well underway — the `vehicles` snapshot vertical is complete end-to-end and the `vehicle_locations` date-partitioned/watermark vertical is in progress (see §14 for build progress).
+**Status:** Design settled through module layout; implementation well underway — the `vehicles` snapshot vertical is complete end-to-end, and the `vehicle_locations` date-partitioned/watermark vertical has run its incremental loop end-to-end live, with one known window-granularity defect queued as the immediate next fix (see §15 for run status and the build roadmap).
 **Name:** `fleetpull` — final. Describes exactly what the package does and nothing more (PyPI availability confirmed 2026-06-10).
 **Relationship to fleet-telemetry-hub:** New package, not a rewrite. fleet-telemetry-hub remains in production untouched while fleetpull is built.
 
@@ -52,6 +52,7 @@ orchestrators.
 | Validation/config | Pydantic 2.x, `frozen=True`, `extra='forbid'`, `validate_default=True` | House standard. |
 | Operational state | **SQLite** (WAL mode), single db at dataset root | Source of truth for watermarks/cursors, run ledger, work units. See §5. |
 | HTTP | httpx with explicit timeouts, retry with backoff, resilience to corporate TLS-intercepting proxies (Zscaler-class) | Carried over from fleet-telemetry-hub. |
+| IANA tz database | **tzdata** declared as a runtime dependency | Windows and slim Linux images ship no system IANA database, and stdlib `zoneinfo` then requires the `tzdata` package — without it the first tz-aware Polars extraction fails with `ZoneInfoNotFoundError`. Surfaced by the live Windows run; declared explicitly rather than trusted to the platform. |
 
 ---
 
@@ -925,7 +926,7 @@ sites: FATAL classifications → `ProviderResponseError`, exhausted retry
 budgets → `RetriesExhaustedError`, failed auth paths →
 `AuthenticationError`.
 
-### Observed provider behaviors (verified June 2026)
+### Observed provider behaviors (verified June–July 2026)
 
 | Provider | Behavior |
 |---|---|
@@ -937,6 +938,17 @@ budgets → `RetriesExhaustedError`, failed auth paths →
 | Samsara | 429 with fractional `Retry-After` (e.g. `0.40235`); 401 body is `{"message": ...}`; 5xx bodies are plain strings, never JSON. |
 | Motive | 401 body is `{"error_message": ...}`; the documented /vehicle_locations limit was not observed to enforce — generic 429 posture. |
 | Motive | `/v3/vehicle_locations/{vehicle_id}` verified live: envelope `{"vehicle_locations": [{"vehicle_location": {...}}]}`, `located_at` is UTC ISO-8601 (`Z`-suffixed), one non-paginated page per fetch (so `SinglePageDecoder` fits), and a single per-vehicle fetch spans multiple calendar dates (the sample crossed two) — confirming `split_by_date`'s multi-partition output is load-bearing in production, not a theoretical edge: one fetch genuinely fans into several partitions. |
+| Motive | `/v3/vehicle_locations/{vehicle_id}` date bounds pinned by direct probing: day-granular `start_date`/`end_date` are honored inclusively on both bounds — a single-day request returns that full day, a two-day request both complete days. The documented 3-month maximum range is real: long backfills will eventually need request chunking (a range limit, unrelated to the §15 item-1 window defect). |
+| Motive | `updated_after` on `/v3/vehicle_locations/{vehicle_id}`: documented as required, observably optional and inert — omitting it and supplying it produced byte-identical responses. It remains a candidate ingestion-time CDC hook for the late-upload gap (§13). |
+| Motive | The collection endpoint `/v3/vehicle_locations` (no vehicle id) is a different animal: a last-known-location roster snapshot that ignores date parameters and serves active vehicles only (~1,029 vehicles vs the full harvest's 1,460). It is not a history source and must not be conflated with the per-vehicle history endpoint. |
+
+The `updated_after` finding generalizes into a standing rule: **encode probed
+provider behavior, never documented behavior alone.** Motive silently
+defaults or ignores parameters in both directions — a documented-required
+parameter was inert, and a documented rate limit was not observed to enforce
+(rows above) — so an endpoint binding's parameters and expectations are
+settled against direct probes (or the predecessor's production fetcher),
+never against the docs page by itself.
 
 ---
 
@@ -1358,6 +1370,32 @@ tzinfo-construction rules mechanically.
 - Whether any endpoint actually warrants the flattening opt-out
 - Per-endpoint quota scopes for Samsara: a provider metering one endpoint apart adds a `QuotaScope` member (code), while that scope's limits stay config — a code-plus-config change, not config-only.
 
+- **`updated_after` as an ingestion-time CDC hook (open — for the
+  incremental-strategy design conversation, not a current commitment).** The
+  late-upload gap: a vehicle offline for days uploads old-`located_at`
+  records later, and a `located_at` watermark with a fixed lookback will
+  never fetch them. Probing showed Motive accepts `updated_after` on the
+  per-vehicle history endpoint (though inert as observed, §8), making it a
+  candidate for closing that gap at ingestion time rather than by widening
+  the lookback.
+
+- **Staging-clear robustness on synced/scanned filesystems (parked for the
+  polish phase, §15 roadmap item 8).** A live run on a OneDrive-synced
+  `dataset_root` failed in `clear_partition_staging` (`shutil.rmtree` →
+  `PermissionError` / `WinError 5`): the sync handler held the staging
+  directory during cleanup. Not a correctness bug — at the clear point the
+  finalized partition is expected to be already promoted, which would make
+  leftover staging cosmetic, not corrupting. The intended fix, pending
+  confirmation of that expectation: best-effort removal with a short
+  retry/backoff, degrading to a logged warning rather than crashing a run
+  whose data landed correctly. Deterministic regression test: hold an
+  external handle on the staging directory and assert retry-then-warn — no
+  OneDrive required. This is Windows reality, not OneDrive-specific: endpoint
+  antivirus scan-on-write produces the same `WinError 5` on fresh writes, in
+  exactly the corporate Windows environments fleet telematics runs in. Ships
+  with a docs note: `dataset_root` should be a real filesystem path, not a
+  live cloud-synced folder.
+
 - **Fan-out empty roster and the work-unit transaction boundary (deferred to the
   fan-out coordinator prompt).** Two coupled, still-open questions for when
   `FanOutRequestDriver` and the coordinator land. *Empty roster:* the coordinator
@@ -1554,7 +1592,7 @@ the coordinator follow, wiring `vehicle_locations.fan_out`.
 ## 15. Next Steps
 
 1. Review/amend this document
-2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → retry policy (done, `config/retry.py` + `network/retry/`) → page-decoder abstraction (done, `network/contract/page_decoder.py` + `decoders/`) → HTTP config + the real GeoTab authenticator (done, `config/http.py` + `network/auth/authenticate.py`) → `network/client/` (done) → `endpoints/shared/base.py` (done) → `records` (done) → `storage` (done: `snapshot`+`single` plus the date-partitioned/watermark writer, §3) → `state` (done in full — §5) → `orchestrator` → `cli.py`
+2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → retry policy (done, `config/retry.py` + `network/retry/`) → page-decoder abstraction (done, `network/contract/page_decoder.py` + `decoders/`) → HTTP config + the real GeoTab authenticator (done, `config/http.py` + `network/auth/authenticate.py`) → `network/client/` (done) → `endpoints/shared/base.py` (done) → `records` (done) → `storage` (done: `snapshot`+`single` plus the date-partitioned/watermark writer, §3) → `state` (done in full — §5) → `orchestrator` (built: the run executor's snapshot and watermark arms, the request drivers, and the roster refresh — §14; the fan-out composition root and the backfill loop remain). The chain's original endpoint, `cli.py`, is superseded by the build roadmap below — the public fluent API precedes any YAML/CLI surface.
 
 The `network/client/` step inherits a recorded agenda: classify
 prepare-time transport exceptions (the authenticator propagates
@@ -1569,19 +1607,91 @@ page decoder and quota scope to arrive on each `fetch_pages` call.
 **Vertical progress.** The Motive `vehicles` snapshot vertical is complete
 end-to-end (`client → validate_records → models_to_dataframe → persist`, exercised
 by a throwaway hand-run driver). The Motive `vehicle_locations`
-date-partitioned/watermark vertical is in progress: the leaf primitives are built
-(§3), and what remains is the
-net-new watermark spec-builder, the `persist` window parameter and the
-`event_time_column` field, and the trivial `VehicleLocation` model port — the last
-step of the vertical.
+date-partitioned/watermark vertical has run end-to-end live
+(`scripts/run_vehicle_locations.py`, on local disk): the incremental loop
+mechanics are live-proven — cold backfill, watermark persistence and resume
+(through the canonical-UTC serialization path), wholesale date-partition
+replacement idempotency, compaction dedup (0 duplicates across ~1.03M
+combined rows), and fan-out over a script-harvested roster. The same run
+surfaced a window-granularity defect in the resume machinery (roadmap item 1
+below); the defect is internal to fleetpull — the provider was exonerated by
+direct probing — so the vertical is proven as a loop but not yet correct at
+the window boundary.
 
-**Deliberately deferred — not blockers for the `vehicle_locations` port.** The YAML
-config loader (hardcoded config stands in meanwhile); the full `work_units` backfill
-orchestrator (per-provider executor and per-endpoint writer threads — the
-`work_units` *store* is built, the orchestrator that drives it is not); and
-`metadata.json` generation (cosmetic, projected from SQLite, never read by the
-program). The `state/` layer (§5) is built in full; only the orchestrator that
-sequences it against fetch and storage remains.
+### The build roadmap (settled order)
 
-3. Port Motive/Samsara models and endpoint definitions onto the new base
-4. GeoTab integration when access lands
+1. **Window-granularity fix — immediate next; a correctness defect in the
+   resume machinery everything later composes.** Root cause: the effective
+   resume window start is computed at datetime granularity (the persisted
+   watermark, e.g. `23:59:59`, minus the lookback margin) while requests and
+   partitions are day-granular. The day-granular request floors to
+   `start_date` and fetches the full boundary day; the datetime-granular
+   post-fetch filter then keeps only a seconds-wide sliver of it; wholesale
+   date-partition replacement would then overwrite the boundary day's
+   complete partition with that sliver on every steady-state daily sync —
+   silent, cumulative data destruction. The live run materialized a 6-row
+   `date=2026-06-30` sliver partition via exactly this mechanism (1,029,760 +
+   6 = 1,029,766, to the row). Agreed fix: for endpoints where each record is
+   a single point-in-time snapshot, drop any record whose `located_at` falls
+   outside the *requested date range* — the post-fetch filter keys to the
+   day-granular request window, not the datetime watermark-minus-lookback;
+   its residual job is guarding provider overshoot. Watermark semantics are
+   unchanged (max `located_at` of kept records). Riders: a writer-side
+   assertion that every touched partition date lies inside the requested date
+   range — an interior tripwire, the same normalize-at-boundary /
+   require-inside doctrine as the canonical-UTC surface (§12) — and an
+   explicit scope note that the rule holds for snapshot/point-event endpoints
+   only: duration/span endpoints (e.g. HOS periods crossing midnight) need
+   their own boundary policy when they arrive and must not blindly reuse it.
+2. **Fan-out composition root.** Nothing in `src/` resolves
+   `EndpointDefinition.fan_out` today — the diagnostic script harvested
+   vehicle ids itself and handed them to `FanOutRequestDriver` directly.
+   Before the public API, a composition root must resolve fan-out through the
+   roster machinery (`RosterRefreshCoordinator` was built to serve exactly
+   this). Settled constraint: the fan-out roster enumerates the full
+   `vehicles` harvest *including inactive/retired vehicles* — a vehicle
+   inactive today may have been active during the historical window being
+   fetched, so an active-only population silently truncates history. The
+   module docstring on `endpoints/motive/vehicle_locations.py` currently
+   describes fan-out as wired end-to-end; it is not — correcting it is part
+   of this item.
+3. **Public API design** (conversational; precedes any audit or build): the
+   fluent method-chaining `fetch`/`sync` surface (§10). The pattern is
+   decided; the design pass settles what the chains look like and what each
+   call composes underneath.
+4. **Pre-API audit, anchored to that design.** Scope: the composition path
+   the API will sit on — not a full-tree ceremony sweep. Primary evidence:
+   `scripts/run_vehicle_locations.py` (~370 lines of hand-written consumer
+   code) documents exactly what consuming fleetpull costs today; the audit
+   diffs what-the-script-did against what-`fetch`-should-be and proposes the
+   refactors that make the API thin. It folds in the two parked items that
+   intersect the public surface: the `records → network.contract`
+   `JsonObject` coupling (a type that could leak into public signatures, plus
+   records validation's loose `pydantic.BaseModel` bound where
+   `ResponseModel` is the real contract), and the retained import-linter
+   contract whose name ("Endpoints sit above…") no longer matches its
+   load-bearing purpose (the `models` / `incremental` same-tier
+   independence) — a rename/legibility fix, not a semantic change.
+5. **Build the public fluent API.**
+6. **Config-YAML framework, then the YAML-run tool** — in that order, and
+   after the API: the YAML is a serialization of the API surface, and built
+   earlier it would serialize a guess.
+7. **One GeoTab endpoint end-to-end before bulk porting.** GeoTab is the
+   architectural stress test (different auth, pagination, decode); if it
+   bends the abstractions, that must surface before more Motive endpoints are
+   stamped from the existing mold. Once it proves the pattern crosses
+   providers: bulk-port the remaining Motive and GeoTab models (low-risk; can
+   run parallel to item 6).
+8. **Polish phase, gated on a stable public surface:** full-tree ceremony
+   audit, test-coverage audit, documentation audit, the real usage-driven
+   README, multi-platform CI (a Windows leg would have caught the
+   missing-`tzdata` failure automatically), and the parked staging
+   robustness (§13).
+
+**Deliberately deferred — off the roadmap's critical path.** The full
+`work_units` backfill orchestration (per-provider executor and per-endpoint
+writer threads — the `work_units` *store*, the chunk planner
+(`plan_backfill_units`), and the runner's `run_backfill_unit` arm are built;
+the loop that claims and drives units is not), and `metadata.json` generation
+(cosmetic, projected from SQLite, never read by the program). The YAML config
+loader, previously deferred here, is now roadmap item 6.
