@@ -45,6 +45,7 @@ dependencies = [
     "pydantic>=2.7.0",
     "pyyaml>=6.0.0",
     "truststore>=0.9.0",
+    "tzdata>=2025.2",
 ]
 
 # Python version requirements
