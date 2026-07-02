@@ -1,6 +1,6 @@
 # fleetpull — Design Document
 
-**Status:** Design settled through module layout; implementation well underway — the `vehicles` snapshot vertical is complete end-to-end, and the `vehicle_locations` date-partitioned/watermark vertical has run its incremental loop end-to-end live, with one known window-granularity defect queued as the immediate next fix (see §15 for run status and the build roadmap).
+**Status:** Design settled through module layout; implementation well underway — the `vehicles` snapshot vertical is complete end-to-end, and the `vehicle_locations` date-partitioned/watermark vertical has run its incremental loop end-to-end live; the window-granularity defect that run surfaced is fixed (the floored resume window, §4). See §15 for run status and the build roadmap.
 **Name:** `fleetpull` — final. Describes exactly what the package does and nothing more (PyPI availability confirmed 2026-06-10).
 **Relationship to fleet-telemetry-hub:** New package, not a rewrite. fleet-telemetry-hub remains in production untouched while fleetpull is built.
 
@@ -279,7 +279,8 @@ to now") that holds the trailing edge back so a still-arriving day is not frozen
 prematurely — it is the `now`/`cutoff` pair `resolve_trailing_edge` takes.
 `default_start_date` (config) is only the first-backfill anchor — arm (3) — and
 goes inert the moment observed data or completed coverage exists; thereafter the
-start is `max(observed) - lookback`. `lookback` and `cutoff` both sit on
+start is `max(observed) - lookback`, floored to the UTC midnight of its date
+(flooring below). `lookback` and `cutoff` both sit on
 `WatermarkMode`, sourced per-provider from the provider config (`lookback_days` /
 `cutoff_days`) — the two ends of one provider-latency concern. The cold-start
 `default_start_date` — arm (3) — is sync-wide rather than per-endpoint, so it lives
@@ -291,8 +292,18 @@ and clock reads and feeds the values in): `resolve_trailing_edge(now, cutoff)` �
 the end, `now` floored to its UTC midnight less the cutoff;
 `resolve_resume_start(watermark_start, frontier, default_start)` — the start by the
 resume precedence (arm 1's `watermark - lookback`, else the coverage frontier, else
-the cold-start default), the arms passed as pre-resolved datetimes so the helper
-stays pure datetime math with no cursor dependency; and
+the cold-start default), the chosen arm **floored to the UTC midnight of its
+date**: requests and partitions are day-granular, so the effective window must be
+day-aligned on both bounds and every covered date refetched in full — the
+floored-window invariant the partitioned writer's wholesale replacement and prune
+are safe under (an unfloored `23:59:59` start once covered its boundary date by a
+one-second sliver that replacement then destroyed — §15 roadmap item 1). Flooring
+makes lookback read as "re-cover N whole days before the watermark's day"; arms
+(2)/(3) are midnight-aligned by construction, so the floor binds on arm (1). The
+rule is for snapshot/point-event endpoints; duration/span endpoints (e.g. HOS
+periods crossing midnight) need their own boundary policy when they arrive. The
+arms are passed as pre-resolved datetimes so the helper stays pure datetime math
+with no cursor dependency; and
 `window_or_none(start, end)` — a `DateWindow` when `start < end`, else `None`. That
 `None` is load-bearing and is why the start is resolved as a verdict rather than a
 raise: a caught-up window (`start >= end`, e.g. a watermark sitting inside the
@@ -1512,8 +1523,12 @@ to its UTC midnight and holds it back by the cutoff (the end); the start is the
 resume precedence — `resolve_watermark_start` turns the stored cursor into arm 1
 (`watermark - lookback`, carrying Guard A and the cross-mode feed-cursor rejection),
 else the coverage frontier (arm 2), else `default_start_date` (arm 3), composed by
-`resolve_resume_start`; `window_or_none(start, end)` yields the `DateWindow` or
-`None` (caught up → `CaughtUp`, no run opened). These decisions are pure and live in
+`resolve_resume_start`, which floors the chosen arm to its UTC midnight (the
+floored-window invariant, §4); `window_or_none(start, end)` yields the `DateWindow`
+or `None` (caught up → `CaughtUp`, no run opened). The partitioned writer carries
+the matching interior tripwire: a staged partition date outside
+`window_dates(window)` fails the run loudly — an upstream window filter missed
+rows (the require-inside half of the normalize-at-boundary doctrine, §12). These decisions are pure and live in
 `orchestrator/resume.py` (cursor interpretation and its guards) and
 `incremental/resolution.py` (cursor-free date math); the runner reads the cursor,
 the clock, and the frontier, calls them, and writes — no resume logic on the class,
@@ -1614,35 +1629,34 @@ mechanics are live-proven — cold backfill, watermark persistence and resume
 replacement idempotency, compaction dedup (0 duplicates across ~1.03M
 combined rows), and fan-out over a script-harvested roster. The same run
 surfaced a window-granularity defect in the resume machinery (roadmap item 1
-below); the defect is internal to fleetpull — the provider was exonerated by
-direct probing — so the vertical is proven as a loop but not yet correct at
-the window boundary.
+below); the defect was internal to fleetpull — the provider was exonerated by
+direct probing — and has since been fixed by flooring the resume window at
+resolution (item 1, done).
 
 ### The build roadmap (settled order)
 
-1. **Window-granularity fix — immediate next; a correctness defect in the
-   resume machinery everything later composes.** Root cause: the effective
-   resume window start is computed at datetime granularity (the persisted
-   watermark, e.g. `23:59:59`, minus the lookback margin) while requests and
-   partitions are day-granular. The day-granular request floors to
-   `start_date` and fetches the full boundary day; the datetime-granular
-   post-fetch filter then keeps only a seconds-wide sliver of it; wholesale
-   date-partition replacement would then overwrite the boundary day's
-   complete partition with that sliver on every steady-state daily sync —
-   silent, cumulative data destruction. The live run materialized a 6-row
-   `date=2026-06-30` sliver partition via exactly this mechanism (1,029,760 +
-   6 = 1,029,766, to the row). Agreed fix: for endpoints where each record is
-   a single point-in-time snapshot, drop any record whose `located_at` falls
-   outside the *requested date range* — the post-fetch filter keys to the
-   day-granular request window, not the datetime watermark-minus-lookback;
-   its residual job is guarding provider overshoot. Watermark semantics are
-   unchanged (max `located_at` of kept records). Riders: a writer-side
-   assertion that every touched partition date lies inside the requested date
-   range — an interior tripwire, the same normalize-at-boundary /
-   require-inside doctrine as the canonical-UTC surface (§12) — and an
-   explicit scope note that the rule holds for snapshot/point-event endpoints
-   only: duration/span endpoints (e.g. HOS periods crossing midnight) need
-   their own boundary policy when they arrive and must not blindly reuse it.
+1. **Window-granularity fix (done — the floored resume window, §4).** Root
+   cause: the effective resume window start was computed at datetime
+   granularity (the persisted watermark, e.g. `23:59:59`, minus the lookback
+   margin) while requests and partitions are day-granular. The day-granular
+   request floored to `start_date` and fetched the full boundary day; the
+   datetime-granular post-fetch filter then kept only a seconds-wide sliver
+   of it; wholesale date-partition replacement would then overwrite the
+   boundary day's complete partition with that sliver on every steady-state
+   daily sync — silent, cumulative data destruction. The live run
+   materialized a 6-row `date=2026-06-30` sliver partition via exactly this
+   mechanism (1,029,760 + 6 = 1,029,766, to the row). The fix, delivered:
+   `resolve_resume_start` floors the chosen start to the UTC midnight of its
+   date, so the window `in_window` filters against equals the requested date
+   range and the filter's residual job is guarding provider overshoot.
+   Watermark semantics unchanged (max `located_at` of kept records). Both
+   riders shipped: the writer-side tripwire (every staged partition date must
+   lie in `window_dates(window)` — the require-inside half of the
+   normalize-at-boundary doctrine, §12), and the scope note that the rule
+   holds for snapshot/point-event endpoints only: duration/span endpoints
+   (e.g. HOS periods crossing midnight) need their own boundary policy when
+   they arrive and must not blindly reuse it (recorded on
+   `resolve_resume_start` and in §4).
 2. **Fan-out composition root.** Nothing in `src/` resolves
    `EndpointDefinition.fan_out` today — the diagnostic script harvested
    vehicle ids itself and handed them to `FanOutRequestDriver` directly.
