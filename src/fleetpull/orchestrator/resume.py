@@ -48,7 +48,9 @@ def resolve_watermark_start(
 
     Returns:
         The watermark instant less ``lookback`` when a ``DateWatermark`` is
-        stored, else ``None``.
+        stored, else ``None``. This is the datetime-granular arm-1 candidate;
+        ``resolve_resume_start`` floors whichever arm it picks to the UTC
+        midnight of its date (the floored-window invariant).
 
     Raises:
         ConfigurationError: The stored watermark is dated after ``now`` (Guard A

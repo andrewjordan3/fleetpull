@@ -392,6 +392,68 @@ class TestWatermarkRun:
             )
         ]
 
+    def test_late_day_watermark_refetches_the_boundary_day_whole_not_a_sliver(
+        self, tmp_path: Path
+    ) -> None:
+        # The live sliver defect (mode a): a watermark of 2026-06-14T23:59:59
+        # less the 1-day lookback resolved an unfloored start of
+        # 2026-06-13T23:59:59; the day-granular fetch returned the whole
+        # boundary day, in_window kept only the final second, and wholesale
+        # replacement rewrote date=2026-06-13 as a seconds-wide sliver.
+        # Floored, the window starts at the boundary day's midnight and the
+        # full refetched day survives; a record before the floored start (the
+        # provider-overshoot case) is still dropped.
+        recorder = _RecordingRecorder()
+        cursor = _StubCursorAccess(
+            DateWatermark(watermark=datetime(2026, 6, 14, 23, 59, 59, tzinfo=UTC))
+        )
+        runner = _make_runner(recorder, tmp_path, cursor_access=cursor)
+        batch = _wm_batch(
+            datetime(2026, 6, 12, 23, 0, tzinfo=UTC),  # overshoot: before start
+            datetime(2026, 6, 13, 0, 30, tzinfo=UTC),
+            datetime(2026, 6, 13, 12, 0, tzinfo=UTC),
+            datetime(2026, 6, 13, 23, 59, 59, tzinfo=UTC),
+        )
+        outcome = runner.run(_watermark_definition(), _CannedDriver([batch]))
+        assert isinstance(outcome, Executed)
+        assert recorder.windows == [(datetime(2026, 6, 13, tzinfo=UTC), _TRAILING_EDGE)]
+        assert outcome.records_fetched == 3
+        part = pl.read_parquet(
+            tmp_path / 'motive' / 'locations' / 'date=2026-06-13' / 'part.parquet'
+        )
+        assert part.height == 3
+        assert not (tmp_path / 'motive' / 'locations' / 'date=2026-06-12').exists()
+        # Watermark semantics unchanged: max kept event time (2026-06-13) is
+        # not strictly past the stored watermark, so no advance.
+        assert cursor.set_calls == []
+
+    def test_boundary_partition_with_data_is_never_pruned_on_resume(
+        self, tmp_path: Path
+    ) -> None:
+        # The latent mode (b) of the same defect: under the unfloored window
+        # [2026-06-13T23:59:59, ...), a boundary day whose refetch held no
+        # records in that final second was covered-but-unwritten, and the
+        # prune deleted its complete partition outright. Floored, the day's
+        # refetched rows are kept and written, so the partition is replaced,
+        # never pruned.
+        endpoint_dir = tmp_path / 'motive' / 'locations'
+        prior_partition = endpoint_dir / 'date=2026-06-13'
+        prior_partition.mkdir(parents=True)
+        pl.DataFrame(
+            {'occurred_at': [datetime(2026, 6, 13, 8, tzinfo=UTC)]}
+        ).write_parquet(prior_partition / 'part.parquet')
+        recorder = _RecordingRecorder()
+        cursor = _StubCursorAccess(
+            DateWatermark(watermark=datetime(2026, 6, 14, 23, 59, 59, tzinfo=UTC))
+        )
+        runner = _make_runner(recorder, tmp_path, cursor_access=cursor)
+        refetched = _wm_batch(datetime(2026, 6, 13, 8, tzinfo=UTC))
+        outcome = runner.run(_watermark_definition(), _CannedDriver([refetched]))
+        assert isinstance(outcome, Executed)
+        assert outcome.write.deleted_partitions == []
+        assert (prior_partition / 'part.parquet').exists()
+        assert pl.read_parquet(prior_partition / 'part.parquet').height == 1
+
     def test_non_advancing_observation_holds_the_cursor(self, tmp_path: Path) -> None:
         recorder = _RecordingRecorder()
         cursor = _StubCursorAccess(

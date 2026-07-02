@@ -105,13 +105,18 @@ _DEDUP_IDENTITY_COLUMN: str = 'location_id'
 _INCREMENTAL_SEMANTICS = """\
 Incremental semantics this proof relies on (read from the source, not assumed):
   - The resume window is half-open [start, end): start inclusive, end exclusive
-    (fleetpull.incremental.DateWindow).
+    (fleetpull.incremental.DateWindow); for this day-granular endpoint both
+    bounds are UTC midnights, so every covered date is refetched whole (the
+    floored-window invariant wholesale partition replacement relies on).
   - The persisted watermark is the maximum observed `located_at` across a run's
-    fetched rows; it advances only when that observed maximum is strictly past
+    kept rows; it advances only when that observed maximum is strictly past
     the prior watermark (orchestrator/resume.py:should_advance_watermark).
   - Resume precedence: persisted watermark (less the lookback margin) takes
     precedence over the coverage frontier, which takes precedence over the
-    default_start_date cold-start anchor.
+    default_start_date cold-start anchor; the chosen start is floored to the
+    UTC midnight of its date, so a lookback of N days re-covers N whole days
+    before the watermark's day. The in-window filter's residual job is
+    dropping provider overshoot outside the requested dates.
   - Dedup is structural, not row-level: a watermark + date-partitioned run
     REPLACES each touched date=YYYY-MM-DD partition wholesale (the prior
     contents are never read or appended to), so a date refetched by a later
