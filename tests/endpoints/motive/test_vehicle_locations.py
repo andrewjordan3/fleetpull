@@ -25,6 +25,7 @@ from fleetpull.incremental import (
 from fleetpull.models.motive import VehicleLocation
 from fleetpull.network.contract import HttpMethod
 from fleetpull.network.decoders import MotiveWrappedSinglePageDecoder
+from fleetpull.roster import RosterKey
 from fleetpull.storage.partitioning import window_dates
 from fleetpull.vocabulary import Provider, QuotaScope
 
@@ -156,3 +157,12 @@ class TestBuildVehicleLocationsEndpoint:
         # triple passes EndpointDefinition's construction validation.
         endpoint = build_endpoint(MotiveConfig())
         assert endpoint.name == 'vehicle_locations'
+
+    def test_declares_the_vehicle_ids_fan_out(self) -> None:
+        binding = _build_endpoint().fan_out
+        assert binding is not None
+        assert binding.roster == RosterKey(Provider.MOTIVE, 'vehicle_ids')
+        # The placeholder must match the spec-builder's URL template; the
+        # strict renderer enforces it (test_spec_builder_fans_out_per_vehicle
+        # exercises the pairing end to end).
+        assert binding.path_placeholder == 'vehicle_id'

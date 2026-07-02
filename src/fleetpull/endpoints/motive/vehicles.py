@@ -1,6 +1,7 @@
 # src/fleetpull/endpoints/motive/vehicles.py
 """The Motive vehicles binding: a factory composing the vehicles snapshot
-EndpointDefinition from resolved Motive configuration.
+EndpointDefinition from resolved Motive configuration, plus the
+``vehicle_ids`` roster the listing feeds.
 
 A binding cannot be a module-level constant because its spec-builder
 needs the run's configured base URL and page size, known only after the
@@ -8,9 +9,22 @@ YAML config loads; capturing config at import time would freeze a
 default, and module-level mutable state is forbidden. So the endpoint is
 a factory taking a validated ``MotiveConfig`` and returning the frozen
 ``EndpointDefinition`` the composition root hands to the client.
+
+``VEHICLE_IDS_ROSTER`` is declared here, beside the feeder it describes:
+the roster names this module's endpoint and its frame column, which is
+provider-specific knowledge that belongs in the provider leaf. Unlike the
+endpoint factory it needs no config, so it is a frozen constant. Roster
+registration is explicit construction -- the composition root passes it
+to ``RosterRegistry([...])``; there is no discovery walk (the endpoint
+registry's walk stays the single sanctioned import-discipline exception).
+The include-inactive guarantee binds at the feeder population, not at
+eviction policy: ``/v1/vehicles`` lists inactive and retired vehicles, so
+a fan-out over this roster covers vehicles that were active during a
+historical window even if they are inactive today.
 """
 
 import logging
+from datetime import timedelta
 
 from fleetpull.config import MotiveConfig
 from fleetpull.endpoints.shared import (
@@ -21,15 +35,37 @@ from fleetpull.endpoints.shared import (
 )
 from fleetpull.models.motive import Vehicle
 from fleetpull.network.decoders import MotiveWrappedListPageDecoder
+from fleetpull.roster import RosterDefinition, RosterKey
 from fleetpull.vocabulary import Provider, QuotaScope
 
-__all__: list[str] = ['build_endpoint']
+__all__: list[str] = ['VEHICLE_IDS_ROSTER', 'build_endpoint']
 
 logger = logging.getLogger(__name__)
 
 _VEHICLES_PATH: str = '/v1/vehicles'
 _VEHICLES_LIST_KEY: str = 'vehicles'
 _VEHICLES_ITEM_KEY: str = 'vehicle'
+
+# The fleet's membership changes on the order of days, so a daily re-list
+# keeps the roster current without spending a full vehicles listing on
+# every sync.
+_VEHICLE_IDS_MAX_AGE: timedelta = timedelta(days=1)
+
+# Eviction hysteresis (DESIGN §3): vehicle ids are permanent, absent-means-
+# empty keys, so eviction is an efficiency lever (stop fanning over
+# long-retired vehicles), not a correctness one. Three consecutive absent
+# listings tolerate a transient provider omission before dropping a member.
+_VEHICLE_IDS_EVICTION_THRESHOLD: int = 3
+
+# The Motive vehicle_ids roster: fed by this module's vehicles listing, read
+# by the vehicle_locations fan-out (which carries only the RosterKey).
+VEHICLE_IDS_ROSTER: RosterDefinition = RosterDefinition(
+    key=RosterKey(Provider.MOTIVE, 'vehicle_ids'),
+    source_endpoint='vehicles',
+    source_column='vehicle_id',
+    max_age=_VEHICLE_IDS_MAX_AGE,
+    eviction_threshold=_VEHICLE_IDS_EVICTION_THRESHOLD,
+)
 
 
 def build_endpoint(config: MotiveConfig) -> EndpointDefinition[Vehicle]:
