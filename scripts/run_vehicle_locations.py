@@ -7,6 +7,12 @@ incremental *loop*: a cold backfill run from an empty ``DATASET_ROOT``, then a
 second run that resumes from the watermark the first run persisted to SQLite,
 then a check that the combined on-disk output holds no duplicate rows.
 
+The fan-out is composed, not hand-built: the script hands the resolved
+definition to the orchestration entry (``run_endpoint``) and the declared
+``FanOutBinding`` resolves through the roster machinery -- see the printed
+semantics block. The first run populates the roster via the cold-start
+listing path (expected, not an error).
+
 Also validates two pieces of real infrastructure unit tests cannot: truststore
 through the corporate (Zscaler) proxy on a live API call, and Parquet + SQLite
 writes over a OneDrive-synced filesystem.
@@ -20,6 +26,7 @@ Errors propagate with a traceback by design -- this is a debugging driver.
 
 import logging
 import random
+from collections.abc import Callable
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -27,12 +34,8 @@ import polars as pl
 from pydantic import SecretStr
 
 from fleetpull.config import HttpConfig, MotiveConfig, RetryConfig, SyncConfig
-from fleetpull.endpoints.motive.vehicle_locations import (
-    build_endpoint as build_vehicle_locations_endpoint,
-)
-from fleetpull.endpoints.motive.vehicles import (
-    build_endpoint as build_vehicles_endpoint,
-)
+from fleetpull.endpoints import build_endpoint_registry
+from fleetpull.endpoints.motive.vehicles import VEHICLE_IDS_ROSTER
 from fleetpull.endpoints.shared import EndpointDefinition
 from fleetpull.incremental import DateWatermark, IncrementalCursor
 from fleetpull.model_contract import ResponseModel
@@ -42,22 +45,27 @@ from fleetpull.network.client import (
     ClientRuntime,
     ProviderClientRegistry,
     ProviderProfile,
-    TransportClient,
 )
 from fleetpull.network.limits import RateLimitConfig, RateLimiterRegistry
 from fleetpull.orchestrator import (
     CaughtUp,
     EndpointRunner,
     Executed,
-    FanOutRequestDriver,
+    RosterRefreshCoordinator,
     RunOutcome,
-    SingleRequestDriver,
+    run_endpoint,
 )
-from fleetpull.orchestrator.roster_harvest import harvest_roster_members
 from fleetpull.paths import endpoint_directory, parse_date_partition_segment
-from fleetpull.state import CursorStore, RunLedger, StateDatabase, migrate_to_head
+from fleetpull.roster import RosterRegistry
+from fleetpull.state import (
+    CursorStore,
+    RosterStore,
+    RunLedger,
+    StateDatabase,
+    migrate_to_head,
+)
 from fleetpull.timing import SystemClock, SystemSleeper
-from fleetpull.vocabulary import Provider
+from fleetpull.vocabulary import Provider, QuotaScope
 
 # --- hardcoded config (stands in for the YAML loader) -----------------------
 
@@ -104,6 +112,10 @@ _DEDUP_IDENTITY_COLUMN: str = 'location_id'
 
 _INCREMENTAL_SEMANTICS = """\
 Incremental semantics this proof relies on (read from the source, not assumed):
+  - The fan-out is declared, not hand-built: the endpoint's FanOutBinding names
+    the `vehicle_ids` roster, and the orchestration entry (run_endpoint)
+    resolves it through the roster registry, refresh coordinator, and store --
+    this script never constructs a driver or harvests members itself.
   - The resume window is half-open [start, end): start inclusive, end exclusive
     (fleetpull.incremental.DateWindow); for this day-granular endpoint both
     bounds are UTC midnights, so every covered date is refetched whole (the
@@ -137,15 +149,9 @@ def _build_motive_config() -> MotiveConfig:
     )
 
 
-def _build_client_runtime(
-    vehicles: EndpointDefinition[ResponseModel],
-    locations: EndpointDefinition[ResponseModel],
-) -> ClientRuntime:
-    """The shared transport runtime, rate-limited per quota scope used."""
-    limits = {
-        vehicles.quota_scope.value: MOTIVE_RATE_LIMIT,
-        locations.quota_scope.value: MOTIVE_RATE_LIMIT,
-    }
+def _build_client_runtime() -> ClientRuntime:
+    """The shared transport runtime, rate-limited on the one Motive quota scope."""
+    limits = {QuotaScope.MOTIVE.value: MOTIVE_RATE_LIMIT}
     return ClientRuntime(
         http_config=HttpConfig(use_truststore=USE_TRUSTSTORE),
         retry_config=RetryConfig(),
@@ -155,25 +161,21 @@ def _build_client_runtime(
     )
 
 
-def _build_state(dataset_root: Path) -> tuple[StateDatabase, CursorStore, RunLedger]:
+def _build_state(
+    dataset_root: Path,
+) -> tuple[StateDatabase, CursorStore, RunLedger, RosterStore]:
     """Initialize the SQLite operational-state DB at its DESIGN-convention path."""
     database_path = dataset_root / '.fleetpull' / 'state.sqlite3'
     database = StateDatabase(database_path)
     database.initialize()
     migrate_to_head(database)
     clock = SystemClock()
-    return database, CursorStore(database, clock), RunLedger(database, clock)
-
-
-def _harvest_vehicle_ids(
-    vehicles: EndpointDefinition[ResponseModel], client: TransportClient
-) -> list[str]:
-    """The fleet's current vehicle ids, as fan-out members for vehicle_locations."""
-    members = harvest_roster_members(
-        vehicles, SingleRequestDriver(), client, column='vehicle_id'
+    return (
+        database,
+        CursorStore(database, clock),
+        RunLedger(database, clock),
+        RosterStore(database),
     )
-    print(f'Harvested {len(members)} vehicle ids to fan vehicle_locations out over.')
-    return sorted(members)
 
 
 def _read_partition_frames(endpoint_dir: Path) -> dict[date, pl.DataFrame]:
@@ -253,31 +255,31 @@ def _check_duplicates(combined: pl.DataFrame) -> None:
 
 
 class _RunReporter:
-    """Runs the (fixed) vehicle_locations run and reports it, once per label.
+    """Runs the composed vehicle_locations run and reports it, once per label.
 
     Bundles the collaborators that stay constant across Run 1 and Run 2 --
     only the label changes between calls -- so the call site reads as the
-    two-run loop it is, rather than repeating five shared arguments twice.
+    two-run loop it is. The run itself is a zero-argument callable closing
+    over the orchestration-entry collaborators; the reporter never sees the
+    driver or the roster machinery.
     """
 
     def __init__(
         self,
-        runner: EndpointRunner,
+        run_once: Callable[[], RunOutcome],
         definition: EndpointDefinition[ResponseModel],
-        driver: FanOutRequestDriver,
         cursor_store: CursorStore,
         endpoint_dir: Path,
     ) -> None:
-        self._runner = runner
+        self._run_once = run_once
         self._definition = definition
-        self._driver = driver
         self._cursor_store = cursor_store
         self._endpoint_dir = endpoint_dir
 
     def run(self, label: str) -> dict[date, pl.DataFrame]:
         """Run once, report its outcome, watermark, and on-disk layout."""
         print(f'\n--- {label} ---')
-        outcome = self._runner.run(self._definition, self._driver)
+        outcome = self._run_once()
         _print_run_outcome(label, outcome)
         watermark = self._cursor_store.get_cursor(
             self._definition.provider, self._definition.name
@@ -300,20 +302,21 @@ def main() -> None:
 
     dataset_root = Path(DATASET_ROOT)
     motive_config = _build_motive_config()
-    vehicles_definition = build_vehicles_endpoint(motive_config)
-    locations_definition = build_vehicle_locations_endpoint(motive_config)
+    endpoint_registry = build_endpoint_registry([motive_config])
+    locations_definition = endpoint_registry.get(Provider.MOTIVE, 'vehicle_locations')
+    roster_registry = RosterRegistry([VEHICLE_IDS_ROSTER])
     endpoint_dir = endpoint_directory(
         dataset_root, locations_definition.provider.value, locations_definition.name
     )
 
-    database, cursor_store, run_ledger = _build_state(dataset_root)
+    database, cursor_store, run_ledger, roster_store = _build_state(dataset_root)
     print(f'State database: {database.database_path}')
 
     profile = ProviderProfile(
         auth=StaticHeaderAuth('X-API-Key', SecretStr(MOTIVE_API_KEY)),
         classifier=MotiveResponseClassifier(),
     )
-    runtime = _build_client_runtime(vehicles_definition, locations_definition)
+    runtime = _build_client_runtime()
     clock = SystemClock()
     default_start_date = (
         clock.now_utc() - timedelta(days=BACKFILL_LOOKBACK_DAYS)
@@ -323,12 +326,9 @@ def main() -> None:
     )
 
     with ProviderClientRegistry({Provider.MOTIVE: profile}, runtime) as clients:
-        client = clients.client_for(Provider.MOTIVE)
-        vehicle_ids = _harvest_vehicle_ids(vehicles_definition, client)
-        if not vehicle_ids:
-            raise SystemExit('Harvested zero vehicle ids; nothing to fan out over.')
-
-        driver = FanOutRequestDriver(members=vehicle_ids, path_placeholder='vehicle_id')
+        coordinator = RosterRefreshCoordinator(
+            endpoint_registry, roster_store, run_ledger, clients, clock
+        )
         runner = EndpointRunner(
             client_source=clients,
             run_recorder=run_ledger,
@@ -337,11 +337,27 @@ def main() -> None:
             sync_config=sync_config,
         )
 
+        def run_locations_once() -> RunOutcome:
+            """One composed run: the entry resolves the declared fan-out itself."""
+            return run_endpoint(
+                locations_definition, runner, roster_registry, coordinator, roster_store
+            )
+
         reporter = _RunReporter(
-            runner, locations_definition, driver, cursor_store, endpoint_dir
+            run_locations_once, locations_definition, cursor_store, endpoint_dir
         )
 
+        print(
+            '\nOn a fresh state store, Run 1 first lists the vehicles feeder to '
+            'populate the fan-out roster (the cold-start path) -- expected, not '
+            'an error.'
+        )
         frames_after_1 = reporter.run('Run 1 (cold backfill)')
+        roster_member_count = len(roster_store.read_members(VEHICLE_IDS_ROSTER.key))
+        print(
+            f'Fan-out roster {VEHICLE_IDS_ROSTER.key.name!r} (read back from the '
+            f'store): {roster_member_count} members.'
+        )
         if frames_after_1:
             sample = next(iter(frames_after_1.values()))
             print(f'Resulting frame shape (one partition sample): {sample.shape}')

@@ -1,11 +1,12 @@
 """Tests for fleetpull.endpoints.motive.vehicles."""
 
 from fleetpull.config import MotiveConfig
-from fleetpull.endpoints.motive.vehicles import build_endpoint
+from fleetpull.endpoints.motive.vehicles import VEHICLE_IDS_ROSTER, build_endpoint
 from fleetpull.endpoints.shared import EndpointDefinition, SnapshotMode, StorageKind
 from fleetpull.models.motive import Vehicle
 from fleetpull.network.contract import HttpMethod
 from fleetpull.network.decoders import MotiveWrappedListPageDecoder
+from fleetpull.roster import RosterKey
 from fleetpull.vocabulary import Provider, QuotaScope
 
 
@@ -51,3 +52,21 @@ class TestBuildVehiclesEndpoint:
         endpoint = build_endpoint(MotiveConfig())
         spec = endpoint.spec_builder.build_spec(resume=None, path_values={})
         assert spec.url == 'https://api.gomotive.com/v1/vehicles'
+
+    def test_does_not_fan_out(self) -> None:
+        assert _make_endpoint().fan_out is None
+
+
+class TestVehicleIdsRoster:
+    def test_is_fed_by_this_modules_listing(self) -> None:
+        assert VEHICLE_IDS_ROSTER.key == RosterKey(Provider.MOTIVE, 'vehicle_ids')
+        assert VEHICLE_IDS_ROSTER.source_endpoint == 'vehicles'
+        assert VEHICLE_IDS_ROSTER.source_column == 'vehicle_id'
+
+    def test_declares_hysteresis_not_append_only(self) -> None:
+        # Vehicle ids evict on consecutive absence (an efficiency lever, not
+        # append-only); the include-inactive guarantee binds at the feeder
+        # population (/v1/vehicles lists inactive and retired vehicles), not
+        # at this policy.
+        assert VEHICLE_IDS_ROSTER.eviction_threshold is not None
+        assert VEHICLE_IDS_ROSTER.max_age.total_seconds() > 0
