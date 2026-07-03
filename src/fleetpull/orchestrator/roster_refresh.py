@@ -9,7 +9,7 @@ registry, the same way the run executor is handed an already-resolved
 if ``is_roster_stale`` says a refresh is due re-lists the feeder, reconciles the
 listing against the stored roster, and applies the delta. Its only output is the
 store; it never reads members, builds a fan-out driver, or runs an endpoint. Those
-are the consume half, a separate coordinator built later.
+are the consume half, owned by the orchestration entry (``orchestrator/entry.py``).
 
 The full-listing requirement lives here: a roster needs its feeder's complete
 current membership each refresh, so the feeder must be a snapshot endpoint. The

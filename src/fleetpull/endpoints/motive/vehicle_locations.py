@@ -1,11 +1,17 @@
 # src/fleetpull/endpoints/motive/vehicle_locations.py
-"""The Motive vehicle_locations watermark spec-builder.
+"""The Motive vehicle_locations watermark spec-builder and fan-out binding.
 
-A per-vehicle breadcrumb endpoint: the orchestrator fans out over vehicles and
-calls ``build_spec`` once per vehicle, passing that vehicle's id in ``path_values``
-and the run's resume ``DateWindow`` as ``resume``. The builder renders the
-per-vehicle path and maps the window to Motive's ``start_date`` / ``end_date``
-query parameters.
+A per-vehicle breadcrumb endpoint. The binding declares its fan-out
+(``fan_out=FanOutBinding(...)``) naming the ``vehicle_ids`` roster by its
+opaque ``RosterKey`` -- this module knows nothing about the roster's feeder.
+The orchestration entry (``orchestrator/entry.py``) resolves that key through
+the ``RosterRegistry`` to its ``RosterDefinition``, refreshes the stored
+membership via the ``RosterRefreshCoordinator`` when stale, reads the members
+from the ``RosterStore``, and builds the ``FanOutRequestDriver`` -- which then
+calls ``build_spec`` once per member, passing that vehicle's id in
+``path_values`` and the run's resume ``DateWindow`` as ``resume``. The builder
+renders the per-vehicle path and maps the window to Motive's ``start_date`` /
+``end_date`` query parameters.
 
 Motive's ``start_date`` / ``end_date`` are inclusive on both ends and day-granular,
 anchored on ``located_at`` -- the endpoint returns every breadcrumb whose date falls
@@ -38,6 +44,7 @@ from datetime import timedelta
 from fleetpull.config import MotiveConfig
 from fleetpull.endpoints.shared import (
     EndpointDefinition,
+    FanOutBinding,
     ResumeValue,
     StorageKind,
     WatermarkMode,
@@ -47,6 +54,7 @@ from fleetpull.incremental import DateWindow
 from fleetpull.models.motive import VehicleLocation
 from fleetpull.network.contract import HttpMethod, RequestSpec
 from fleetpull.network.decoders import MotiveWrappedSinglePageDecoder
+from fleetpull.roster import RosterKey
 from fleetpull.timing import to_utc_date_string
 from fleetpull.vocabulary import Provider, QuotaScope
 
@@ -125,9 +133,11 @@ def build_endpoint(config: MotiveConfig) -> EndpointDefinition[VehicleLocation]:
     ``DateWindow`` (watermark with the provider's late-arrival lookback from config),
     the fetched whole days are written to ``date=YYYY-MM-DD`` partitions, and each
     refetched partition is replaced. Records arrive wrapped and unpaginated
-    (``{"vehicle_locations": [{"vehicle_location": {...}}]}``). The per-vehicle URL
-    fan-out is driven by the orchestrator, which passes each ``vehicle_id`` to the
-    spec-builder's ``path_values``; this binding only declares the strategies.
+    (``{"vehicle_locations": [{"vehicle_location": {...}}]}``). The ``fan_out``
+    declaration names the ``vehicle_ids`` roster; the orchestration entry resolves
+    it to members and fans one request chain per vehicle, passing each
+    ``vehicle_id`` to the spec-builder's ``path_values`` — this binding only
+    declares the strategies and the roster key, never the roster's feeder.
 
     Args:
         config: The validated Motive configuration; supplies the base URL the
@@ -158,4 +168,8 @@ def build_endpoint(config: MotiveConfig) -> EndpointDefinition[VehicleLocation]:
             cutoff=timedelta(days=config.cutoff_days),
         ),
         event_time_column='located_at',
+        fan_out=FanOutBinding(
+            roster=RosterKey(Provider.MOTIVE, 'vehicle_ids'),
+            path_placeholder='vehicle_id',
+        ),
     )
