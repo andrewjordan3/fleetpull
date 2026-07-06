@@ -16,17 +16,11 @@ from fleetpull.exceptions import ProviderResponseError
 from fleetpull.incremental import DateWindow
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import FetchedPage, TransportClient
-from fleetpull.network.contract import (
-    DecodedPage,
-    JsonObject,
-    JsonValue,
-    PageAdvance,
-    RequestSpec,
-)
+from fleetpull.network.contract import DecodedPage, PageAdvance, RequestSpec
 from fleetpull.orchestrator.batch import ProcessedBatch, WindowContext
 from fleetpull.orchestrator.drivers import RequestDriver
 from fleetpull.orchestrator.streaming import stream_processed_batches
-from fleetpull.vocabulary import Provider, QuotaScope
+from fleetpull.vocabulary import JsonObject, JsonValue, Provider, QuotaScope
 
 _WINDOW = DateWindow(
     start=datetime(2026, 6, 1, tzinfo=UTC),

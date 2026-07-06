@@ -8,8 +8,9 @@ import pytest
 
 from fleetpull.exceptions import ProviderResponseError
 from fleetpull.network.contract import PageDecoder
-from fleetpull.network.contract.request import HttpMethod, JsonValue, RequestSpec
+from fleetpull.network.contract.request import HttpMethod, RequestSpec
 from fleetpull.network.decoders import GeotabFeedPageDecoder
+from fleetpull.vocabulary import JsonValue
 
 BOOTSTRAP_SEARCH: dict[str, JsonValue] = {'fromDate': '2026-06-01T00:00:00Z'}
 

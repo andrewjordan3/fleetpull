@@ -30,17 +30,32 @@ from fleetpull.network.client.runtime import ClientRuntime
 from fleetpull.network.contract import (
     ClassifiedResponse,
     DecodedPage,
-    JsonValue,
     PageDecoder,
     RequestSpec,
 )
 from fleetpull.network.retry import RetryDecision, decide_retry
 from fleetpull.network.tls import build_truststore_ssl_context
-from fleetpull.vocabulary import ResponseCategory
+from fleetpull.vocabulary import JsonValue, ResponseCategory
 
 __all__: list[str] = ['TransportClient']
 
 logger = logging.getLogger(__name__)
+
+# The most of a non-JSON body a raised detail may carry: enough to identify
+# a proxy block page or an HTML landing page, never the whole document.
+_BODY_EXCERPT_LIMIT: int = 80
+
+
+def _safe_body_excerpt(body_text: str) -> str:
+    """Whitespace-collapsed head of a response body, safe for an error detail.
+
+    Args:
+        body_text: The raw response body.
+
+    Returns:
+        At most ``_BODY_EXCERPT_LIMIT`` characters, whitespace collapsed.
+    """
+    return ' '.join(body_text.split())[:_BODY_EXCERPT_LIMIT]
 
 
 class TransportClient:
@@ -137,8 +152,9 @@ class TransportClient:
                 on a single page.
             AuthenticationError: Credentials are unfixable, or a second
                 consecutive auth failure on one page.
-            ProviderResponseError: A FATAL response, or a structurally
-                violating envelope raised by the page decoder.
+            ProviderResponseError: A FATAL response, a structurally
+                violating envelope raised by the page decoder, or a
+                SUCCESS-classified response whose body is not JSON.
         """
         sent: RequestSpec | None = page_decoder.first_request(spec)
         while sent is not None:
@@ -284,7 +300,22 @@ class TransportClient:
             classified.category is ResponseCategory.SUCCESS
             and classified.parsed_body is None
         ):
-            parsed_envelope: JsonValue = json.loads(body_text)
+            try:
+                parsed_envelope: JsonValue = json.loads(body_text)
+            except json.JSONDecodeError:
+                # A 200 serving non-JSON (a TLS-intercepting proxy's block
+                # page, a base_url pointing at a web page) is sustained, not
+                # transient: name it rather than burn the retry budget. The
+                # detail carries a sanitized excerpt only -- a block page may
+                # contain environment details that must never reach logs.
+                raise ProviderResponseError(
+                    detail=(
+                        f'classifier reported SUCCESS but the body is not '
+                        f'JSON (content-type '
+                        f'{response.headers.get("content-type", "")!r}): '
+                        f'{_safe_body_excerpt(body_text)!r}'
+                    )
+                ) from None
             classified = replace(classified, parsed_body=parsed_envelope)
         return classified
 

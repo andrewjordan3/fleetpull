@@ -16,12 +16,7 @@ from fleetpull.endpoints.shared import (
 )
 from fleetpull.exceptions import ConfigurationError, ProviderResponseError
 from fleetpull.model_contract import ResponseModel
-from fleetpull.network.contract import (
-    DecodedPage,
-    JsonValue,
-    PageAdvance,
-    RequestSpec,
-)
+from fleetpull.network.contract import DecodedPage, PageAdvance, RequestSpec
 from fleetpull.orchestrator.drivers import (
     FanOutRequestDriver,
     RequestDriver,
@@ -32,7 +27,7 @@ from fleetpull.orchestrator.outcome import CaughtUp, Executed, RunOutcome
 from fleetpull.orchestrator.runner import BatchObserver
 from fleetpull.roster import RosterDefinition, RosterKey, RosterRegistry
 from fleetpull.storage import WriteResult
-from fleetpull.vocabulary import Provider, QuotaScope
+from fleetpull.vocabulary import JsonValue, Provider, QuotaScope
 
 VEHICLE_IDS_KEY = RosterKey(Provider.MOTIVE, 'vehicle_ids')
 
@@ -295,6 +290,30 @@ def test_caught_up_feeder_run_applies_nothing() -> None:
     run_endpoint(
         _snapshot_definition(), runner, registry, refresher, _CannedMembers([])
     )
+    assert refresher.applied == []
+
+
+def test_watermark_definition_sourcing_a_roster_raises_before_anything_runs() -> None:
+    # AUD-06's tap-route guard, kept as the permanent negative shape: a
+    # watermark-mode definition the catalog says sources a roster is a wiring
+    # bug -- reconcile is only correct over a complete listing -- rejected
+    # before the run, the refresh, or any observer is constructed.
+    runner = _RecordingRunner()
+    refresher = _RecordingRefresher()
+    watermark_sourced = RosterDefinition(
+        key=RosterKey(Provider.MOTIVE, 'from_watermark'),
+        source_endpoint='locations',
+        source_column='vehicle_id',
+        max_age=timedelta(days=1),
+        eviction_threshold=None,
+    )
+    registry = RosterRegistry([VEHICLE_IDS_DEFINITION, watermark_sourced])
+    with pytest.raises(ConfigurationError, match='snapshot'):
+        run_endpoint(
+            _fan_out_definition(), runner, registry, refresher, _CannedMembers(['1'])
+        )
+    assert runner.runs == []
+    assert refresher.refreshed == []
     assert refresher.applied == []
 
 

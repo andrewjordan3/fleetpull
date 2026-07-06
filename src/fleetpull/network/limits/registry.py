@@ -1,15 +1,36 @@
 # src/fleetpull/network/limits/registry.py
-"""Process-wide map from quota-scope strings to their limiters."""
+"""Process-wide map from quota-scope strings to their limiters, and the
+derivation of its per-scope values from provider configs."""
 
 import threading
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 
+from fleetpull.config import ProviderConfig, RateLimitConfig
 from fleetpull.exceptions import UnknownQuotaScopeError
-from fleetpull.network.limits.config import RateLimitConfig
 from fleetpull.network.limits.limiter import QuotaScopeLimiter
 from fleetpull.timing import Clock, SystemClock
 
-__all__: list[str] = ['RateLimiterRegistry']
+__all__: list[str] = ['RateLimiterRegistry', 'rate_limits_from_configs']
+
+
+def rate_limits_from_configs(
+    provider_configs: Iterable[ProviderConfig],
+) -> dict[str, RateLimitConfig]:
+    """Derive the registry's per-scope rate limits from provider configs.
+
+    Each provider config carries its scope's budget (``rate_limit``, with a
+    documented provider default) and binds the scope it governs
+    (``quota_scope``, a ``ClassVar``), so composition roots hand this their
+    resolved configs and never invent rate-limit numbers.
+
+    Args:
+        provider_configs: The resolved provider configs for this run -- the
+            same instances handed to ``build_endpoint_registry``.
+
+    Returns:
+        The quota-scope-keyed map ``RateLimiterRegistry`` is constructed on.
+    """
+    return {config.quota_scope.value: config.rate_limit for config in provider_configs}
 
 
 class RateLimiterRegistry:

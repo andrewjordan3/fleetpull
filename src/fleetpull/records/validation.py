@@ -10,22 +10,25 @@ loud on the first bad record, with safe-to-log context.
 
 from collections.abc import Sequence
 
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
 from fleetpull.exceptions import ProviderResponseError
-from fleetpull.network.contract import JsonObject
+from fleetpull.model_contract import ResponseModel
+from fleetpull.vocabulary import JsonObject
 
 __all__: list[str] = ['validate_records']
 
 
-def validate_records[ModelT: BaseModel](
+def validate_records[ModelT: ResponseModel](
     records: Sequence[JsonObject], model_class: type[ModelT]
 ) -> list[ModelT]:
     """Validate raw record dicts into typed model instances.
 
     Args:
         records: The raw record objects (a page's ``records``).
-        model_class: The response model to validate each record into.
+        model_class: The response model to validate each record into --
+            bound to ``ResponseModel`` so every validated record carries the
+            package's response-model config policy.
 
     Returns:
         The validated model instances, one per input record, in order.

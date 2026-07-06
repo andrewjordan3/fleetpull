@@ -7,10 +7,13 @@ surfaces are built. One module per config section (house rule).
 """
 
 import logging
+from typing import ClassVar
 
 from pydantic import Field, field_validator
 
 from fleetpull.config.provider import ProviderConfig
+from fleetpull.config.rate_limit import RateLimitConfig
+from fleetpull.vocabulary import QuotaScope
 
 __all__: list[str] = ['MotiveConfig']
 
@@ -20,6 +23,16 @@ _MOTIVE_DEFAULT_BASE_URL: str = 'https://api.gomotive.com'
 _MOTIVE_MAX_RECORDS_PER_PAGE: int = 100
 _MOTIVE_DEFAULT_LOOKBACK_DAYS: int = 7
 _MOTIVE_DEFAULT_CUTOFF_DAYS: int = 0
+
+# Conservative default budget for the Motive scope. Motive's real published
+# per-key limits remain unverified (DESIGN §13 open question; the documented
+# /vehicle_locations limit was not observed to enforce, §8), so this default
+# is the diagnostic's proven-safe posture: the live full-fleet fan-out ran
+# under these values without a single 429. Tighten or raise once the real
+# limits are pinned by probing.
+_MOTIVE_DEFAULT_RATE_LIMIT: RateLimitConfig = RateLimitConfig(
+    requests_per_period=60, period_seconds=60.0, burst=10, max_concurrency=2
+)
 
 
 class MotiveConfig(ProviderConfig):
@@ -48,9 +61,16 @@ class MotiveConfig(ProviderConfig):
             same provider data-latency concern from opposite ends. Optional;
             defaults to 0. Non-negative, where zero adds no holdback beyond
             the resolver's own date alignment.
+        rate_limit: The Motive scope's token-bucket budget. Optional;
+            defaults to the conservative values the live diagnostic proved
+            safe (Motive's real published limits are unverified -- DESIGN
+            §13); see ``_MOTIVE_DEFAULT_RATE_LIMIT`` for the rationale.
     """
 
+    quota_scope: ClassVar[QuotaScope] = QuotaScope.MOTIVE
+
     base_url: str = Field(default=_MOTIVE_DEFAULT_BASE_URL)
+    rate_limit: RateLimitConfig = Field(default=_MOTIVE_DEFAULT_RATE_LIMIT)
     records_per_page: int = Field(
         default=_MOTIVE_MAX_RECORDS_PER_PAGE, ge=1, le=_MOTIVE_MAX_RECORDS_PER_PAGE
     )

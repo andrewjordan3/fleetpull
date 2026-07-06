@@ -17,14 +17,12 @@ from fleetpull.network.client import FetchedPage, TransportClient
 from fleetpull.network.contract import (
     DecodedPage,
     HttpMethod,
-    JsonObject,
-    JsonValue,
     PageAdvance,
     PageDecoder,
     RequestSpec,
 )
 from fleetpull.orchestrator.drivers import FanOutRequestDriver, SingleRequestDriver
-from fleetpull.vocabulary import Provider, QuotaScope
+from fleetpull.vocabulary import JsonObject, JsonValue, Provider, QuotaScope
 
 _PLACEHOLDER = 'vehicle_id'
 

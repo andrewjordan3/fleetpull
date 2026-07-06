@@ -13,8 +13,8 @@ from collections.abc import Sequence
 from typing import Any
 
 import polars as pl
-from pydantic import BaseModel
 
+from fleetpull.model_contract import ResponseModel
 from fleetpull.records.dataframe import build_dataframe, normalize_empty_strings
 from fleetpull.records.fields import iter_flat_fields
 from fleetpull.records.flatten import flatten_record
@@ -24,7 +24,7 @@ __all__: list[str] = ['models_to_dataframe']
 
 
 def models_to_dataframe(
-    records: Sequence[BaseModel], model_class: type[BaseModel]
+    records: Sequence[ResponseModel], model_class: type[ResponseModel]
 ) -> pl.DataFrame:
     """Build a typed, flattened DataFrame from validated model instances.
 

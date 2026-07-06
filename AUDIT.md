@@ -123,6 +123,7 @@ composition list is the item-5 build map (closing section).
   beside the existing SUCCESS-with-no-body guard at `:186–189`.
 - **Owner:** the exception-contract slice of item 5 (or a small standalone
   fix prompt before it).
+- **Resolution (2026-07-06):** fixed in audit wave 1 — the SUCCESS-path parse is guarded beside the no-body guard, raising `ProviderResponseError` with a sanitized excerpt, one attempt, with the block-page-shaped test.
 
 ### AUD-02 — `JsonObject`'s home couples three packages to `network.contract`
 - **Location:** `src/fleetpull/records/validation.py:16` (the flagged edge);
@@ -143,6 +144,7 @@ composition list is the item-5 build map (closing section).
   (`vocabulary/` or a small `json` leaf) when convenient; no behavior
   change, moderate import churn (three importers plus tests).
 - **Owner:** item 5 wave (it touches the modules that wave already opens).
+- **Resolution (2026-07-06):** fixed in audit wave 1 — the three aliases moved to `vocabulary/json_types.py` (already the bottom tier, so no layers-contract change); the contract face no longer re-exports them and every importer routes through the vocabulary face.
 
 ### AUD-03 — records validation binds `BaseModel` where `ResponseModel` is the contract
 - **Location:** `src/fleetpull/records/validation.py:21`,
@@ -158,6 +160,7 @@ composition list is the item-5 build map (closing section).
 - **Verdict:** **cosmetic** (tighten the bound; `records` already sits above
   `model_contract` in the vertical, so the import is legal).
 - **Owner:** item 5 wave.
+- **Resolution (2026-07-06):** fixed in audit wave 1 — `validate_records` and `models_to_dataframe` now bind `ResponseModel`; every test fixture already conformed.
 
 ### AUD-04 — the retained import-linter contract's name no longer states its purpose
 - **Location:** `pyproject.toml:282` — `name = "Endpoints sit above the
@@ -174,6 +177,7 @@ composition list is the item-5 build map (closing section).
 - **Verdict:** **cosmetic** — rename to state the independence purpose.
 - **Owner:** any next `pyproject.toml`-touching prompt; item 5 wave at the
   latest.
+- **Resolution (2026-07-06):** fixed in audit wave 1 — renamed to "Models, the network contract, and incremental are independent same-tier carriers"; body unchanged.
 
 ### AUD-05 — roster registration is hand-listed while endpoints are discovered
 - **Location:** `scripts/run_vehicle_locations.py:307`
@@ -217,6 +221,7 @@ composition list is the item-5 build map (closing section).
   where a definition meets the endpoint catalog: the entry tap and/or the
   coordinator's registration seam).
 - **Owner:** its own small fix prompt, scheduled before item 6.
+- **Resolution (2026-07-06):** fixed in audit wave 1 — the entry tap rejects a non-snapshot sourced definition before anything runs (mirroring the coordinator's harvest guard), and `tests/endpoints/test_roster_discipline.py` enforces the rule at declaration level; both guards plant-and-fire proven with permanent negative-shape tests.
 
 ### AUD-07 — script comment drift: the `LOOKBACK_DAYS` "modest window" promise
 - **Location:** `scripts/run_vehicle_locations.py:93–96`.
@@ -228,6 +233,7 @@ composition list is the item-5 build map (closing section).
   `LOOKBACK_DAYS`.
 - **Verdict:** **cosmetic**.
 - **Owner:** the next script-touching prompt.
+- **Resolution (2026-07-06):** fixed in audit wave 1 — the comment now states the window is `[floor(watermark − lookback), trailing_edge)`, so lookback bounds the margin, not the window.
 
 ### AUD-08 — script comment drift: `DATASET_ROOT` still claims a cold-start-only proof
 - **Location:** `scripts/run_vehicle_locations.py:76–79`.
@@ -238,6 +244,7 @@ composition list is the item-5 build map (closing section).
   state. The fresh-directory requirement is now wrong as stated.
 - **Verdict:** **cosmetic**.
 - **Owner:** the next script-touching prompt.
+- **Resolution (2026-07-06):** fixed in audit wave 1 — the comment now records deliberate state retention (cold start on an empty directory, resume thereafter).
 
 ### AUD-09 — OneDrive/AV staging-clear robustness (note-only)
 - **Location:** `storage/staging.py:clear_partition_staging`
@@ -284,6 +291,7 @@ composition list is the item-5 build map (closing section).
   no later than item 6. This is the already-planned `RateLimitConfig`
   migration finally acquiring its deadline.
 - **Owner:** item 5 (internal defaults) + item 6 (the YAML key).
+- **Resolution (2026-07-06):** the item-5 half landed in audit wave 1 — `RateLimitConfig` migrated to `config/rate_limit.py` (the DESIGN §11 planned move, executed early), `MotiveConfig.rate_limit` carries the documented conservative default, and `rate_limits_from_configs` derives the registry map so no composition root invents numbers; the YAML key shape remains item 6's. Inventory row 22's remedy landed alongside: `ClientRuntime` defaults `random_source`/`sleeper` to the production implementations (both still injectable), and both scripts shed the obsolete wiring.
 
 ### AUD-13 — the state DB path convention exists only as a script expression
 - **Location:** `scripts/run_vehicle_locations.py:168`; DESIGN §5 promises
@@ -320,6 +328,7 @@ composition list is the item-5 build map (closing section).
   empty-member edge is flagged to the item-6/exception-contract owner as a
   boundary-validation candidate (reject or skip empty members at the roster
   ingress, where the coordinator already owns policy).
+- **Resolution (2026-07-06, the empty-member edge only):** `extract_roster_members` now filters null and empty-string values loudly (a warning with the column and counts) instead of raising on nulls or passing empties through to unbuildable URLs — the two garbage shapes reconciled deliberately to one filtering behavior. The tripwire class itself remains leave-alone by design.
 
 ### AUD-15 — protocol inventory: seventeen Protocols, all earning their keep
 - **Location (read):** 17 `Protocol` classes across `orchestrator` (9),

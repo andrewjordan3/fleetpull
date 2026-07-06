@@ -38,14 +38,12 @@ from fleetpull.network.contract import (
     ClassifiedResponse,
     DecodedPage,
     HttpMethod,
-    JsonObject,
-    JsonValue,
     PageAdvance,
     RequestSpec,
     ResponseClassifier,
 )
 from fleetpull.network.limits import QuotaScopeLimiter, RateLimiterRegistry
-from fleetpull.vocabulary import ResponseCategory
+from fleetpull.vocabulary import JsonObject, JsonValue, ResponseCategory
 
 SCOPE = 'data_scope'
 
@@ -553,6 +551,31 @@ class TestParsedBodyCompletion:
             pages = list(client.fetch_pages(make_spec(), StubOnePageDecoder(), SCOPE))
 
         assert pages[0].records == [{'id': 1}]
+
+    def test_success_with_non_json_body_raises_sanitized(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # AUD-01: a 200 serving non-JSON (a TLS-intercepting proxy's block
+        # page) raises a named ProviderResponseError -- never a raw
+        # JSONDecodeError escape -- and the detail carries at most a short
+        # sanitized excerpt, never the full body.
+        registry = RecordingRegistry()
+        profile = ProviderProfile(
+            auth=StubAuth(), classifier=StubClassifier([success()])
+        )
+        runtime = make_runtime(make_retry_config(), RecordingSleeper(), registry)
+        block_page = '<html><body>Blocked</body></html>' + 'PADDING' * 100
+        handler = StubHandler(body_text=block_page)
+        with (
+            make_client(monkeypatch, handler, profile, runtime) as client,
+            pytest.raises(ProviderResponseError, match='not JSON') as exc_info,
+        ):
+            list(client.fetch_pages(make_spec(), StubOnePageDecoder(), SCOPE))
+        message = str(exc_info.value)
+        assert '<html><body>Blocked' in message  # the excerpt identifies the page
+        assert 'PADDING' * 20 not in message  # the full body never surfaces
+        # One attempt only: a sustained condition is named, not retried.
+        assert handler.request_count == 1
 
     def test_success_with_no_envelope_raises(
         self, monkeypatch: pytest.MonkeyPatch

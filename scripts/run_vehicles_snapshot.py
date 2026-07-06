@@ -10,7 +10,6 @@ Errors propagate with a traceback by design -- this is a debugging driver.
 """
 
 import os
-import random
 
 from pydantic import SecretStr
 
@@ -20,10 +19,9 @@ from fleetpull.models.motive import Vehicle
 from fleetpull.network.auth import StaticHeaderAuth
 from fleetpull.network.classifiers import MotiveResponseClassifier
 from fleetpull.network.client import ClientRuntime, ProviderProfile, TransportClient
-from fleetpull.network.limits import RateLimitConfig, RateLimiterRegistry
+from fleetpull.network.limits import RateLimiterRegistry, rate_limits_from_configs
 from fleetpull.records import models_to_dataframe, validate_records
 from fleetpull.storage import select_writer
-from fleetpull.timing import SystemSleeper
 
 # --- hardcoded config (stands in for the YAML loader) -----------------------
 
@@ -40,12 +38,6 @@ DATASET_ROOT: str = ''
 
 MOTIVE_BASE_URL: str = 'https://api.gomotive.com'
 RECORDS_PER_PAGE: int = 100
-
-# Placeholder Motive rate limits (real values TBD per DESIGN). A vehicles
-# snapshot is a handful of requests, so these barely bind here.
-MOTIVE_RATE_LIMIT: RateLimitConfig = RateLimitConfig(
-    requests_per_period=60, period_seconds=60.0, burst=10, max_concurrency=2
-)
 
 
 def main() -> None:
@@ -70,9 +62,7 @@ def main() -> None:
     runtime: ClientRuntime = ClientRuntime(
         http_config=HttpConfig(use_truststore=USE_TRUSTSTORE),
         retry_config=RetryConfig(),
-        limiter_registry=RateLimiterRegistry({scope: MOTIVE_RATE_LIMIT}),
-        random_source=random.Random(),
-        sleeper=SystemSleeper(),
+        limiter_registry=RateLimiterRegistry(rate_limits_from_configs([motive_config])),
     )
 
     spec = definition.spec_builder.build_spec(resume=None, path_values={})

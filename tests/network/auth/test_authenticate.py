@@ -16,6 +16,7 @@ import httpx
 import pytest
 from pydantic import SecretStr
 
+from fleetpull.config import RateLimitConfig
 from fleetpull.config.geotab import GeotabAuthConfig
 from fleetpull.config.http import HttpConfig
 from fleetpull.exceptions import (
@@ -26,7 +27,6 @@ from fleetpull.exceptions import (
 from fleetpull.network.auth.authenticate import build_geotab_authenticator
 from fleetpull.network.auth.manager import GeotabSessionManager
 from fleetpull.network.auth.models import AuthenticationResult
-from fleetpull.network.limits.config import RateLimitConfig
 from fleetpull.network.limits.registry import RateLimiterRegistry
 from fleetpull.timing.clock import FrozenClock
 
