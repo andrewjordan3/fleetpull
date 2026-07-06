@@ -1003,18 +1003,121 @@ Schema pipeline (`records/`): Schema derivation and flattening share one field w
 
 ---
 
-## 10. Public API and CLI
+## 10. Public API
 
-**Programmatic:**
+Two verbs, deliberately not a family. `fetch` is the programmatic convenience
+verb for embedding fleetpull inside another program; `sync` is the
+config-driven verb for running it as a pipeline. The fluent / method-chaining
+surface previously penciled in for this section is **retired** — a decision
+from the roadmap item 3 design pass, not drift. Chaining earns its complexity
+when a call site composes many options; the settled design's whole point is
+that `fetch` has almost no options to compose and `sync`'s options live in a
+file, not in code, so the chain had nothing left to chain.
 
-- `iter_records(endpoint, **params)` — typed iterator of Pydantic models, pagination transparent. (Renamed from fleet-telemetry-hub's `fetch_all`, whose "all" misleadingly suggested all endpoints rather than all pages.) This is the escape hatch for consumers who don't want Polars; the dataframe path is built on top of it.
-- DataFrame retrieval per endpoint (built on `iter_records` + `records/`)
-- Read path over managed storage (single or partitioned) returning a dataframe
+**`fetch` — the programmatic convenience verb.** Minimal arguments: an
+endpoint identity from the public catalog, one `auth=` parameter, and little
+else. Returns an eager Polars DataFrame, end-to-end in memory — it touches no
+SQLite, no disk, no cursor, no run ledger, no roster. The governing principle
+is normative: **fetch is a convenience and deliberately limits options —
+anything beyond its minimal surface belongs to the config path.** A user who
+wants windows, incremental resume, partitioned storage, or fan-out is not a
+`fetch` user with missing parameters; they are a `sync` user.
 
-**CLI — two verbs, no more:**
+**Snapshot-only `fetch`, and why.** `fetch` exposes snapshot-mode endpoints
+only; windowed retrieval is config/sync territory. The in-memory contract is
+only honest for snapshots: a snapshot result is bounded by entity count, while
+a windowed result grows with window width and fleet activity — unbounded by
+anything the caller controls in memory. The exposed subset is a *type*, not a
+runtime allowlist: identity types encode sync mode, and `fetch`'s signature
+accepts only snapshot-typed identities, so handing it a windowed identity
+fails mypy rather than raising at runtime. Starting narrow is the reversible
+choice — adding windowed fetch later would be an additive extension, while
+shipping it now and retracting it would be a break.
 
-- `fetch` — one provider/endpoint/window → parquet or stdout dataframe
-- `sync` — config-driven, multi-endpoint, incremental (work units, executors, writers)
+**The `Endpoints` catalog.** Endpoint addressing is a public catalog of inert
+typed identities: `from fleetpull import Endpoints`, then
+`Endpoints.Motive.vehicles` or `Endpoints.Motive.vehicle_locations` (Samsara
+and GeoTab entries join as their endpoints port). Entries are small frozen
+public identities carrying the same `(provider, name)` pair the discovery
+registry keys on — never the `EndpointDefinition` itself, whose declaration
+schema stays private. This is distinct from the ruled-out
+provider-namespace-with-methods pattern: the namespaces hold inert data, and
+the verb stays flat and provider-agnostic, so the orchestrator-boundary
+agnosticism principle (§14) survives — the catalog is organized by provider,
+the behavior is not. The module is static and committed, not codegen; the
+drift protection is a two-way parity discipline test against the discovery
+registry (every exposed identity resolves; every intended-public endpoint
+appears), built with the catalog in roadmap item 5. An `available_endpoints`
+enumeration rides along as the catalog's manifest.
+
+**Casing.** Provider namespaces are CapWords (`Endpoints.Motive`): they are
+class-like public containers, the PEP 8 convention for which is CapWords, and
+the shape matches how users think of a provider brand. Endpoint names are
+lowercase data attributes. Three casings, one identity: `Provider.MOTIVE`
+(the enum member), `Endpoints.Motive` (the public namespace), `'motive'` (the
+value string) — and the load-bearing identity everywhere strings live (paths,
+wire, YAML keys) is the lowercase value, so the Python-surface casing
+introduces no string drift.
+
+**Auth.** One `auth=` parameter. A bare string for single-credential
+providers (Motive, Samsara). GeoTab requires named fields — a plain dict or
+the existing `GeotabAuthConfig`, the caller's choice — because its credential
+is four fields (`username`, `password`, `database`, `server`) and no
+positional convention exists past username/password. Tuples are rejected in
+both directions: the 1-tuple requires the trailing-comma trap (`('key',)`),
+and the 4-tuple invites transposed fields discovered only at auth-failure
+time. Ingress immediately coerces every accepted shape into the internal
+`SecretStr`-carrying auth, so nothing loggable survives past the boundary —
+the same lax-boundary-strict-interior posture `SyncConfig` already takes
+coercing string dates and paths. An `auth` whose provider mismatches the
+endpoint identity's provider is a `ConfigurationError`.
+
+**Return contract.** An eager `polars.DataFrame`, dtype-coerced per the
+endpoint's model. Column order is deliberately unspecified in the contract:
+it falls out of model declaration order deterministically in fact, but is not
+promised, so reordering model fields in a later release is not a break —
+ordering columns *for* the user would presume a use case, which the scope
+line below forbids. An empty result is a zero-row frame carrying the full
+typed schema — never `None`, never a schemaless frame — so downstream
+`filter`/`select` code behaves identically on empty and populated results.
+Polars is the only supported frame library for now; others are out of scope.
+
+**Public exceptions.** The documented `Raises` promise: consumers catch
+`FleetpullError` or its four public subclasses — `ConfigurationError`,
+`AuthenticationError`, `RetriesExhaustedError`, `ProviderResponseError` (§8).
+Every other exception type is internal and renameable. The aggregate
+multi-endpoint failure exception joins the public set when sync lands
+(item 6).
+
+**`sync` — the config-driven verb.** Constructed on a path to the YAML config
+(`Path` or `str`); a `run()` method returning `None`; failure signaled by
+raising. Endpoints inside one sync run and commit independently — a sibling's
+failure never halts the others. The YAML schema *is* sync's API: designing
+sync means designing the config schema, so sync's full vocabulary is
+deliberately deferred to roadmap item 6, where the schema and the programmatic
+shell (`Sync(path).run()`) are designed as one unit. `fetch` was separable and
+designed first because its vocabulary does not depend on the schema.
+
+**Vocabulary bound now for item 6.** The public names for windowed bounds are
+`start_date` / `end_date` — never bare `start`/`end` — matching the package's
+existing `_date` vocabulary (`default_start_date`, the
+`lookback_days`/`cutoff_days` day-suffix family, and the wire parameters
+themselves). Public bounds are inclusive dates, translated once at ingress
+into the internal half-open `[start, end)` UTC-midnight window — normalize at
+the boundary, strict inside, the established doctrine (§4, §12).
+
+**The scope refusal, explicit.** Retrieval, dtype coercion, and light
+structural normalization only: no cross-endpoint joins, no unified schema, no
+warehouse loading, no presumption of the user's use case. The column-order
+stance above is an instance of this refusal, not a separate policy.
+
+**What survives from the old section.** `iter_records(endpoint, **params)` —
+typed iterator of Pydantic models, pagination transparent. (Renamed from
+fleet-telemetry-hub's `fetch_all`, whose "all" misleadingly suggested all
+endpoints rather than all pages.) This is the escape hatch for consumers who
+don't want Polars; the dataframe path is built on top of it. The old CLI
+framing is superseded: fleetpull makes no fetch-CLI commitment; the CLI story
+is the yaml-run tool over `sync` (item 6).
 
 ---
 
@@ -1662,7 +1765,7 @@ the coordinator follow, wiring `vehicle_locations.fan_out`.
 ## 15. Next Steps
 
 1. Review/amend this document
-2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → retry policy (done, `config/retry.py` + `network/retry/`) → page-decoder abstraction (done, `network/contract/page_decoder.py` + `decoders/`) → HTTP config + the real GeoTab authenticator (done, `config/http.py` + `network/auth/authenticate.py`) → `network/client/` (done) → `endpoints/shared/base.py` (done) → `records` (done) → `storage` (done: `snapshot`+`single` plus the date-partitioned/watermark writer, §3) → `state` (done in full — §5) → `orchestrator` (built: the run executor's snapshot and watermark arms, the request drivers, and the roster refresh — §14; the fan-out composition root and the backfill loop remain). The chain's original endpoint, `cli.py`, is superseded by the build roadmap below — the public fluent API precedes any YAML/CLI surface.
+2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → retry policy (done, `config/retry.py` + `network/retry/`) → page-decoder abstraction (done, `network/contract/page_decoder.py` + `decoders/`) → HTTP config + the real GeoTab authenticator (done, `config/http.py` + `network/auth/authenticate.py`) → `network/client/` (done) → `endpoints/shared/base.py` (done) → `records` (done) → `storage` (done: `snapshot`+`single` plus the date-partitioned/watermark writer, §3) → `state` (done in full — §5) → `orchestrator` (built: the run executor's snapshot and watermark arms, the request drivers, and the roster refresh — §14; the fan-out composition root and the backfill loop remain). The chain's original endpoint, `cli.py`, is superseded by the build roadmap below — the public API (§10) precedes any YAML/CLI surface.
 
 The `network/client/` step inherits a recorded agenda: classify
 prepare-time transport exceptions (the authenticator propagates
@@ -1732,10 +1835,11 @@ resolution (item 1, done).
    reconciles its rosters (§3's Rules 1 and 2: the harvest records a run
    directly, and the entry's feeder tap reconciles from the run's own
    batches).
-3. **Public API design** (conversational; precedes any audit or build): the
-   fluent method-chaining `fetch`/`sync` surface (§10). The pattern is
-   decided; the design pass settles what the chains look like and what each
-   call composes underneath.
+3. **Public API design (done — settled per §10).** The design conversation
+   concluded: `fetch` as the snapshot-only in-memory convenience verb over a
+   typed `Endpoints` catalog, `sync` as the config-driven verb whose full
+   vocabulary is item 6's schema work, and the fluent/method-chaining
+   pattern retired.
 4. **Pre-API audit, anchored to that design.** Scope: the composition path
    the API will sit on — not a full-tree ceremony sweep. Primary evidence:
    `scripts/run_vehicle_locations.py` (~370 lines of hand-written consumer
@@ -1749,10 +1853,16 @@ resolution (item 1, done).
    contract whose name ("Endpoints sit above…") no longer matches its
    load-bearing purpose (the `models` / `incremental` same-tier
    independence) — a rename/legibility fix, not a semantic change.
-5. **Build the public fluent API.**
+5. **Build the fetch side of the public API (§10), after the audit:** the
+   `Endpoints` catalog (a static committed module plus the two-way parity
+   discipline test against the discovery registry), the typed endpoint
+   identities, `fetch` itself, and the auth ingress coercion.
 6. **Config-YAML framework, then the YAML-run tool** — in that order, and
    after the API: the YAML is a serialization of the API surface, and built
-   earlier it would serialize a guess.
+   earlier it would serialize a guess. This item absorbs sync's programmatic
+   surface: the YAML schema *is* sync's API, so designing the config schema
+   and designing `Sync(path).run()` are one unit (§10). `fetch` was separable
+   and designed first because its vocabulary does not depend on the schema.
 7. **One GeoTab endpoint end-to-end before bulk porting.** GeoTab is the
    architectural stress test (different auth, pagination, decode); if it
    bends the abstractions, that must surface before more Motive endpoints are
