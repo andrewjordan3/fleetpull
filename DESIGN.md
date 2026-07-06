@@ -227,9 +227,26 @@ consumer carries only the key, never the feeder. Keys are listed from the
 feeder, persisted to a `rosters` table keyed by `RosterKey` `(provider, name)` plus
 `member`, and the fan-out reads the roster — never the feeder's
 output parquet, which is the user's product and not fleetpull's to depend on.
-Refresh is best-effort: a roster is re-listed when stale (the feeder's last success
-in `runs` older than a bound, `RunLedger.last_success_at`), and a failed re-list
-falls back to the existing roster rather than blocking the fan-out; an empty roster
+Roster freshness follows two rules. **Rule 1: every execution of a feeder
+endpoint updates its rosters and records a run in the ledger.** **Rule 2: the
+endpoint's parquet is written only when the user asked for that endpoint.**
+Fetch, roster reconcile, and ledger row always travel together; parquet is the
+one output gated on request, and a `runs` row certifies *execution of the
+endpoint*, never parquet freshness. Three cases fall out: (1) a fan-out
+consumer runs with a stale roster — the coordinator harvests the feeder
+(fetch, reconcile, run row; no parquet); (2) the user runs the feeder itself —
+one execution through the runner writes parquet, reconciles the roster (the
+entry's feeder tap, §14), and records one run row, and a failed run touches
+neither parquet nor roster; (3) the feeder runs while the roster is fresh —
+the roster is reconciled anyway: feeder runs reconcile unconditionally, and
+staleness gates only whether the *coordinator initiates* a harvest. Because
+the harvest records its run, `RunLedger.last_success_at` is a sound staleness
+key in both directions — a harvest is visible to the next staleness check, and
+a user-initiated feeder run can never advance the ledger without reconciling
+the roster. One refinement: an empty stored roster is stale regardless of the
+ledger verdict (ledger history may predate this coupling). Refresh is
+best-effort: a failed harvest marks its run failed and falls back to the
+existing roster rather than blocking the fan-out; an empty roster
 with no prior listing is a loud cold-start failure. A per-key absence counter gives
 eviction hysteresis — append-only is the degenerate (never-evict) case, and for
 permanent, absent-means-empty keys like vehicle ids the counter is an efficiency
@@ -1462,7 +1479,16 @@ declarations hide. The entry never reasons about roster freshness (the refresh
 coordinator owns that policy whole), and an empty roster after refresh raises
 `ConfigurationError` — error-by-default (§13): a feeder that listed nothing is
 a failure to surface, and the short-circuit keeps the writer's
-write-called-at-least-once precondition intact.
+write-called-at-least-once precondition intact. The entry also owns the feeder
+tap (§3's Rule 1): it reverse-looks-up the rosters the definition sources
+(`RosterRegistry.sourced_by`); when any exist it installs a generic batch
+observer on the run — the runner hands each post-validation frame to an
+opaque `BatchObserver` hook and stays roster-blind — collecting each sourced
+roster's distinct `source_column` values (values only, never frames), and
+after the run returns `Executed` it hands each collected listing to the
+coordinator's `apply_listing` to reconcile unconditionally. A failed run
+applies nothing; a `CaughtUp` run executed nothing, so there is no listing to
+apply.
 
 **The carve: a run executor under which a request driver owns cardinality.** The
 orchestration splits into three nested layers, by concern:
@@ -1698,7 +1724,14 @@ resolution (item 1, done).
    settled constraint holds at the feeder population: `/v1/vehicles` lists
    inactive and retired vehicles, so the roster covers vehicles active during
    historical windows even if inactive today. The vehicle_locations module
-   docstring now describes the real wiring.
+   docstring now describes the real wiring. A live-run follow-up closed the
+   roster-freshness defect this composition surfaced: the staleness signal
+   (`last_success_at`) and the refresh events were decoupled — a coordinator
+   harvest was invisible to the ledger, and a runner-driven feeder run never
+   touched the roster — so now every feeder execution records a run and
+   reconciles its rosters (§3's Rules 1 and 2: the harvest records a run
+   directly, and the entry's feeder tap reconciles from the run's own
+   batches).
 3. **Public API design** (conversational; precedes any audit or build): the
    fluent method-chaining `fetch`/`sync` surface (§10). The pattern is
    decided; the design pass settles what the chains look like and what each

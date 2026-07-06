@@ -91,13 +91,32 @@ class _FakeClientSource:
 
 
 class _FakeLedger:
-    """Returns one fixed last-success time for any feeder."""
+    """A FeederRunLedger double recording the harvest run lifecycle.
+
+    Completing a run advances ``last_success_at`` to the test clock instant,
+    mirroring the real ledger's max(ended_at)-over-succeeded-runs read -- the
+    property the consecutive-refresh regression rests on.
+    """
 
     def __init__(self, last_success: datetime | None) -> None:
         self._last_success = last_success
+        self.started: list[tuple[Provider, str]] = []
+        self.completed: list[tuple[int, int]] = []
+        self.failed: list[tuple[int, str]] = []
 
     def last_success_at(self, provider: Provider, endpoint: str) -> datetime | None:
         return self._last_success
+
+    def start_snapshot_run(self, provider: Provider, endpoint: str) -> int:
+        self.started.append((provider, endpoint))
+        return len(self.started)
+
+    def complete_run(self, run_id: int, *, row_count: int) -> None:
+        self.completed.append((run_id, row_count))
+        self._last_success = _NOW
+
+    def fail_run(self, run_id: int, *, error_detail: str) -> None:
+        self.failed.append((run_id, error_detail))
 
 
 class _FakeStore:
@@ -163,21 +182,22 @@ def _coordinator(
     last_success: datetime | None,
     current: dict[str, int],
     client: TransportClient,
-) -> tuple[RosterRefreshCoordinator, _FakeStore]:
+) -> tuple[RosterRefreshCoordinator, _FakeStore, _FakeLedger]:
     store = _FakeStore(current)
+    ledger = _FakeLedger(last_success)
     coordinator = RosterRefreshCoordinator(
         endpoint_registry=EndpointRegistry([feeder]),
         store=store,
-        ledger=_FakeLedger(last_success),
+        ledger=ledger,
         client_source=_FakeClientSource(client),
         clock=FrozenClock(start_time_utc=_NOW),
     )
-    return coordinator, store
+    return coordinator, store, ledger
 
 
 class TestRefreshIfStale:
     def test_fresh_roster_is_not_refreshed(self) -> None:
-        coordinator, store = _coordinator(
+        coordinator, store, ledger = _coordinator(
             feeder=_snapshot_feeder(),
             last_success=_NOW - timedelta(hours=1),
             current={'1': 0},
@@ -185,9 +205,10 @@ class TestRefreshIfStale:
         )
         coordinator.refresh_if_stale(_roster_definition())
         assert store.applied == []
+        assert ledger.started == []
 
     def test_stale_roster_refreshes_and_applies_the_reconciled_delta(self) -> None:
-        coordinator, store = _coordinator(
+        coordinator, store, _ = _coordinator(
             feeder=_snapshot_feeder(),
             last_success=_NOW - timedelta(days=2),
             current={'1': 0, '3': 2},
@@ -205,8 +226,52 @@ class TestRefreshIfStale:
             )
         ]
 
-    def test_cold_start_failure_reraises(self) -> None:
-        coordinator, store = _coordinator(
+    def test_successful_harvest_records_a_completed_run(self) -> None:
+        coordinator, _, ledger = _coordinator(
+            feeder=_snapshot_feeder(),
+            last_success=_NOW - timedelta(days=2),
+            current={'1': 0},
+            client=_CannedClient([_page([{'vehicle_id': '1'}, {'vehicle_id': '2'}])]),
+        )
+        coordinator.refresh_if_stale(_roster_definition())
+        assert ledger.started == [(Provider.MOTIVE, 'vehicles')]
+        # A harvest run's row_count is the distinct-member count of the listing.
+        assert ledger.completed == [(1, 2)]
+        assert ledger.failed == []
+
+    def test_consecutive_refreshes_harvest_once(self) -> None:
+        # The regression that would have caught the freshness defect: the
+        # first refresh_if_stale harvests AND records a run the staleness key
+        # can see, so the second call is a no-op -- before the coupling, the
+        # harvest was invisible to the ledger and every call re-listed.
+        coordinator, store, ledger = _coordinator(
+            feeder=_snapshot_feeder(),
+            last_success=_NOW - timedelta(days=2),
+            current={'1': 0},
+            client=_CannedClient([_page([{'vehicle_id': '1'}])]),
+        )
+        coordinator.refresh_if_stale(_roster_definition())
+        coordinator.refresh_if_stale(_roster_definition())
+        assert ledger.started == [(Provider.MOTIVE, 'vehicles')]
+        assert len(store.applied) == 1
+
+    def test_empty_roster_with_fresh_ledger_refreshes(self) -> None:
+        # An empty stored roster is stale regardless of the ledger verdict:
+        # ledger history predating the harvest/ledger coupling (or a feeder
+        # run from before the roster existed) must not mask a roster with
+        # nothing to fan out over.
+        coordinator, store, ledger = _coordinator(
+            feeder=_snapshot_feeder(),
+            last_success=_NOW - timedelta(hours=1),
+            current={},
+            client=_CannedClient([_page([{'vehicle_id': '1'}])]),
+        )
+        coordinator.refresh_if_stale(_roster_definition())
+        assert len(store.applied) == 1
+        assert ledger.completed == [(1, 1)]
+
+    def test_cold_start_failure_records_failed_and_reraises(self) -> None:
+        coordinator, store, ledger = _coordinator(
             feeder=_snapshot_feeder(),
             last_success=None,
             current={},
@@ -215,9 +280,11 @@ class TestRefreshIfStale:
         with pytest.raises(AuthenticationError):
             coordinator.refresh_if_stale(_roster_definition())
         assert store.applied == []
+        assert ledger.completed == []
+        assert len(ledger.failed) == 1
 
     def test_existing_roster_degrades_when_harvest_fails(self) -> None:
-        coordinator, store = _coordinator(
+        coordinator, store, ledger = _coordinator(
             feeder=_snapshot_feeder(),
             last_success=_NOW - timedelta(days=2),
             current={'1': 0},
@@ -225,9 +292,11 @@ class TestRefreshIfStale:
         )
         coordinator.refresh_if_stale(_roster_definition())
         assert store.applied == []
+        assert ledger.completed == []
+        assert len(ledger.failed) == 1
 
-    def test_non_snapshot_feeder_raises_configuration_error(self) -> None:
-        coordinator, store = _coordinator(
+    def test_non_snapshot_feeder_raises_before_any_run_row(self) -> None:
+        coordinator, store, ledger = _coordinator(
             feeder=_watermark_feeder(),
             last_success=None,
             current={},
@@ -238,3 +307,41 @@ class TestRefreshIfStale:
                 _roster_definition(source_endpoint='vehicle_locations')
             )
         assert store.applied == []
+        assert ledger.started == []
+
+
+class TestApplyListing:
+    def test_reconciles_unconditionally_with_no_staleness_consult(self) -> None:
+        # A fresh ledger does not gate the feeder tap: an executed feeder
+        # run's listing is always reconciled (rule: staleness gates only
+        # whether the coordinator initiates a harvest).
+        coordinator, store, _ = _coordinator(
+            feeder=_snapshot_feeder(),
+            last_success=_NOW - timedelta(hours=1),
+            current={'1': 0, '3': 2},
+            client=_CannedClient([]),
+        )
+        coordinator.apply_listing(_roster_definition(), {'1', '2'})
+        assert store.applied == [
+            (
+                _KEY,
+                RosterDelta(
+                    to_zero=frozenset({'2'}),
+                    to_increment=frozenset({'3'}),
+                    to_evict=frozenset(),
+                ),
+            )
+        ]
+
+    def test_records_no_ledger_row(self) -> None:
+        # The run that produced the listing was already recorded by the run
+        # executor; the tap handoff must not double-record it.
+        coordinator, _, ledger = _coordinator(
+            feeder=_snapshot_feeder(),
+            last_success=None,
+            current={},
+            client=_CannedClient([]),
+        )
+        coordinator.apply_listing(_roster_definition(), {'1'})
+        assert ledger.started == []
+        assert ledger.completed == []
