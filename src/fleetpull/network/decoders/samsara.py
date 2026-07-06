@@ -17,12 +17,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from fleetpull.exceptions import ProviderResponseError
 from fleetpull.network.contract import (
     DecodedPage,
-    JsonValue,
     PageAdvance,
     RequestSpec,
     require_record_list,
     validated_envelope_slice,
 )
+from fleetpull.vocabulary import JsonValue
 
 __all__: list[str] = ['SamsaraCursorPageDecoder']
 

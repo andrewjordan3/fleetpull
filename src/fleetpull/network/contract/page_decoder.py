@@ -14,7 +14,8 @@ behavior (blast-radius over DRY).
 from dataclasses import dataclass
 from typing import Protocol
 
-from fleetpull.network.contract.request import JsonObject, JsonValue, RequestSpec
+from fleetpull.network.contract.request import RequestSpec
+from fleetpull.vocabulary import JsonObject, JsonValue
 
 __all__: list[str] = ['DecodedPage', 'PageAdvance', 'PageDecoder']
 

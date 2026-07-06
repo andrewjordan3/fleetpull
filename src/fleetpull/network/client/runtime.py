@@ -1,12 +1,13 @@
 # src/fleetpull/network/client/runtime.py
 """Process-global transport infrastructure, shared by every provider's client."""
 
-from dataclasses import dataclass
+import random
+from dataclasses import dataclass, field
 
 from fleetpull.config import HttpConfig, RetryConfig
 from fleetpull.network.limits import RateLimiterRegistry
 from fleetpull.network.retry import RandomFractionGenerator
-from fleetpull.timing import Sleeper
+from fleetpull.timing import Sleeper, SystemSleeper
 
 __all__: list[str] = ['ClientRuntime']
 
@@ -27,12 +28,17 @@ class ClientRuntime:
         retry_config: Per-category failure budgets, backoff shape, fallback
             penalty.
         limiter_registry: Shared rate limiters, keyed by quota scope.
-        random_source: Injected jitter seam for retry backoff.
-        sleeper: Injected sleep seam for TRANSIENT backoff.
+        random_source: Jitter seam for retry backoff. Defaults to the
+            production ``random.Random``; injectable so tests make every
+            jittered delay exact arithmetic. No composition root needs to
+            know the seam exists.
+        sleeper: Sleep seam for TRANSIENT backoff. Defaults to the
+            production ``SystemSleeper``; injectable so tests record delays
+            instead of waiting. Same stance as ``random_source``.
     """
 
     http_config: HttpConfig
     retry_config: RetryConfig
     limiter_registry: RateLimiterRegistry
-    random_source: RandomFractionGenerator
-    sleeper: Sleeper
+    random_source: RandomFractionGenerator = field(default_factory=random.Random)
+    sleeper: Sleeper = field(default_factory=SystemSleeper)

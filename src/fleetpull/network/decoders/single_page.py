@@ -10,11 +10,11 @@ from dataclasses import dataclass
 
 from fleetpull.network.contract import (
     DecodedPage,
-    JsonValue,
     PageAdvance,
     RequestSpec,
     require_record_list,
 )
+from fleetpull.vocabulary import JsonValue
 
 __all__: list[str] = ['SinglePageDecoder']
 

@@ -18,8 +18,6 @@ from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import FetchedPage, TransportClient
 from fleetpull.network.contract import (
     DecodedPage,
-    JsonObject,
-    JsonValue,
     PageAdvance,
     PageDecoder,
     RequestSpec,
@@ -28,7 +26,7 @@ from fleetpull.orchestrator.roster_refresh import RosterRefreshCoordinator
 from fleetpull.roster import RosterDefinition, RosterKey
 from fleetpull.state import RosterDelta
 from fleetpull.timing import FrozenClock
-from fleetpull.vocabulary import Provider, QuotaScope
+from fleetpull.vocabulary import JsonObject, JsonValue, Provider, QuotaScope
 
 _NOW = datetime(2026, 6, 16, 12, 0, tzinfo=UTC)
 _MAX_AGE = timedelta(days=1)

@@ -19,9 +19,9 @@ from fleetpull.endpoints.shared import EndpointDefinition
 from fleetpull.exceptions import ProviderResponseError
 from fleetpull.incremental import DateWindow
 from fleetpull.model_contract import ResponseModel
-from fleetpull.network.contract import JsonObject
 from fleetpull.records import latest_event_time, models_to_dataframe, validate_records
 from fleetpull.storage import in_window
+from fleetpull.vocabulary import JsonObject
 
 __all__: list[str] = [
     'ProcessedBatch',

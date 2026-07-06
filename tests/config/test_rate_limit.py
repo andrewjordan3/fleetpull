@@ -1,9 +1,9 @@
-"""Tests for fleetpull.network.limits.config."""
+"""Tests for fleetpull.config.rate_limit."""
 
 import pytest
 from pydantic import ValidationError
 
-from fleetpull.network.limits.config import RateLimitConfig
+from fleetpull.config import RateLimitConfig
 
 
 @pytest.fixture

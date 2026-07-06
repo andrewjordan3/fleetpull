@@ -34,7 +34,7 @@ harvester itself stays ``sync_mode``-blind.
 
 Failure is best-effort with one loud exception. A harvest ``FleetpullError`` (the
 feeder is unreachable, or a page fails to validate) or ``ValueError`` (a missing
-source column or a null member) marks the run failed and degrades to the existing
+source column) marks the run failed and degrades to the existing
 roster -- a stale verdict is a refresh *attempt*, not a barrier to the fan-out. The
 exception is cold start: when the store holds no members for the key, there is
 nothing to fall back to and a silent empty roster would fan out over nothing, so the
@@ -184,7 +184,7 @@ class RosterRefreshCoordinator:
             FleetpullError: The harvest failed on a cold start (no existing roster to
                 fall back to); the underlying failure propagates.
             ValueError: The harvest failed on a cold start with a missing source
-                column or a null member; the underlying failure propagates.
+                column; the underlying failure propagates.
 
         Side Effects:
             On a due refresh: issues the feeder's request chain and records a

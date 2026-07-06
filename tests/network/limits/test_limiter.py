@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from fleetpull.network.limits.config import RateLimitConfig
+from fleetpull.config import RateLimitConfig
 from fleetpull.network.limits.limiter import QuotaScopeLimiter
 from fleetpull.timing.clock import FrozenClock
 

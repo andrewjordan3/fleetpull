@@ -279,7 +279,7 @@ source_modules = ["fleetpull.vocabulary", "fleetpull.exceptions"]
 forbidden_modules = ["fleetpull.network"]
 
 [[tool.importlinter.contracts]]
-name = "Endpoints sit above the contracts and carriers they compose"
+name = "Models, the network contract, and incremental are independent same-tier carriers"
 type = "layers"
 layers = [
     "fleetpull.endpoints",
