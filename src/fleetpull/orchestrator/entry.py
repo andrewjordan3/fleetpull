@@ -36,7 +36,11 @@ frames, so memory stays bounded by the distinct-key count -- and, after the
 run returns ``Executed``, hands each collected listing to the coordinator's
 ``apply_listing`` to reconcile unconditionally. On a failed run nothing is
 applied; on ``CaughtUp`` nothing executed, so there is no listing to apply.
-The runner stays roster-blind: it sees only the generic observer.
+A sourced definition that is not snapshot-mode is rejected before anything
+runs -- ``reconcile`` is only correct over a complete listing, which only a
+snapshot-mode feeder produces, so a watermark-mode source is a wiring bug
+(the same guard the refresh coordinator applies on its harvest route). The
+runner stays roster-blind: it sees only the generic observer.
 
 Stateful collaborators are narrow Protocols (``EndpointExecutor``,
 ``RosterRefresher``, ``RosterMembersReader``) the composition root satisfies
@@ -51,7 +55,7 @@ from typing import Protocol
 
 import polars as pl
 
-from fleetpull.endpoints.shared import EndpointDefinition
+from fleetpull.endpoints.shared import EndpointDefinition, SnapshotMode
 from fleetpull.exceptions import ConfigurationError
 from fleetpull.model_contract import ResponseModel
 from fleetpull.orchestrator.drivers import (
@@ -130,9 +134,10 @@ class _RosterMemberCollector:
             frame: A validated, flattened batch frame from the run.
 
         Raises:
-            ValueError: A sourced ``source_column`` is absent from the frame or
-                holds a null (from ``extract_roster_members``) -- a wiring bug
-                that fails the run loudly.
+            ValueError: A sourced ``source_column`` is absent from the frame
+                (from ``extract_roster_members``) -- a wiring bug that fails
+                the run loudly. Null and empty-string values do not raise; the
+                extractor filters them loudly.
         """
         for definition in self._sourced:
             self._members[definition.key] |= extract_roster_members(
@@ -179,9 +184,12 @@ def run_endpoint(
         runner.
 
     Raises:
-        ConfigurationError: The binding names an unregistered roster, or the
+        ConfigurationError: The binding names an unregistered roster; the
             roster is empty after the refresh (error-by-default -- a feeder
-            that listed nothing is a failure to surface).
+            that listed nothing is a failure to surface); or the definition
+            sources a roster but is not snapshot-mode (the feeder-mode guard:
+            reconcile is only correct over a complete listing, which only a
+            snapshot feeder produces).
         FleetpullError: A cold-start roster refresh failed (propagated from
             the coordinator), or the run itself failed (propagated from the
             runner; a failed run applies nothing to any roster).
@@ -191,10 +199,24 @@ def run_endpoint(
         writes, and state-store commits by the injected collaborators; on a
         successful feeder run, the sourced rosters' reconciled deltas.
     """
+    sourced = roster_registry.sourced_by(definition.provider, definition.name)
+    if sourced and not isinstance(definition.sync_mode, SnapshotMode):
+        # The refresh coordinator guards its own harvest route with the same
+        # vocabulary; this guards the tap route, where a windowed run's
+        # partial listing would mass-count absences against every member
+        # outside the window. A wiring bug, not a degradable condition.
+        raise ConfigurationError(
+            'roster feeder is not a snapshot endpoint',
+            provider=definition.provider.value,
+            endpoint=definition.name,
+            detail=(
+                'a roster source must be a full-listing (snapshot) endpoint: '
+                'reconcile is only correct over a complete listing'
+            ),
+        )
     driver = _resolve_driver(
         definition, roster_registry, roster_refresher, roster_members
     )
-    sourced = roster_registry.sourced_by(definition.provider, definition.name)
     if not sourced:
         return runner.run(definition, driver)
     collector = _RosterMemberCollector(sourced)

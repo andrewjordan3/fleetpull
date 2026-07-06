@@ -25,7 +25,6 @@ Errors propagate with a traceback by design -- this is a debugging driver.
 """
 
 import logging
-import random
 from collections.abc import Callable
 from datetime import date, timedelta
 from pathlib import Path
@@ -46,7 +45,7 @@ from fleetpull.network.client import (
     ProviderClientRegistry,
     ProviderProfile,
 )
-from fleetpull.network.limits import RateLimitConfig, RateLimiterRegistry
+from fleetpull.network.limits import RateLimiterRegistry, rate_limits_from_configs
 from fleetpull.orchestrator import (
     CaughtUp,
     EndpointRunner,
@@ -64,8 +63,8 @@ from fleetpull.state import (
     StateDatabase,
     migrate_to_head,
 )
-from fleetpull.timing import SystemClock, SystemSleeper
-from fleetpull.vocabulary import Provider, QuotaScope
+from fleetpull.timing import SystemClock
+from fleetpull.vocabulary import Provider
 
 # --- hardcoded config (stands in for the YAML loader) -----------------------
 
@@ -75,8 +74,9 @@ MOTIVE_API_KEY: str = ''
 
 # Where the parquet and the SQLite operational-state DB land. Set this for
 # your environment before running (e.g. a OneDrive-synced path on the
-# laptop). Must be a fresh/empty directory -- this script proves the *cold*
-# backfill arm, which assumes no prior state.
+# laptop). State is deliberately retained across invocations: an empty
+# directory exercises the cold-start arm, and every later run resumes from
+# the persisted watermark -- the resume path is part of what this proves.
 DATASET_ROOT: str = ''
 
 # True behind the Zscaler-intercepting laptop; False on Colab / a GCP VM.
@@ -91,18 +91,13 @@ MOTIVE_BASE_URL: str = 'https://api.gomotive.com'
 BACKFILL_LOOKBACK_DAYS: int = 1
 
 # The watermark endpoint's late-arrival re-fetch margin and trailing-edge
-# holdback (MotiveConfig.lookback_days / cutoff_days). A small lookback keeps
-# Run 2's resume window similarly modest -- MotiveConfig's production default
-# (7 days) would silently widen the second pull well past "a day."
+# holdback (MotiveConfig.lookback_days / cutoff_days). The resume window is
+# [floor(watermark - lookback), trailing_edge), so its width is the
+# watermark's age plus the lookback: a small lookback keeps the re-fetch
+# *margin* small, not the window -- a run days after the last watermark
+# still re-pulls every day since it, regardless of this value.
 LOOKBACK_DAYS: int = 1
 CUTOFF_DAYS: int = 0
-
-# Placeholder Motive rate limits (real values TBD per DESIGN). Unlike the
-# snapshot script, vehicle_locations fans out one request per vehicle, so
-# this genuinely binds -- part of what the run exercises.
-MOTIVE_RATE_LIMIT: RateLimitConfig = RateLimitConfig(
-    requests_per_period=60, period_seconds=60.0, burst=10, max_concurrency=2
-)
 
 # The identity a breadcrumb is unique on: Motive's own per-record UUID
 # (VehicleLocation.location_id, wire key `id`) -- a stronger natural key than
@@ -149,15 +144,12 @@ def _build_motive_config() -> MotiveConfig:
     )
 
 
-def _build_client_runtime() -> ClientRuntime:
-    """The shared transport runtime, rate-limited on the one Motive quota scope."""
-    limits = {QuotaScope.MOTIVE.value: MOTIVE_RATE_LIMIT}
+def _build_client_runtime(motive_config: MotiveConfig) -> ClientRuntime:
+    """The shared transport runtime; rate limits derive from the provider config."""
     return ClientRuntime(
         http_config=HttpConfig(use_truststore=USE_TRUSTSTORE),
         retry_config=RetryConfig(),
-        limiter_registry=RateLimiterRegistry(limits),
-        random_source=random.Random(),
-        sleeper=SystemSleeper(),
+        limiter_registry=RateLimiterRegistry(rate_limits_from_configs([motive_config])),
     )
 
 
@@ -316,7 +308,7 @@ def main() -> None:
         auth=StaticHeaderAuth('X-API-Key', SecretStr(MOTIVE_API_KEY)),
         classifier=MotiveResponseClassifier(),
     )
-    runtime = _build_client_runtime()
+    runtime = _build_client_runtime(motive_config)
     clock = SystemClock()
     default_start_date = (
         clock.now_utc() - timedelta(days=BACKFILL_LOOKBACK_DAYS)

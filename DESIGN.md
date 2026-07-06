@@ -1128,6 +1128,8 @@ fleetpull/
   exceptions.py    # package exception hierarchy (§8) — user-facing: consumers catch these
   vocabulary/      # shared, dependency-free package vocabulary (imports nothing internal)
     response_category.py  # ResponseCategory (§8) — spoken by exceptions, retry, classification
+    json_types.py  # JsonScalar/JsonValue/JsonObject — generic JSON aliases spoken by
+                   #   the network contract, records, and the orchestrator
     provider.py    # Provider (§8) — the second vocabulary enum; provider identity, homed in the
                    #   leaf for the same cycle-free reason as ResponseCategory
   config/          # Pydantic models for user-provided YAML, one module per section; the YAML loader joins in a later prompt
@@ -1137,6 +1139,8 @@ fleetpull/
     http.py        # HttpConfig — connect/read timeouts, truststore opt-in
     motive.py      # MotiveConfig (base_url, records_per_page, lookback_days, cutoff_days)
     sync.py        # SyncConfig (default_start_date) — the cold-start backfill anchor
+    rate_limit.py  # RateLimitConfig — one quota scope's token-bucket budget; each
+                   #   provider config defaults its own (AUDIT AUD-12)
   logger/
     setup.py       # package logging setup (setup_logger), driven by LoggerConfig
   network/         # organizational namespace; the surfaces live in the subpackages
@@ -1154,7 +1158,7 @@ fleetpull/
       authenticate.py  # build_geotab_authenticator — the real Authenticate call (§8); the one network/auth/ module that imports httpx
       strategies.py  # StaticHeaderAuth, GeotabSessionAuth — the AuthStrategy implementations (§8)
     contract/
-      request.py   # HttpMethod, RequestSpec, JSON type aliases; params is
+      request.py   # HttpMethod, RequestSpec (JSON aliases live in vocabulary/); params is
                    #   single-valued by design — widen to accept sequences when
                    #   a real endpoint demands repeated query keys
       outcome.py   # ClassifiedResponse (the carrier; ResponseCategory lives in vocabulary/)
@@ -1165,10 +1169,10 @@ fleetpull/
     classifiers/   # per-provider classifiers (peers of contract/; import its face): motive.py, samsara.py, geotab.py
     decoders/      # per-provider page decoders (peers of contract/; import its face): single_page.py, motive.py, samsara.py, geotab.py
     limits/
-      config.py        # RateLimitConfig (frozen Pydantic)
       bucket_math.py   # pure token-bucket arithmetic (stateless functions)
       limiter.py       # QuotaScopeLimiter
-      registry.py      # RateLimiterRegistry
+      registry.py      # RateLimiterRegistry + rate_limits_from_configs (per-scope
+                       #   values derived from provider configs)
     retry/
       decision.py  # RetryDecision, RandomFractionGenerator, decide_retry — pure retry policy (§7)
   paths/           # filesystem path expansion + dataset-layout utilities (pure leaf)
@@ -1262,9 +1266,11 @@ fleetpull/
 
 The package root holds user-facing modules only; internal code lives in
 subpackages. Settled: ALL Pydantic models parsing user-provided YAML
-centralize in `config/` — including `RateLimitConfig`, which currently lives
-in `network/limits/config.py` and migrates to `config/` in the prompt that
-builds the YAML loader. Placement for everything else is settled the same
+centralize in `config/` — including `RateLimitConfig`, migrated there from
+`network/limits/` ahead of the YAML loader (audit fix wave 1, AUD-12):
+provider defaults live on the provider configs (`MotiveConfig.rate_limit`),
+and `rate_limits_from_configs` derives the limiter registry's per-scope map,
+so no composition root invents rate-limit numbers. Placement for everything else is settled the same
 way: the client is transport plumbing and lives at `network/client/`,
 alongside the limiter, contract, and auth it consumes; `records`, `storage`,
 `state`, and `orchestrator` are internal by the same test (consumers call
@@ -1591,7 +1597,11 @@ roster's distinct `source_column` values (values only, never frames), and
 after the run returns `Executed` it hands each collected listing to the
 coordinator's `apply_listing` to reconcile unconditionally. A failed run
 applies nothing; a `CaughtUp` run executed nothing, so there is no listing to
-apply.
+apply. A sourced definition that is not snapshot-mode is rejected with
+`ConfigurationError` before anything runs — `reconcile` is only correct over
+a complete listing, which only a snapshot feeder produces — mirroring the
+coordinator's harvest-route guard, with the same rule enforced at build time
+by `tests/endpoints/test_roster_discipline.py`.
 
 **The carve: a run executor under which a request driver owns cardinality.** The
 orchestration splits into three nested layers, by concern:
@@ -1840,19 +1850,17 @@ resolution (item 1, done).
    typed `Endpoints` catalog, `sync` as the config-driven verb whose full
    vocabulary is item 6's schema work, and the fluent/method-chaining
    pattern retired.
-4. **Pre-API audit, anchored to that design.** Scope: the composition path
-   the API will sit on — not a full-tree ceremony sweep. Primary evidence:
-   `scripts/run_vehicle_locations.py` (~370 lines of hand-written consumer
-   code) documents exactly what consuming fleetpull costs today; the audit
-   diffs what-the-script-did against what-`fetch`-should-be and proposes the
-   refactors that make the API thin. It folds in the two parked items that
-   intersect the public surface: the `records → network.contract`
-   `JsonObject` coupling (a type that could leak into public signatures, plus
-   records validation's loose `pydantic.BaseModel` bound where
-   `ResponseModel` is the real contract), and the retained import-linter
-   contract whose name ("Endpoints sit above…") no longer matches its
-   load-bearing purpose (the `models` / `incremental` same-tier
-   independence) — a rename/legibility fix, not a semantic change.
+4. **Pre-API audit, anchored to that design (done — `AUDIT.md`,
+   2026-07-06).** The audit swept the composition path the API will sit on,
+   produced the wiring inventory, the state-free fetch trace (clean — the
+   item-5 build map), and sixteen verdicted findings; audit fix wave 1
+   cleared everything pre-item-5 (the SUCCESS-path parse escape, the
+   rate-limit config migration and runtime defaults, the roster feeder-mode
+   guards, the empty-member filter, the `JsonObject` relocation to
+   `vocabulary/`, the `ResponseModel` bound, the carrier-contract rename,
+   and the script comment drifts). The item-6-owned findings (roster
+   discovery, the state DB path key, `runs.row_count` semantics, the
+   rate-limit YAML key) remain open in `AUDIT.md`.
 5. **Build the fetch side of the public API (§10), after the audit:** the
    `Endpoints` catalog (a static committed module plus the two-way parity
    discipline test against the discovery registry), the typed endpoint

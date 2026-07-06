@@ -15,7 +15,7 @@ from typing import cast
 from pydantic import BaseModel, ValidationError
 
 from fleetpull.exceptions import ProviderResponseError
-from fleetpull.network.contract.request import JsonObject, JsonValue
+from fleetpull.vocabulary import JsonObject, JsonValue
 
 __all__: list[str] = [
     'require_record_list',

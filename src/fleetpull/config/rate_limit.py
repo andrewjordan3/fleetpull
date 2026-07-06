@@ -1,9 +1,12 @@
-# src/fleetpull/network/limits/config.py
+# src/fleetpull/config/rate_limit.py
 """Rate-limit configuration for a single quota scope.
 
 One ``RateLimitConfig`` describes the request budget for one quota scope
-(default: one provider). The registry maps quota-scope strings to these
-configs; the limiter reads its refill rate and capacity from here.
+(default: one provider). The limiter registry (``network/limits/``) maps
+quota-scope strings to these configs; the limiter reads its refill rate and
+capacity from here. Homed in ``config/`` with the other YAML-facing models
+(one module per config section, house rule); each provider config carries
+its scope's values with a documented default.
 """
 
 from pydantic import BaseModel, ConfigDict, Field

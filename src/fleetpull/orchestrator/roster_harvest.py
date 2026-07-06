@@ -60,9 +60,10 @@ def harvest_roster_members(
         strings, unioned across batches; empty when the feeder lists nothing.
 
     Raises:
-        ValueError: ``column`` is absent from a feeder frame or holds a null (from
+        ValueError: ``column`` is absent from a feeder frame (from
             ``extract_roster_members``) -- surfaced to the coordinator, whose
-            best-effort refresh keeps the existing roster on failure.
+            best-effort refresh keeps the existing roster on failure. Null and
+            empty-string values do not raise; the extractor filters them loudly.
         FleetpullError: A fetch, validation, or framing failure from the stream.
 
     Side Effects:

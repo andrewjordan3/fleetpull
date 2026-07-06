@@ -16,13 +16,13 @@ from pydantic import BaseModel, ConfigDict
 
 from fleetpull.network.contract import (
     DecodedPage,
-    JsonValue,
     PageAdvance,
     RequestSpec,
     require_record_list,
     unwrap_record_objects,
     validated_envelope_slice,
 )
+from fleetpull.vocabulary import JsonValue
 
 __all__: list[str] = [
     'MotiveWrappedListPageDecoder',

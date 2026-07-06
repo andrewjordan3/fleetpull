@@ -18,12 +18,11 @@ from fleetpull.network.contract import (
     SERVER_ERROR_FLOOR,
     SUCCESS_STATUS_RANGE,
     ClassifiedResponse,
-    JsonValue,
     ResponseClassifier,
     body_snippet,
     retry_after_seconds_from_headers,
 )
-from fleetpull.vocabulary import ResponseCategory
+from fleetpull.vocabulary import JsonValue, ResponseCategory
 
 __all__: list[str] = ['SamsaraResponseClassifier']
 

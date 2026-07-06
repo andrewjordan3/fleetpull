@@ -17,15 +17,9 @@ from fleetpull.endpoints.shared import (
     WatermarkMode,
 )
 from fleetpull.model_contract import ResponseModel
-from fleetpull.network.contract import (
-    DecodedPage,
-    HttpMethod,
-    JsonValue,
-    PageAdvance,
-    RequestSpec,
-)
+from fleetpull.network.contract import DecodedPage, HttpMethod, PageAdvance, RequestSpec
 from fleetpull.roster import RosterKey
-from fleetpull.vocabulary import Provider, QuotaScope
+from fleetpull.vocabulary import JsonValue, Provider, QuotaScope
 
 
 class _StubSpecBuilder:
