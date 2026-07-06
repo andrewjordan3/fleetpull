@@ -13,6 +13,12 @@ decisions live in ``orchestrator/resume.py`` and the per-batch transform in
 functions, write state. Request cardinality and batch granularity are the driver's;
 the runner is blind to both.
 
+``run`` takes an optional ``BatchObserver``: a generic hook handed each
+post-validation frame as the run streams. The runner knows nothing about what
+an observer does with the frames (the caller boundary uses it to tap feeder
+runs for roster reconciliation, but that knowledge lives entirely there) -- an
+observer exception fails the run like any other batch-processing failure.
+
 The runner depends on narrow Protocols rather than the concrete state and network
 classes: ``ClientSource`` (the registry's ``client_for``), ``RunRecorder`` (the
 ledger's lifecycle methods), and ``CursorAccess`` (the cursor store's get/set). It
@@ -21,9 +27,12 @@ the provider's client.
 """
 
 import logging
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
+
+import polars as pl
 
 from fleetpull.config import SyncConfig
 from fleetpull.endpoints.shared import (
@@ -43,7 +52,11 @@ from fleetpull.incremental import (
 )
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import TransportClient
-from fleetpull.orchestrator.batch import WindowContext, combine_latest_event_time
+from fleetpull.orchestrator.batch import (
+    ProcessedBatch,
+    WindowContext,
+    combine_latest_event_time,
+)
 from fleetpull.orchestrator.drivers import RequestDriver
 from fleetpull.orchestrator.outcome import CaughtUp, Executed, RunOutcome
 from fleetpull.orchestrator.resume import (
@@ -55,9 +68,44 @@ from fleetpull.storage import select_writer
 from fleetpull.timing import Clock
 from fleetpull.vocabulary import Provider
 
-__all__: list[str] = ['ClientSource', 'CursorAccess', 'EndpointRunner', 'RunRecorder']
+__all__: list[str] = [
+    'BatchObserver',
+    'ClientSource',
+    'CursorAccess',
+    'EndpointRunner',
+    'RunRecorder',
+]
 
 logger = logging.getLogger(__name__)
+
+# The generic per-batch hook: called with each post-validation frame as the
+# run streams. The runner is blind to what an observer does; an observer
+# exception fails the run like any other batch-processing failure.
+type BatchObserver = Callable[[pl.DataFrame], None]
+
+
+def _observe_batches(
+    batches: Iterator[ProcessedBatch], observer: BatchObserver | None
+) -> Iterator[ProcessedBatch]:
+    """Pass batches through, handing each post-validation frame to the observer.
+
+    A transparent generator wrapper: with no observer the stream is yielded
+    unchanged; with one, each batch's frame is observed before the batch is
+    yielded onward, so memory stays bounded by one batch either way.
+
+    Args:
+        batches: The run's processed-batch stream.
+        observer: The per-batch hook, or ``None`` for a bare pass-through.
+
+    Yields:
+        The batches, unchanged and in order.
+    """
+    if observer is None:
+        yield from batches
+        return
+    for processed in batches:
+        observer(processed.frame)
+        yield processed
 
 
 class ClientSource(Protocol):
@@ -188,12 +236,15 @@ class EndpointRunner:
         self,
         definition: EndpointDefinition[ResponseModel],
         driver: RequestDriver,
+        observer: BatchObserver | None = None,
     ) -> RunOutcome:
         """Run one endpoint to completion and report the outcome.
 
         Args:
             definition: The endpoint to run.
             driver: The request driver supplying the run's record batches.
+            observer: An optional generic hook handed each post-validation
+                frame as the run streams; the runner is blind to what it does.
 
         Returns:
             The run outcome (``Executed`` for the snapshot arm).
@@ -206,9 +257,9 @@ class EndpointRunner:
         """
         match definition.sync_mode:
             case SnapshotMode():
-                return self._run_snapshot(definition, driver)
+                return self._run_snapshot(definition, driver, observer)
             case WatermarkMode() as mode:
-                return self._run_watermark(definition, driver, mode)
+                return self._run_watermark(definition, driver, mode, observer)
             case FeedMode():
                 raise NotImplementedError(
                     f'{type(definition.sync_mode).__name__} is not yet executable'
@@ -246,12 +297,16 @@ class EndpointRunner:
         client = self._client_source.client_for(definition.provider)
         now = self._clock.now_utc()
         context = _window_context(definition, window, now)
-        return self._execute_window(definition, driver, client, context, advance=None)
+        batches = stream_processed_batches(
+            definition, driver, client, resume=window, context=context
+        )
+        return self._execute_window(definition, batches, context, advance=None)
 
     def _run_snapshot(
         self,
         definition: EndpointDefinition[ResponseModel],
         driver: RequestDriver,
+        observer: BatchObserver | None,
     ) -> RunOutcome:
         """Run the snapshot arm: full fetch, full-replace write, record the run.
 
@@ -281,9 +336,10 @@ class EndpointRunner:
         try:
             writer = select_writer(definition, self._dataset_root)
             records_fetched = 0
-            for processed in stream_processed_batches(
+            batches = stream_processed_batches(
                 definition, driver, client, resume=None, context=None
-            ):
+            )
+            for processed in _observe_batches(batches, observer):
                 writer.write(processed.frame)
                 records_fetched += processed.frame.height
             write = writer.finalize()
@@ -298,6 +354,7 @@ class EndpointRunner:
         definition: EndpointDefinition[ResponseModel],
         driver: RequestDriver,
         mode: WatermarkMode,
+        observer: BatchObserver | None,
     ) -> RunOutcome:
         """Run the watermark arm: resolve the window, then execute, advancing.
 
@@ -345,32 +402,39 @@ class EndpointRunner:
             )
             return CaughtUp()
         context = _window_context(definition, window, now)
+        batches = _observe_batches(
+            stream_processed_batches(
+                definition, driver, client, resume=window, context=context
+            ),
+            observer,
+        )
         return self._execute_window(
-            definition, driver, client, context, _WatermarkAdvance(prior=stored)
+            definition, batches, context, _WatermarkAdvance(prior=stored)
         )
 
     def _execute_window(
         self,
         definition: EndpointDefinition[ResponseModel],
-        driver: RequestDriver,
-        client: TransportClient,
+        batches: Iterator[ProcessedBatch],
         context: WindowContext,
         advance: _WatermarkAdvance | None,
     ) -> Executed:
-        """Run one window: open, drive/write/finalize, optionally advance, complete.
+        """Run one window: open, consume/write/finalize, optionally advance, complete.
 
-        The spine the watermark arm and a backfill chunk share. Opens a window run,
-        writes each batch's in-window frame, folds the observed maximum, finalizes,
-        and -- in the parquet -> cursor -> ledger crash order -- advances the cursor
-        (when ``advance`` is given and the fold is a strictly-forward step past its
-        prior) before completing the run. ``advance`` is the watermark arm's intent;
-        ``None`` is a backfill chunk, which records the run and the coverage frontier
+        The spine the watermark arm and a backfill chunk share. It consumes an
+        already-built processed-batch stream (the arms construct it, wrapping
+        in the batch observer where one applies), so the spine is blind to
+        fetch mechanics. Opens a window run, writes each batch's in-window
+        frame, folds the observed maximum, finalizes, and -- in the parquet ->
+        cursor -> ledger crash order -- advances the cursor (when ``advance``
+        is given and the fold is a strictly-forward step past its prior) before
+        completing the run. ``advance`` is the watermark arm's intent; ``None``
+        is a backfill chunk, which records the run and the coverage frontier
         but advances no global watermark.
 
         Args:
             definition: The endpoint being run.
-            driver: The request driver supplying the run's batches.
-            client: The provider's open transport client.
+            batches: The run's processed-batch stream, ready to consume.
             context: The window, run instant, and event-time column for the
                 per-batch transform.
             advance: The cursor-advance intent, or ``None`` to advance nothing.
@@ -390,9 +454,7 @@ class EndpointRunner:
             writer = select_writer(definition, self._dataset_root, window=window)
             records_fetched = 0
             latest_observed: datetime | None = None
-            for processed in stream_processed_batches(
-                definition, driver, client, resume=window, context=context
-            ):
+            for processed in batches:
                 writer.write(processed.frame)
                 records_fetched += processed.frame.height
                 latest_observed = combine_latest_event_time(

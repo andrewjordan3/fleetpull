@@ -323,6 +323,54 @@ def test_feed_mode_is_not_yet_executable(tmp_path: Path) -> None:
         runner.run(_feed_definition(), _CannedDriver([]))
 
 
+class TestBatchObserver:
+    def test_snapshot_run_hands_each_validated_batch_to_the_observer(
+        self, tmp_path: Path
+    ) -> None:
+        # The observer sees post-validation frames: model field names (the
+        # records-layer flatten), not wire aliases, one row per validated
+        # record -- the contract the feeder tap relies on.
+        recorder = _RecordingRecorder()
+        runner = _make_runner(recorder, tmp_path)
+        observed: list[pl.DataFrame] = []
+        records: list[JsonObject] = [{'id': 1, 'name': 'a'}, {'id': 2, 'name': 'b'}]
+        outcome = runner.run(
+            _snapshot_definition(), _CannedDriver([records]), observed.append
+        )
+        assert isinstance(outcome, Executed)
+        assert [frame.columns for frame in observed] == [['id', 'name']]
+        assert observed[0].height == 2
+
+    def test_watermark_run_observes_the_window_filtered_frames(
+        self, tmp_path: Path
+    ) -> None:
+        recorder = _RecordingRecorder()
+        runner = _make_runner(recorder, tmp_path, default_start_date=date(2026, 6, 12))
+        observed: list[pl.DataFrame] = []
+        batch = _wm_batch(
+            datetime(2026, 6, 11, 8, tzinfo=UTC),  # out of window: filtered
+            datetime(2026, 6, 13, 9, tzinfo=UTC),  # in window
+        )
+        runner.run(_watermark_definition(), _CannedDriver([batch]), observed.append)
+        assert len(observed) == 1
+        assert observed[0].height == 1
+
+    def test_observer_failure_fails_the_run(self, tmp_path: Path) -> None:
+        recorder = _RecordingRecorder()
+        runner = _make_runner(recorder, tmp_path)
+
+        def exploding_observer(frame: pl.DataFrame) -> None:
+            raise ValueError('observer blew up')
+
+        records: list[JsonObject] = [{'id': 1, 'name': 'a'}]
+        with pytest.raises(ValueError, match='observer blew up'):
+            runner.run(
+                _snapshot_definition(), _CannedDriver([records]), exploding_observer
+            )
+        assert recorder.completed == []
+        assert len(recorder.failed) == 1
+
+
 class TestWatermarkRun:
     def test_cold_start_runs_from_default_and_advances_cursor(
         self, tmp_path: Path
