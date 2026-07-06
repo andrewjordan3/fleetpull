@@ -3,6 +3,7 @@
 
 from datetime import datetime, timedelta
 
+import polars as pl
 import pytest
 
 from fleetpull.endpoints.shared import (
@@ -27,8 +28,10 @@ from fleetpull.orchestrator.drivers import (
     SingleRequestDriver,
 )
 from fleetpull.orchestrator.entry import run_endpoint
-from fleetpull.orchestrator.outcome import CaughtUp, RunOutcome
+from fleetpull.orchestrator.outcome import CaughtUp, Executed, RunOutcome
+from fleetpull.orchestrator.runner import BatchObserver
 from fleetpull.roster import RosterDefinition, RosterKey, RosterRegistry
+from fleetpull.storage import WriteResult
 from fleetpull.vocabulary import Provider, QuotaScope
 
 VEHICLE_IDS_KEY = RosterKey(Provider.MOTIVE, 'vehicle_ids')
@@ -92,19 +95,47 @@ def _fan_out_definition() -> EndpointDefinition[_WatermarkModel]:
     )
 
 
-class _RecordingRunner:
-    """An EndpointExecutor recording each (definition, driver) it runs."""
+def _executed() -> Executed:
+    return Executed(
+        records_fetched=1,
+        write=WriteResult(rows_written=1, duplicates_dropped=0, files_written=1),
+    )
 
-    def __init__(self) -> None:
+
+class _RecordingRunner:
+    """An EndpointExecutor recording each (definition, driver, observer) run.
+
+    Simulates the real runner's observer contract: each canned frame is
+    handed to the observer (post-validation shape) before the outcome
+    returns. With no frames it is a plain pass-through.
+    """
+
+    def __init__(
+        self,
+        outcome: RunOutcome | None = None,
+        frames: list[pl.DataFrame] | None = None,
+        failure: Exception | None = None,
+    ) -> None:
         self.runs: list[tuple[EndpointDefinition[ResponseModel], RequestDriver]] = []
+        self.observers: list[BatchObserver | None] = []
+        self._outcome: RunOutcome = outcome if outcome is not None else CaughtUp()
+        self._frames = frames or []
+        self._failure = failure
 
     def run(
         self,
         definition: EndpointDefinition[ResponseModel],
         driver: RequestDriver,
+        observer: BatchObserver | None = None,
     ) -> RunOutcome:
         self.runs.append((definition, driver))
-        return CaughtUp()
+        self.observers.append(observer)
+        if observer is not None:
+            for frame in self._frames:
+                observer(frame)
+        if self._failure is not None:
+            raise self._failure
+        return self._outcome
 
 
 class _RecordingRefresher:
@@ -112,12 +143,16 @@ class _RecordingRefresher:
 
     def __init__(self, failure: Exception | None = None) -> None:
         self.refreshed: list[RosterDefinition] = []
+        self.applied: list[tuple[RosterDefinition, set[str]]] = []
         self._failure = failure
 
     def refresh_if_stale(self, definition: RosterDefinition) -> None:
         self.refreshed.append(definition)
         if self._failure is not None:
             raise self._failure
+
+    def apply_listing(self, definition: RosterDefinition, listed: set[str]) -> None:
+        self.applied.append((definition, listed))
 
 
 class _CannedMembers:
@@ -142,7 +177,9 @@ def test_no_fan_out_gets_the_single_fetch_driver_and_never_touches_rosters() -> 
     assert isinstance(outcome, CaughtUp)
     [(_, driver)] = runner.runs
     assert isinstance(driver, SingleRequestDriver)
+    assert runner.observers == [None]
     assert refresher.refreshed == []
+    assert refresher.applied == []
     assert members.reads == []
 
 
@@ -213,12 +250,85 @@ def test_unregistered_roster_raises() -> None:
         )
 
 
+def test_feeder_run_reconciles_its_sourced_rosters() -> None:
+    # The fix for the fresh-ledger-stale-roster mode: a runner-driven feeder
+    # run hands its collected listing to the coordinator, so a user-initiated
+    # vehicles run can never advance the ledger without reconciling the
+    # roster. The frames carry the post-validation column name (the model
+    # field 'vehicle_id', not the wire alias 'id') -- what the observer sees.
+    frames = [
+        pl.DataFrame({'vehicle_id': ['101', '202']}),
+        pl.DataFrame({'vehicle_id': ['202', '303']}),
+    ]
+    runner = _RecordingRunner(outcome=_executed(), frames=frames)
+    refresher = _RecordingRefresher()
+    registry = RosterRegistry([VEHICLE_IDS_DEFINITION])
+    outcome = run_endpoint(
+        _snapshot_definition(), runner, registry, refresher, _CannedMembers([])
+    )
+    assert isinstance(outcome, Executed)
+    assert refresher.applied == [(VEHICLE_IDS_DEFINITION, {'101', '202', '303'})]
+    # The tap is not the fan-out path: no refresh, no member read.
+    assert refresher.refreshed == []
+
+
+def test_failed_feeder_run_applies_nothing() -> None:
+    runner = _RecordingRunner(
+        frames=[pl.DataFrame({'vehicle_id': ['101']})],
+        failure=RuntimeError('run blew up'),
+    )
+    refresher = _RecordingRefresher()
+    registry = RosterRegistry([VEHICLE_IDS_DEFINITION])
+    with pytest.raises(RuntimeError, match='run blew up'):
+        run_endpoint(
+            _snapshot_definition(), runner, registry, refresher, _CannedMembers([])
+        )
+    assert refresher.applied == []
+
+
+def test_caught_up_feeder_run_applies_nothing() -> None:
+    # CaughtUp means nothing executed and nothing was listed; reconciling an
+    # empty non-listing would count absences against every stored member.
+    runner = _RecordingRunner(outcome=CaughtUp())
+    refresher = _RecordingRefresher()
+    registry = RosterRegistry([VEHICLE_IDS_DEFINITION])
+    run_endpoint(
+        _snapshot_definition(), runner, registry, refresher, _CannedMembers([])
+    )
+    assert refresher.applied == []
+
+
+def test_endpoint_that_sources_nothing_and_fans_out_nothing_is_untouched() -> None:
+    # The baseline the agnosticism principle protects: an endpoint that is
+    # nobody's source and declares no fan-out flows through the entry with no
+    # observer installed and no roster machinery touched.
+    runner = _RecordingRunner()
+    refresher = _RecordingRefresher()
+    members = _CannedMembers([])
+    registry = RosterRegistry([VEHICLE_IDS_DEFINITION])
+    other = EndpointDefinition(
+        provider=Provider.MOTIVE,
+        name='other',
+        spec_builder=StaticGetSpecBuilder(base_url='https://x.test', path='/v1/o'),
+        page_decoder=_StubPageDecoder(),
+        response_model=_SnapshotModel,
+        quota_scope=QuotaScope.MOTIVE,
+        storage_kind=StorageKind.SINGLE,
+        sync_mode=SnapshotMode(),
+    )
+    run_endpoint(other, runner, registry, refresher, members)
+    assert runner.observers == [None]
+    assert refresher.refreshed == []
+    assert refresher.applied == []
+    assert members.reads == []
+
+
 def test_identical_entry_serves_snapshot_and_fan_out_polymorphically() -> None:
-    # The agnosticism principle's regression test: a snapshot (no fan-out)
+    # The agnosticism principle's regression test: a roster-sourcing snapshot
     # and a fan-out watermark definition flow through the identical entry
     # with identical collaborators; every difference in observed behavior
-    # traces to declared fields (fan_out None vs the binding), never to
-    # provider or endpoint identity.
+    # traces to declared facts (fan_out None vs the binding; sourced vs not
+    # in the roster catalog), never to provider or endpoint identity.
     runner = _RecordingRunner()
     refresher = _RecordingRefresher()
     members = _CannedMembers(['101'])
@@ -234,8 +344,12 @@ def test_identical_entry_serves_snapshot_and_fan_out_polymorphically() -> None:
     assert isinstance(first_driver, SingleRequestDriver)
     assert second_definition is fan_out
     assert isinstance(second_driver, FanOutRequestDriver)
-    # The roster machinery was touched exactly once -- for the one definition
-    # that declares a binding -- and with that binding's declared key.
+    # The snapshot sources the vehicle_ids roster (catalog fact) -> observed;
+    # the fan-out consumer sources nothing -> not observed.
+    assert runner.observers[0] is not None
+    assert runner.observers[1] is None
+    # The refresh/read pair fires exactly once -- for the one definition that
+    # declares a binding -- and with that binding's declared key.
     assert refresher.refreshed == [VEHICLE_IDS_DEFINITION]
     assert members.reads == [VEHICLE_IDS_KEY]
     declared_binding = fan_out.fan_out
