@@ -1,15 +1,30 @@
 # src/fleetpull/orchestrator/roster_refresh.py
 """The roster refresh coordinator: make a stale roster's membership current.
 
-``RosterRefreshCoordinator.refresh_if_stale`` is the demand-driven refresh a
-fan-out consumer calls before it reads a roster. Given the roster's
-``RosterDefinition`` -- the caller resolves the ``RosterKey`` against the roster
-registry, the same way the run executor is handed an already-resolved
-``EndpointDefinition`` -- it asks the ledger when the feeder last succeeded, and only
-if ``is_roster_stale`` says a refresh is due re-lists the feeder, reconciles the
-listing against the stored roster, and applies the delta. Its only output is the
-store; it never reads members, builds a fan-out driver, or runs an endpoint. Those
-are the consume half, owned by the orchestration entry (``orchestrator/entry.py``).
+The coupling rule this module upholds (with the orchestration entry's feeder
+tap): **every execution of a feeder endpoint updates its rosters and records a
+run in the ledger**; parquet is written only when the user asked for that
+endpoint. A coordinator harvest is such an execution -- it fetches, reconciles
+the roster, and records a ``runs`` row for ``(provider, source_endpoint)`` --
+so ``RunLedger.last_success_at`` is a sound staleness key in both directions:
+a harvest is visible to the next staleness check, and a runner-driven feeder
+run (which the entry taps into ``apply_listing``) never leaves the roster
+behind the ledger. A run row certifies execution of the endpoint, not parquet
+freshness.
+
+``refresh_if_stale`` is the demand-driven refresh a fan-out consumer calls
+before it reads a roster. Given the roster's ``RosterDefinition`` -- the
+caller resolves the ``RosterKey`` against the roster registry, the same way
+the run executor is handed an already-resolved ``EndpointDefinition`` -- it
+asks the ledger when the feeder last succeeded, and only if a refresh is due
+(``is_roster_stale``, or an empty stored roster, which is stale regardless of
+the ledger verdict -- ledger history may predate the harvest/ledger coupling)
+re-lists the feeder, reconciles the listing against the stored roster, applies
+the delta, and completes the run. ``apply_listing`` is the feeder-tap handoff:
+the entry collects a successful feeder run's listed members and hands them
+here to reconcile unconditionally -- staleness gates only whether the
+coordinator *initiates* a harvest, never whether an executed run's listing is
+applied; the run row on that path was already recorded by the run executor.
 
 The full-listing requirement lives here: a roster needs its feeder's complete
 current membership each refresh, so the feeder must be a snapshot endpoint. The
@@ -19,19 +34,23 @@ harvester itself stays ``sync_mode``-blind.
 
 Failure is best-effort with one loud exception. A harvest ``FleetpullError`` (the
 feeder is unreachable, or a page fails to validate) or ``ValueError`` (a missing
-source column or a null member) degrades to the existing roster -- a stale verdict
-is a refresh *attempt*, not a barrier to the fan-out. The exception is cold start:
-when the store holds no members for the key, there is nothing to fall back to and a
-silent empty roster would fan out over nothing, so the failure re-raises. Wiring
-errors -- no feeder registered for the ``source_endpoint``, a non-snapshot feeder --
-raise outside the best-effort path; they are bugs, not transient misses.
-``RosterStore.apply`` is one transaction, so a mid-refresh failure leaves the roster
-untouched.
+source column or a null member) marks the run failed and degrades to the existing
+roster -- a stale verdict is a refresh *attempt*, not a barrier to the fan-out. The
+exception is cold start: when the store holds no members for the key, there is
+nothing to fall back to and a silent empty roster would fan out over nothing, so the
+failure re-raises (still marking the run failed). Wiring errors -- no feeder
+registered for the ``source_endpoint``, a non-snapshot feeder -- raise before any
+run row is opened; they are bugs, not executions. The crash order inside a
+successful refresh mirrors the run executor's output-first discipline:
+``RosterStore.apply`` (one transaction) lands before ``complete_run``, so a crash
+between the two leaves the roster current and the run merely ``running`` -- the
+next check re-harvests idempotently, never the reverse mode where a fresh ledger
+masks a stale roster.
 
 Collaborators are injected, not assembled: the pure ``reconcile`` /
 ``is_roster_stale`` are called directly; the ``EndpointRegistry`` is the immutable
 catalog passed concrete; the stateful surfaces are narrow Protocols (``RosterAccess``,
-``LastSuccessReader``, ``ClientSource``) the composition root satisfies with the real
+``FeederRunLedger``, ``ClientSource``) the composition root satisfies with the real
 store, ledger, and client registry. ``ClientSource`` mirrors the run executor's; it is
 redefined here rather than imported to keep the two orchestrator modules independent.
 """
@@ -53,7 +72,7 @@ from fleetpull.vocabulary import Provider
 
 __all__: list[str] = [
     'ClientSource',
-    'LastSuccessReader',
+    'FeederRunLedger',
     'RosterAccess',
     'RosterRefreshCoordinator',
 ]
@@ -73,11 +92,29 @@ class RosterAccess(Protocol):
         ...
 
 
-class LastSuccessReader(Protocol):
-    """The feeder's last-success read the coordinator needs (a subset of RunLedger)."""
+class FeederRunLedger(Protocol):
+    """The ledger surface the coordinator needs (a subset of ``RunLedger``).
+
+    ``last_success_at`` keys the staleness decision; the run-recording trio
+    makes a coordinator harvest visible to that same key -- every execution of
+    a feeder endpoint records a run, so the freshness signal and the freshness
+    events cannot diverge.
+    """
 
     def last_success_at(self, provider: Provider, endpoint: str) -> datetime | None:
         """Return the feeder's latest successful run end, or ``None``."""
+        ...
+
+    def start_snapshot_run(self, provider: Provider, endpoint: str) -> int:
+        """Open a snapshot run for a harvest and return its id."""
+        ...
+
+    def complete_run(self, run_id: int, *, row_count: int) -> None:
+        """Close a run as succeeded with its row count."""
+        ...
+
+    def fail_run(self, run_id: int, *, error_detail: str) -> None:
+        """Close a run as failed with an error detail."""
         ...
 
 
@@ -100,7 +137,8 @@ class RosterRefreshCoordinator:
     Args:
         endpoint_registry: Resolves the feeder's ``(provider, name)`` to its binding.
         store: The roster store (read counts, apply a delta).
-        ledger: The feeder's last-success read, for the staleness decision.
+        ledger: The feeder's ledger surface -- the last-success read for the
+            staleness decision, and the run recording a harvest performs.
         client_source: The open transport client per provider.
         clock: The clock supplying ``now`` for the staleness decision.
     """
@@ -109,7 +147,7 @@ class RosterRefreshCoordinator:
         self,
         endpoint_registry: EndpointRegistry,
         store: RosterAccess,
-        ledger: LastSuccessReader,
+        ledger: FeederRunLedger,
         client_source: ClientSource,
         clock: Clock,
     ) -> None:
@@ -120,12 +158,19 @@ class RosterRefreshCoordinator:
         self._clock = clock
 
     def refresh_if_stale(self, definition: RosterDefinition) -> None:
-        """Re-list the feeder and reconcile the roster if it is stale.
+        """Re-list the feeder, reconcile the roster, and record the run, if stale.
 
-        Returns early when the roster is fresh. When stale, harvests the feeder's
-        complete membership and applies the reconciliation; a harvest failure
-        degrades to the existing roster unless the store is empty (cold start), where
-        it re-raises.
+        Returns early when the roster is fresh -- non-empty and inside the
+        staleness bound. An empty stored roster is stale regardless of the
+        ledger verdict (ledger history may predate the harvest/ledger
+        coupling, and a fresh ledger must not mask a roster with nothing to
+        fan out over). When a refresh is due, the harvest is an execution of
+        the feeder endpoint: it opens a snapshot run, harvests the complete
+        membership, applies the reconciliation, and completes the run -- store
+        before ledger, so a crash between the two re-harvests rather than
+        masking. A harvest failure marks the run failed and degrades to the
+        existing roster, unless the store is empty (cold start), where it
+        re-raises.
 
         Args:
             definition: The roster to refresh -- its key, feeder ``source_endpoint``
@@ -135,22 +180,24 @@ class RosterRefreshCoordinator:
         Raises:
             ConfigurationError: No feeder is registered for ``source_endpoint``, or the
                 resolved feeder is not a snapshot endpoint -- wiring bugs, raised
-                loudly.
+                loudly before any run row is opened.
             FleetpullError: The harvest failed on a cold start (no existing roster to
                 fall back to); the underlying failure propagates.
             ValueError: The harvest failed on a cold start with a missing source
                 column or a null member; the underlying failure propagates.
 
         Side Effects:
-            On a due, successful refresh: issues the feeder's request chain and writes
-            the reconciled delta to the store. Otherwise touches nothing.
+            On a due refresh: issues the feeder's request chain and records a
+            run in the ledger; on success, also writes the reconciled delta to
+            the store. Otherwise touches nothing.
         """
         provider = definition.key.provider
+        current = self._store.read_counts(definition.key)
         last_success = self._ledger.last_success_at(
             provider, definition.source_endpoint
         )
         now = self._clock.now_utc()
-        if not is_roster_stale(last_success, now, definition.max_age):
+        if current and not is_roster_stale(last_success, now, definition.max_age):
             return
         feeder = self._endpoint_registry.get(provider, definition.source_endpoint)
         if not isinstance(feeder.sync_mode, SnapshotMode):
@@ -161,12 +208,13 @@ class RosterRefreshCoordinator:
                 detail='a roster source must be a full-listing (snapshot) endpoint',
             )
         client = self._client_source.client_for(provider)
-        current = self._store.read_counts(definition.key)
+        run_id = self._ledger.start_snapshot_run(provider, definition.source_endpoint)
         try:
             listed = harvest_roster_members(
                 feeder, SingleRequestDriver(), client, definition.source_column
             )
         except (FleetpullError, ValueError) as failure:
+            self._fail_run_safely(run_id, failure)
             if not current:
                 raise
             logger.warning(
@@ -181,3 +229,53 @@ class RosterRefreshCoordinator:
             definition.key,
             reconcile(current, listed, definition.eviction_threshold),
         )
+        # A harvest run's row count is the distinct-member count of the
+        # listing -- the rows this execution produced for its consumer.
+        self._ledger.complete_run(run_id, row_count=len(listed))
+
+    def apply_listing(self, definition: RosterDefinition, listed: set[str]) -> None:
+        """Reconcile an executed feeder run's listed membership into the store.
+
+        The feeder-tap handoff: the orchestration entry collects the distinct
+        ``source_column`` values from a successful runner-driven feeder run and
+        hands them here. Applied unconditionally -- staleness gates only
+        whether the coordinator *initiates* a harvest, never whether an
+        executed run's complete listing is reconciled -- and the whole
+        reconcile policy (eviction hysteresis included) stays here, exactly as
+        on the harvest path. Records no ledger row: the run that produced
+        ``listed`` was already recorded by the run executor.
+
+        Args:
+            definition: The sourced roster -- its key and eviction policy.
+            listed: The feeder run's complete listed membership.
+
+        Side Effects:
+            Writes the reconciled delta to the store (one transaction).
+        """
+        current = self._store.read_counts(definition.key)
+        self._store.apply(
+            definition.key,
+            reconcile(current, listed, definition.eviction_threshold),
+        )
+
+    def _fail_run_safely(self, run_id: int, error: Exception) -> None:
+        """Record the harvest run failed without masking the original error.
+
+        The run executor's stance: ``fail_run`` touches SQLite, which can
+        itself fail; that secondary failure must not replace the harvest
+        failure driving the degrade-or-reraise decision. Log it and move on.
+
+        Args:
+            run_id: The harvest run to mark failed.
+            error: The harvest failure, recorded as the detail.
+
+        Side Effects:
+            Records the run failed; on a recording failure, logs and swallows it.
+        """
+        try:
+            self._ledger.fail_run(run_id, error_detail=str(error))
+        except Exception:
+            logger.exception(
+                'failed to record harvest run %s as failed after an earlier error',
+                run_id,
+            )

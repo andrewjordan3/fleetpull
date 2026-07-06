@@ -42,3 +42,22 @@ class TestRosterRegistry:
         registry = RosterRegistry([])
         with pytest.raises(ConfigurationError, match='unknown roster'):
             registry.get(RosterKey(Provider.MOTIVE, 'vehicle_ids'))
+
+
+class TestSourcedBy:
+    def test_returns_every_roster_the_feeder_sources(self) -> None:
+        vehicle_ids = _definition('vehicle_ids')
+        trailer_ids = _definition('trailer_ids', column='trailer_id')
+        registry = RosterRegistry([vehicle_ids, trailer_ids])
+        assert registry.sourced_by(Provider.MOTIVE, 'vehicles') == (
+            vehicle_ids,
+            trailer_ids,
+        )
+
+    def test_an_endpoint_that_sources_nothing_returns_empty(self) -> None:
+        registry = RosterRegistry([_definition('vehicle_ids')])
+        assert registry.sourced_by(Provider.MOTIVE, 'vehicle_locations') == ()
+
+    def test_provider_scopes_the_lookup(self) -> None:
+        registry = RosterRegistry([_definition('vehicle_ids')])
+        assert registry.sourced_by(Provider.SAMSARA, 'vehicles') == ()
