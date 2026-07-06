@@ -4,8 +4,8 @@ import threading
 
 import pytest
 
+from fleetpull.config import RateLimitConfig
 from fleetpull.exceptions import UnknownQuotaScopeError
-from fleetpull.network.limits.config import RateLimitConfig
 from fleetpull.network.limits.limiter import QuotaScopeLimiter
 from fleetpull.network.limits.registry import RateLimiterRegistry
 

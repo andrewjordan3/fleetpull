@@ -23,13 +23,7 @@ from fleetpull.network.contract.page_decoder import (
     PageAdvance,
     PageDecoder,
 )
-from fleetpull.network.contract.request import (
-    HttpMethod,
-    JsonObject,
-    JsonScalar,
-    JsonValue,
-    RequestSpec,
-)
+from fleetpull.network.contract.request import HttpMethod, RequestSpec
 
 __all__: list[str] = [
     'SERVER_ERROR_FLOOR',
@@ -38,9 +32,6 @@ __all__: list[str] = [
     'ClassifiedResponse',
     'DecodedPage',
     'HttpMethod',
-    'JsonObject',
-    'JsonScalar',
-    'JsonValue',
     'PageAdvance',
     'PageDecoder',
     'RequestSpec',

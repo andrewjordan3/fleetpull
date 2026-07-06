@@ -26,17 +26,11 @@ from fleetpull.incremental import (
 )
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import FetchedPage, TransportClient
-from fleetpull.network.contract import (
-    DecodedPage,
-    JsonObject,
-    JsonValue,
-    PageAdvance,
-    RequestSpec,
-)
+from fleetpull.network.contract import DecodedPage, PageAdvance, RequestSpec
 from fleetpull.orchestrator.outcome import CaughtUp, Executed
 from fleetpull.orchestrator.runner import ClientSource, CursorAccess, EndpointRunner
 from fleetpull.timing import FrozenClock
-from fleetpull.vocabulary import Provider, QuotaScope
+from fleetpull.vocabulary import JsonObject, JsonValue, Provider, QuotaScope
 
 # The _make_runner default clock instant, and the trailing edge it implies for a
 # one-day cutoff: midnight(2026-06-16) - 1 day.

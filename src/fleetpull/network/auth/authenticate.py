@@ -32,13 +32,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from fleetpull.config import GeotabAuthConfig, HttpConfig
 from fleetpull.exceptions import AuthenticationError, ProviderResponseError
 from fleetpull.network.auth.models import AuthenticationResult
-from fleetpull.network.contract import (
-    JsonValue,
-    body_snippet,
-    validated_envelope_slice,
-)
+from fleetpull.network.contract import body_snippet, validated_envelope_slice
 from fleetpull.network.limits import RateLimiterRegistry
 from fleetpull.network.tls import build_truststore_ssl_context
+from fleetpull.vocabulary import JsonValue
 
 __all__: list[str] = ['build_geotab_authenticator']
 

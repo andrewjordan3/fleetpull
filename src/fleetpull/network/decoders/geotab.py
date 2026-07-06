@@ -19,12 +19,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from fleetpull.network.contract import (
     DecodedPage,
-    JsonObject,
-    JsonValue,
     PageAdvance,
     RequestSpec,
     validated_envelope_slice,
 )
+from fleetpull.vocabulary import JsonObject, JsonValue
 
 __all__: list[str] = ['GeotabFeedPageDecoder']
 

@@ -8,8 +8,7 @@ consumed by the client, which dispatches on ``category`` (the
 
 from dataclasses import dataclass, field
 
-from fleetpull.network.contract.request import JsonValue
-from fleetpull.vocabulary import ResponseCategory
+from fleetpull.vocabulary import JsonValue, ResponseCategory
 
 __all__: list[str] = ['ClassifiedResponse']
 

@@ -10,8 +10,9 @@ import pytest
 
 from fleetpull.exceptions import ProviderResponseError
 from fleetpull.network.contract import PageDecoder
-from fleetpull.network.contract.request import HttpMethod, JsonValue, RequestSpec
+from fleetpull.network.contract.request import HttpMethod, RequestSpec
 from fleetpull.network.decoders import SinglePageDecoder
+from fleetpull.vocabulary import JsonValue
 
 
 def build_spec() -> RequestSpec:

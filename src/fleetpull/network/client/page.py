@@ -3,7 +3,7 @@
 
 from dataclasses import dataclass
 
-from fleetpull.network.contract import JsonObject
+from fleetpull.vocabulary import JsonObject
 
 __all__: list[str] = ['FetchedPage']
 

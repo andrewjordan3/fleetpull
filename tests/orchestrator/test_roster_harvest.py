@@ -13,15 +13,9 @@ from fleetpull.endpoints.shared import (
 )
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import FetchedPage, TransportClient
-from fleetpull.network.contract import (
-    DecodedPage,
-    JsonObject,
-    JsonValue,
-    PageAdvance,
-    RequestSpec,
-)
+from fleetpull.network.contract import DecodedPage, PageAdvance, RequestSpec
 from fleetpull.orchestrator.roster_harvest import harvest_roster_members
-from fleetpull.vocabulary import Provider, QuotaScope
+from fleetpull.vocabulary import JsonObject, JsonValue, Provider, QuotaScope
 
 
 class _Vehicle(ResponseModel):
