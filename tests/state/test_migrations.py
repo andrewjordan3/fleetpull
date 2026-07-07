@@ -31,7 +31,10 @@ def _set_user_version(database_path: Path, version: int) -> None:
 
 
 def _expect_insert_rejected(
-    tmp_path: Path, table: str, columns: str, values: tuple[object, ...]
+    tmp_path: Path,
+    table: str,
+    columns: str,
+    values: tuple[str | int | float | bytes | None, ...],
 ) -> None:
     """Migrate a fresh database, then assert a raw INSERT trips a CHECK."""
     database = StateDatabase(_database_path(tmp_path))

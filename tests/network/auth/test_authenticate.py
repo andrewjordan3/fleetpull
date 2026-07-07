@@ -29,6 +29,7 @@ from fleetpull.network.auth.manager import GeotabSessionManager
 from fleetpull.network.auth.models import AuthenticationResult
 from fleetpull.network.limits.registry import RateLimiterRegistry
 from fleetpull.timing.clock import FrozenClock
+from fleetpull.vocabulary import JsonObject
 
 TEST_SCOPE = 'geotab_auth'
 SYNTHETIC_PASSWORD = 'synthetic-password-123'
@@ -58,7 +59,7 @@ def build_registry(clock: FrozenClock | None = None) -> RateLimiterRegistry:
     return RateLimiterRegistry({TEST_SCOPE: config}, clock)
 
 
-def success_envelope(path: str = 'ThisServer') -> dict[str, object]:
+def success_envelope(path: str = 'ThisServer') -> JsonObject:
     return {
         'result': {
             'credentials': {
@@ -72,7 +73,7 @@ def success_envelope(path: str = 'ThisServer') -> dict[str, object]:
     }
 
 
-def error_envelope(error_type: str, message: str) -> dict[str, object]:
+def error_envelope(error_type: str, message: str) -> JsonObject:
     return {
         'error': {
             'message': message,
@@ -91,7 +92,7 @@ class RecordingHandler:
         self,
         status_code: int = 200,
         *,
-        json_body: object = None,
+        json_body: JsonObject | None = None,
         text_body: str | None = None,
     ) -> None:
         self.status_code = status_code
