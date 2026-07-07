@@ -305,6 +305,7 @@ composition list is the item-5 build map (closing section).
   `state.database_path` with the §5 default.
 - **Owner:** item 6.
 - **Resolution (2026-07-07):** landed in config vertical 1 — `state.database_path` exists (`config/state.py`, optional in YAML) and `load_config` resolves it to the §5 default `<dataset_root>/.fleetpull/state.sqlite3` at composition time (`config/composition.py`).
+- **Superseded (2026-07-07, config rebuild):** the vertical-1 loader machinery named above is deleted; the resolution now lives in `FleetpullConfig`'s `mode='before'` validators (`config/root.py`, pure functions in `config/resolution.py`) with `FleetpullConfig.from_yaml` as the loading API, and the field's home is `config/sections.py`. Same §5 default, same semantics.
 
 ### AUD-14 — stdlib tripwire exceptions escape the `FleetpullError` promise on the sync path
 - **Location (read):** `storage/writers.py` window tripwire (`ValueError`),

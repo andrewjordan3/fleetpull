@@ -32,7 +32,15 @@ from pathlib import Path
 import polars as pl
 from pydantic import SecretStr
 
-from fleetpull.config import HttpConfig, MotiveConfig, RetryConfig, SyncConfig
+from fleetpull.config import (
+    FleetpullConfig,
+    HttpConfig,
+    MotiveConfig,
+    ProvidersConfig,
+    RetryConfig,
+    StorageConfig,
+    SyncConfig,
+)
 from fleetpull.endpoints import build_endpoint_registry
 from fleetpull.endpoints.motive.vehicles import VEHICLE_IDS_ROSTER
 from fleetpull.endpoints.shared import EndpointDefinition
@@ -313,8 +321,10 @@ def main() -> None:
     default_start_date = (
         clock.now_utc() - timedelta(days=BACKFILL_LOOKBACK_DAYS)
     ).date()
-    sync_config = SyncConfig(
-        default_start_date=default_start_date, dataset_root=dataset_root
+    config = FleetpullConfig(
+        sync=SyncConfig(default_start_date=default_start_date),
+        storage=StorageConfig(dataset_root=dataset_root),
+        providers=ProvidersConfig(),
     )
 
     with ProviderClientRegistry({Provider.MOTIVE: profile}, runtime) as clients:
@@ -326,7 +336,7 @@ def main() -> None:
             run_recorder=run_ledger,
             clock=clock,
             cursor_access=cursor_store,
-            sync_config=sync_config,
+            config=config,
         )
 
         def run_locations_once() -> RunOutcome:

@@ -13,14 +13,16 @@ neither resets nor advances the TRANSIENT count.
 import logging
 from typing import Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
+
+from fleetpull.config.base import ConfigModel
 
 __all__: list[str] = ['RetryConfig']
 
 logger = logging.getLogger(__name__)
 
 
-class RetryConfig(BaseModel):
+class RetryConfig(ConfigModel):
     """
     User-facing retry policy, one instance per run.
 
@@ -42,8 +44,6 @@ class RetryConfig(BaseModel):
             misbehaving, so it errs long; the penalty log line carries
             the raw header value to keep the case diagnosable.
     """
-
-    model_config = ConfigDict(frozen=True, extra='forbid', validate_default=True)
 
     transient_max_failures: int = Field(default=3, ge=0)
     transient_backoff_base_seconds: float = Field(default=1.0, gt=0)
