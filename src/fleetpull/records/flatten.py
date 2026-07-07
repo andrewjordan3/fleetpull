@@ -19,7 +19,7 @@ __all__: list[str] = ['flatten_record']
 
 def flatten_record(
     record: BaseModel, flat_fields: Iterable[FlatField]
-) -> dict[str, Any]:
+) -> dict[str, Any]:  # typing-justified: model-field values are heterogeneous
     """Pull one flat row of values from a model instance.
 
     Args:
@@ -32,9 +32,9 @@ def flatten_record(
         yields ``None`` for each of its columns; enum values reduce to
         ``str``; scalars, datetimes, and list values pass through.
     """
-    row: dict[str, Any] = {}
+    row: dict[str, Any] = {}  # typing-justified: heterogeneous model-field values
     for flat_field in flat_fields:
-        value: Any = _pull(record, flat_field.path)
+        value: Any = _pull(record, flat_field.path)  # typing-justified: see _pull
         if value is not None and flat_field.kind is FieldKind.ENUM:
             # All current enums are StrEnum, so str(member) is the wire
             # value ('active'), not 'VehicleStatus.ACTIVE'.
@@ -43,9 +43,10 @@ def flatten_record(
     return row
 
 
+# typing-justified: getattr walks arbitrary model fields; the value is untyped
 def _pull(record: BaseModel, path: tuple[str, ...]) -> Any:
     """Walk the attribute path; short-circuit to ``None`` on a null block."""
-    current: Any = record
+    current: Any = record  # typing-justified: intermediate attribute-walk value
     for attribute in path:
         if current is None:
             return None

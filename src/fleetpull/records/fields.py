@@ -66,13 +66,16 @@ class FlatField:
 
     column: str
     kind: FieldKind
-    resolved: Any
+    resolved: type
     path: tuple[str, ...]
 
 
 def classify_annotation(
-    annotation: Any, owning_model_name: str, field_name: str
-) -> tuple[FieldKind, Any]:
+    # typing-justified: annotation forms (unions, aliases) are not `type` values
+    annotation: Any,
+    owning_model_name: str,
+    field_name: str,
+) -> tuple[FieldKind, type]:
     """Reduce a field annotation to a kind and its resolved leaf type.
 
     Unwraps ``Optional`` / ``T | None``; rejects multi-arm unions. A
@@ -96,6 +99,7 @@ def classify_annotation(
         TypeError: When the annotation does not resolve to a supported
             kind.
     """
+    # typing-justified: union arms are arbitrary annotation forms
     non_none: list[Any] = _strip_none_from_union(annotation)
     if len(non_none) != 1:
         raise TypeError(
@@ -103,7 +107,7 @@ def classify_annotation(
             f'{annotation!r} -- a single non-None type is required, '
             f'found {len(non_none)}.'
         )
-    candidate: Any = non_none[0]
+    candidate: Any = non_none[0]  # typing-justified: an arbitrary annotation form
 
     if isinstance(candidate, type) and issubclass(candidate, BaseModel):
         return (FieldKind.NESTED_MODEL, candidate)
@@ -112,6 +116,7 @@ def classify_annotation(
     if candidate in _SCALAR_TYPES:
         return (FieldKind.SCALAR, candidate)
     if get_origin(candidate) is list:
+        # typing-justified: get_args yields arbitrary annotation forms (typeshed)
         inner: tuple[Any, ...] = get_args(candidate)
         if len(inner) == 1 and inner[0] in _SCALAR_TYPES:
             return (FieldKind.LIST_OF_SCALAR, inner[0])
@@ -171,9 +176,10 @@ def _walk(
             yield FlatField(column=column, kind=kind, resolved=resolved, path=path)
 
 
+# typing-justified: annotation forms (unions, aliases) in, annotation forms out
 def _strip_none_from_union(annotation: Any) -> list[Any]:
     """Return the non-``NoneType`` arms of a union, else ``[annotation]``."""
-    origin: Any = get_origin(annotation)
+    origin: Any = get_origin(annotation)  # typing-justified: typeshed returns Any
     if origin is Union or origin is types.UnionType:
         return [
             argument for argument in get_args(annotation) if argument is not type(None)

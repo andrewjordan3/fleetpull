@@ -9,6 +9,7 @@ from fleetpull.models.motive.vehicle_locations import (
     VehicleLocation,
     VehicleLocationType,
 )
+from fleetpull.vocabulary import JsonObject
 
 # Obviously-synthetic identifiers — never real device/driver IDs in commits.
 _LOCATION_ID: str = '11111111-1111-4111-8111-111111111111'
@@ -17,7 +18,7 @@ _DRIVER_ID: int = 1000002
 _ODOMETER: float = 123456.78901234567
 
 
-def _canonical_record() -> dict[str, object]:
+def _canonical_record() -> JsonObject:
     """A scrubbed real ``/v3/vehicle_locations`` inner record (every value fake).
 
     Returns:
@@ -55,7 +56,7 @@ def _canonical_record() -> dict[str, object]:
     }
 
 
-def _driver_dict() -> dict[str, object]:
+def _driver_dict() -> JsonObject:
     """A synthetic DriverSummary wire dict for the populated-driver case."""
     return {
         'id': _DRIVER_ID,

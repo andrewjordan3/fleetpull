@@ -107,8 +107,14 @@ Functions over ~50 lines should be split. Orchestrators orchestrate — they cal
 
 - Strict type hints on every parameter, return type, and variable where non-obvious.
 - Container types must be specific: `list[str]` not `list`, `dict[str, float]` not `dict`.
-- No `Any` without an inline justification.
-- No `object` as a type annotation — use the actual type, a `Protocol`, or a `TypeVar`.
+- No `Any` without an inline justification: `# typing-justified: <reason>` on the
+  annotation's line or the line immediately above (mechanically enforced by
+  `tests/test_typing_discipline.py`).
+- No `object` as a type annotation without the same justification — prefer the
+  actual type, a `Protocol`, or a `TypeVar`. Exempt: dunder methods whose
+  typeshed signatures require `object` (`__eq__` and kin), and deliberate
+  catch-all `*args` / `**kwargs` parameters, where `object` is the strictest
+  annotation available.
 - No `from __future__ import annotations`. Fix forward references by reordering definitions or splitting modules. No `TYPE_CHECKING` guards — imports stay at module level.
 - Typed containers (frozen dataclasses, `TypedDict`) over plain dicts for structured data.
 

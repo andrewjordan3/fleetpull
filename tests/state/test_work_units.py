@@ -66,7 +66,9 @@ def _spec(
     )
 
 
-def _read_unit(database_path: Path, unit_id: int) -> dict[str, object]:
+def _read_unit(
+    database_path: Path, unit_id: int
+) -> dict[str, str | int | float | bytes | None]:
     """Read one work_units row by id via a bare connection, keyed by column name."""
     connection = sqlite3.connect(database_path)
     try:

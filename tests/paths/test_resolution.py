@@ -74,7 +74,9 @@ class TestRejections:
             resolve_path(blank)
 
     @pytest.mark.parametrize('bad_value', [123, 3.14, None, ['x']])
-    def test_rejects_unsupported_types(self, bad_value: object) -> None:
+    def test_rejects_unsupported_types(
+        self, bad_value: int | float | None | list[str]
+    ) -> None:
         with pytest.raises(TypeError, match='str or Path'):
             resolve_path(bad_value)  # type: ignore[arg-type]
 

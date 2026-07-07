@@ -349,8 +349,8 @@ class EndpointDefinition[ModelT: ResponseModel]:
             )
 
 
-# A field annotation is an arbitrary type form (a class, a PEP 604 union, ...),
-# so ``Any`` is the honest parameter type for these annotation-inspection helpers.
+# A field annotation is an arbitrary type form (a class, a PEP 604 union, ...):
+# typing-justified: Any is the honest input type for annotation inspection
 def _is_date_like_annotation(annotation: Any) -> bool:
     """Whether an annotation resolves to ``date`` or ``datetime``.
 
@@ -370,6 +370,7 @@ def _is_date_like_annotation(annotation: Any) -> bool:
     return _unwrap_optional(annotation) in {date, datetime}
 
 
+# typing-justified: annotation forms (unions, aliases) in, annotation forms out
 def _unwrap_optional(annotation: Any) -> Any:
     """Strip ``None`` from a two-arm optional annotation, else return it as is.
 
