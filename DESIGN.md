@@ -1016,9 +1016,15 @@ file, not in code, so the chain had nothing left to chain.
 
 **`fetch` — the programmatic convenience verb.** Minimal arguments: an
 endpoint identity from the public catalog, one `auth=` parameter, and little
-else. Returns an eager Polars DataFrame, end-to-end in memory — it touches no
-SQLite, no disk, no cursor, no run ledger, no roster. The governing principle
-is normative: **fetch is a convenience and deliberately limits options —
+else — as built (`fleetpull/api/`, the top-tier public-surface package), one
+keyword flag: `use_truststore` (default False, named identically to the
+`HttpConfig` field it coerces into — the auth-ingress
+simple-shape-to-rich-internal pattern applied to transport posture, present
+because the `HttpConfig` default is deliberately off yet fetch must still
+work behind TLS-intercepting proxies; timeouts and further transport posture
+stay config-phase). Returns an eager Polars DataFrame, end-to-end in memory —
+it touches no SQLite, no disk, no cursor, no run ledger, no roster. The
+governing principle is normative: **fetch is a convenience and deliberately limits options —
 anything beyond its minimal surface belongs to the config path.** A user who
 wants windows, incremental resume, partitioned storage, or fan-out is not a
 `fetch` user with missing parameters; they are a `sync` user.
@@ -1030,9 +1036,12 @@ a windowed result grows with window width and fleet activity — unbounded by
 anything the caller controls in memory. The exposed subset is a *type*, not a
 runtime allowlist: identity types encode sync mode, and `fetch`'s signature
 accepts only snapshot-typed identities, so handing it a windowed identity
-fails mypy rather than raising at runtime. Starting narrow is the reversible
-choice — adding windowed fetch later would be an additive extension, while
-shipping it now and retracting it would be a break.
+fails mypy — backed, as built, by a runtime exposure guard (the first
+statement of `fetch` raises `ConfigurationError` naming the endpoint and its
+mode, before any client construction), because the convenience verb's
+audience includes notebooks where mypy never runs. Starting narrow is the
+reversible choice — adding windowed fetch later would be an additive
+extension, while shipping it now and retracting it would be a break.
 
 **The `Endpoints` catalog.** Endpoint addressing is a public catalog of inert
 typed identities: `from fleetpull import Endpoints`, then
@@ -1861,10 +1870,12 @@ resolution (item 1, done).
    and the script comment drifts). The item-6-owned findings (roster
    discovery, the state DB path key, `runs.row_count` semantics, the
    rate-limit YAML key) remain open in `AUDIT.md`.
-5. **Build the fetch side of the public API (§10), after the audit:** the
-   `Endpoints` catalog (a static committed module plus the two-way parity
-   discipline test against the discovery registry), the typed endpoint
-   identities, `fetch` itself, and the auth ingress coercion.
+5. **Build the fetch side of the public API (§10), after the audit (done —
+   `fleetpull/api/`, 2026-07-07):** the `Endpoints` catalog (a static
+   committed module plus the two-way parity discipline test against the
+   discovery registry), the typed endpoint identities, `fetch` itself, and
+   the auth ingress coercion. The snapshot script re-pointed through the
+   verb is the audit's consumer-cost evidence, closed.
 6. **Config-YAML framework, then the YAML-run tool** — in that order, and
    after the API: the YAML is a serialization of the API surface, and built
    earlier it would serialize a guess. This item absorbs sync's programmatic

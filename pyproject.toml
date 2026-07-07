@@ -291,6 +291,10 @@ layers = [
 name = "The package-wide vertical: every top-level package sits in its layer"
 type = "layers"
 layers = [
+    # api is its own tier above the orchestrator, not a sibling: sync
+    # (roadmap item 6) lands in api and composes the orchestrator entry,
+    # which same-tier independence would forbid.
+    "fleetpull.api",
     "fleetpull.orchestrator",
     "fleetpull.storage",
     "fleetpull.endpoints | fleetpull.records | fleetpull.state",
