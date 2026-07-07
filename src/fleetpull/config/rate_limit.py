@@ -4,17 +4,18 @@
 One ``RateLimitConfig`` describes the request budget for one quota scope
 (default: one provider). The limiter registry (``network/limits/``) maps
 quota-scope strings to these configs; the limiter reads its refill rate and
-capacity from here. Homed in ``config/`` with the other YAML-facing models
-(one module per config section, house rule); each provider config carries
-its scope's values with a documented default.
+capacity from here. Homed in ``config/`` with the other YAML-facing models;
+each provider config carries its scope's values with a documented default.
 """
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
+
+from fleetpull.config.base import ConfigModel
 
 __all__: list[str] = ['RateLimitConfig']
 
 
-class RateLimitConfig(BaseModel):
+class RateLimitConfig(ConfigModel):
     """Token-bucket and concurrency settings for one quota scope.
 
     ``burst`` is the bucket CAPACITY: the maximum number of tokens the
@@ -29,8 +30,6 @@ class RateLimitConfig(BaseModel):
         burst: Bucket capacity in tokens (>= 1).
         max_concurrency: Maximum requests in flight at once (>= 1).
     """
-
-    model_config = ConfigDict(frozen=True, extra='forbid', validate_default=True)
 
     requests_per_period: int = Field(ge=1)
     period_seconds: float = Field(gt=0)
