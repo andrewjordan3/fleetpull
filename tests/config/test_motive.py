@@ -62,3 +62,23 @@ class TestMotiveConfig:
     def test_rejects_unknown_fields(self) -> None:
         with pytest.raises(ValidationError):
             MotiveConfig(base_ur='https://typo.test')  # type: ignore[call-arg]
+
+    def test_api_key_defaults_to_none(self) -> None:
+        assert MotiveConfig().api_key is None
+
+    def test_api_key_string_coerces_to_secret(self) -> None:
+        config = MotiveConfig(api_key='synthetic-motive-key-000')
+        assert config.api_key is not None
+        assert config.api_key.get_secret_value() == 'synthetic-motive-key-000'
+
+    def test_api_key_is_masked_in_reprs(self) -> None:
+        config = MotiveConfig(api_key='synthetic-motive-key-000')
+        assert 'synthetic-motive-key-000' not in repr(config)
+        assert 'synthetic-motive-key-000' not in str(config)
+
+    def test_endpoints_default_to_empty(self) -> None:
+        assert MotiveConfig().endpoints == ()
+
+    def test_endpoints_list_coerces_to_tuple(self) -> None:
+        config = MotiveConfig(endpoints=['vehicles', 'vehicle_locations'])
+        assert config.endpoints == ('vehicles', 'vehicle_locations')

@@ -10,7 +10,7 @@ import logging
 from datetime import UTC, date, datetime, time
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 __all__: list[str] = ['SyncConfig']
 
@@ -34,13 +34,24 @@ class SyncConfig(BaseModel):
             output location for the whole sync -- so it lives here rather than being
             threaded onto each runner. Required: there is no safe default for where
             output lands. A string path coerces to ``Path``; the storage layer
-            normalizes it via ``resolve_path``.
+            normalizes it via ``resolve_path``. Its YAML home is the ``storage:``
+            section: ``load_config`` feeds ``storage.dataset_root`` into this field
+            and rejects a user-supplied ``sync.dataset_root`` key.
+        lookback_days: Package-wide late-arrival re-fetch margin in whole days.
+            Optional; when set, the loader fans it into every enabled provider's
+            config at composition time. ``None`` means each provider's own
+            documented default stands. No per-provider YAML override exists in
+            this cut.
+        cutoff_days: Package-wide trailing-edge holdback in whole days, the
+            complement of ``lookback_days``; same fan-in and ``None`` semantics.
     """
 
     model_config = ConfigDict(frozen=True, extra='forbid', validate_default=True)
 
     default_start_date: date
     dataset_root: Path
+    lookback_days: int | None = Field(default=None, ge=0)
+    cutoff_days: int | None = Field(default=None, ge=0)
 
     @property
     def default_start_datetime(self) -> datetime:

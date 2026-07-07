@@ -1107,6 +1107,31 @@ deliberately deferred to roadmap item 6, where the schema and the programmatic
 shell (`Sync(path).run()`) are designed as one unit. `fetch` was separable and
 designed first because its vocabulary does not depend on the schema.
 
+**The settled YAML schema (config vertical 1, built — `load_config`).**
+Sections: `sync` (`default_start_date` required; optional package-wide
+`lookback_days` / `cutoff_days` that fan into every enabled provider's config
+at load time — no per-provider override in this cut, so those two keys are
+rejected inside a provider section), `storage` (`dataset_root` required; the
+loader feeds it into the runtime `SyncConfig`, so `sync.dataset_root` is not
+a YAML key and is likewise rejected), `state` (`database_path`, defaulting to
+`<dataset_root>/.fleetpull/state.sqlite3` — AUD-13's landing), `logging`
+(`console_level` / `file_level` / `file_path`; either file key enables file
+logging and the missing partner is defaulted — level to DEBUG, path to
+`<dataset_root>/.fleetpull/fleetpull.log`), `http` and `retry` (the existing
+models' fields, wholesale-optional), and `providers.motive` (`api_key`,
+`endpoints`, `base_url`, `records_per_page`, `rate_limit`). Unknown keys are
+`ConfigurationError`s at every level (`extra='forbid'` throughout). A
+provider is enabled iff its credential resolves AND its `endpoints` list is
+non-empty: endpoints with no resolvable credential raise, naming the YAML
+field and the environment variable; a credential with no endpoints logs one
+load-time WARNING and the provider stays disabled. Credentials come from the
+YAML literal or fall back to the conventional environment variable
+(`MOTIVE_API_KEY`), the literal winning, and are `SecretStr` from parse time
+on. Endpoint names stay unvalidated strings at this tier — the catalog lives
+in `api`, above `config`, so name validation happens at `Sync` construction.
+The public windowed-bound vocabulary (`start_date` / `end_date`) appears
+nowhere in this schema, by design.
+
 **Vocabulary bound now for item 6.** The public names for windowed bounds are
 `start_date` / `end_date` — never bare `start`/`end` — matching the package's
 existing `_date` vocabulary (`default_start_date`, the
@@ -1141,13 +1166,29 @@ fleetpull/
                    #   the network contract, records, and the orchestrator
     provider.py    # Provider (§8) — the second vocabulary enum; provider identity, homed in the
                    #   leaf for the same cycle-free reason as ResponseCategory
-  config/          # Pydantic models for user-provided YAML, one module per section; the YAML loader joins in a later prompt
+  config/          # Pydantic models for user-provided YAML, one module per section,
+                   #   plus the loader and its cross-section composition (§10 schema)
     logger.py      # LoggerConfig
     geotab.py      # GeotabAuthConfig (server validated as a bare hostname, §8)
     retry.py       # RetryConfig — attempt budgets, backoff shape, fallback penalty (§7)
     http.py        # HttpConfig — connect/read timeouts, truststore opt-in
-    motive.py      # MotiveConfig (base_url, records_per_page, lookback_days, cutoff_days)
-    sync.py        # SyncConfig (default_start_date) — the cold-start backfill anchor
+    motive.py      # MotiveConfig (api_key, endpoints, base_url, records_per_page,
+                   #   lookback_days, cutoff_days — the last two runtime-only, fed by
+                   #   defaults or the sync fan-in, never YAML keys in this cut)
+    sync.py        # SyncConfig (default_start_date, dataset_root, lookback_days,
+                   #   cutoff_days) — the sync-wide runtime bundle; dataset_root is
+                   #   fed from the storage section by the loader
+    storage.py     # StorageConfig (dataset_root) — the storage YAML section
+    state.py       # StateConfig (database_path) — AUD-13's landing
+    providers.py   # ProvidersConfig — the providers-section container, one optional
+                   #   entry per provider
+    root.py        # FleetpullConfig — the whole-document schema root
+    loader.py      # load_config — yaml.safe_load, shape validation, actionable
+                   #   ConfigurationErrors, the YAML-surface masking of runtime-only keys
+    composition.py # cross-section defaults (state/log paths), env credential fallback,
+                   #   enablement rules, window-knob fan-in
+    provider.py    # ProviderConfig — the shared per-provider base (quota_scope,
+                   #   rate_limit, endpoints)
     rate_limit.py  # RateLimitConfig — one quota scope's token-bucket budget; each
                    #   provider config defaults its own (AUDIT AUD-12)
   logger/
