@@ -51,3 +51,27 @@ class TestSyncConfig:
         config = SyncConfig(default_start_date=date(2024, 1, 1), dataset_root=_ROOT)
         assert config.default_start_datetime == datetime(2024, 1, 1, tzinfo=UTC)
         assert config.default_start_datetime.tzinfo is UTC
+
+    def test_window_knobs_default_to_none(self) -> None:
+        config = SyncConfig(default_start_date=date(2024, 1, 1), dataset_root=_ROOT)
+        assert config.lookback_days is None
+        assert config.cutoff_days is None
+
+    def test_accepts_window_knobs(self) -> None:
+        config = SyncConfig(
+            default_start_date=date(2024, 1, 1),
+            dataset_root=_ROOT,
+            lookback_days=3,
+            cutoff_days=1,
+        )
+        assert config.lookback_days == 3
+        assert config.cutoff_days == 1
+
+    @pytest.mark.parametrize('knob', ['lookback_days', 'cutoff_days'])
+    def test_rejects_negative_window_knobs(self, knob: str) -> None:
+        with pytest.raises(ValidationError):
+            SyncConfig(
+                default_start_date=date(2024, 1, 1),
+                dataset_root=_ROOT,
+                **{knob: -1},
+            )

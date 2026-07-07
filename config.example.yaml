@@ -1,0 +1,74 @@
+# fleetpull configuration -- copy this file (e.g. to config.yaml), edit the
+# required values, and hand its path to the sync entry point. Commented-out
+# keys are optional and show the default that applies when the key is absent.
+# Unknown keys are rejected at any level.
+
+sync:
+  # REQUIRED. The cold-start anchor: the UTC calendar date history begins
+  # from on a watermark endpoint's very first run. Goes inert once observed
+  # data or completed coverage exists.
+  default_start_date: 2026-06-01
+
+  # Package-wide late-arrival window knobs, in whole days. When present they
+  # fan into every enabled provider's config; when absent, each provider's
+  # own documented default stands. There is no per-provider override.
+  # lookback_days: 7
+  # cutoff_days: 0
+
+storage:
+  # REQUIRED. The root directory the parquet dataset is written under
+  # ({root}/{provider}/{endpoint}/). Use a real local path -- never a
+  # cloud-synced folder (OneDrive, Dropbox, Google Drive): sync clients
+  # fight the writer's atomic renames.
+  dataset_root: /data/fleetpull
+
+# state:
+#   # Where operational state (SQLite) lives. Keep it on a real local disk
+#   # even when dataset_root sits on a network filesystem.
+#   database_path: /data/fleetpull/.fleetpull/state.sqlite3
+
+# logging:
+#   console_level: INFO
+#   # Either file key enables file logging; the missing partner is defaulted
+#   # (file_level -> DEBUG, file_path -> <dataset_root>/.fleetpull/fleetpull.log).
+#   # file_level: DEBUG
+#   # file_path: /var/log/fleetpull.log
+
+# http:
+#   # Build TLS contexts from the operating system's trust store -- required
+#   # behind TLS-intercepting corporate proxies (Zscaler and kin).
+#   use_truststore: false
+#   connect_timeout_seconds: 10.0
+#   read_timeout_seconds: 30.0
+
+# retry:
+#   transient_max_failures: 3
+#   transient_backoff_base_seconds: 1.0
+#   transient_backoff_cap_seconds: 30.0
+#   rate_limited_max_failures: 10
+#   fallback_penalty_seconds: 60.0
+
+providers:
+  motive:
+    # Set your API key as an environment variable rather than writing it here:
+    #   Linux/macOS (current shell):   export MOTIVE_API_KEY='...'
+    #     persistent: add that line to ~/.bashrc or ~/.zshrc
+    #   Windows PowerShell (current shell):   $env:MOTIVE_API_KEY = '...'
+    #     persistent: setx MOTIVE_API_KEY "..."
+    #     (setx takes effect in NEW shells only -- reopen your terminal)
+    # api_key: ''
+
+    # The endpoints to sync, by catalog name. A provider with endpoints
+    # listed requires a resolvable credential; a credential with no
+    # endpoints leaves the provider disabled (with a load-time warning).
+    endpoints:
+      - vehicles
+      - vehicle_locations
+
+    # base_url: https://api.gomotive.com
+    # records_per_page: 100
+    # rate_limit:
+    #   requests_per_period: 60
+    #   period_seconds: 60.0
+    #   burst: 10
+    #   max_concurrency: 2
