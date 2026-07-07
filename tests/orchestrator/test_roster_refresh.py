@@ -1,8 +1,10 @@
 """Tests for fleetpull.orchestrator.roster_refresh."""
 
+import logging
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 
+import polars as pl
 import pytest
 
 from fleetpull.endpoints import EndpointRegistry
@@ -13,7 +15,11 @@ from fleetpull.endpoints.shared import (
     StorageKind,
     WatermarkMode,
 )
-from fleetpull.exceptions import AuthenticationError, ConfigurationError
+from fleetpull.exceptions import (
+    AuthenticationError,
+    ConfigurationError,
+    ProviderResponseError,
+)
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import FetchedPage, TransportClient
 from fleetpull.network.contract import (
@@ -23,6 +29,7 @@ from fleetpull.network.contract import (
     RequestSpec,
 )
 from fleetpull.orchestrator.roster_refresh import RosterRefreshCoordinator
+from fleetpull.records import extract_roster_members
 from fleetpull.roster import RosterDefinition, RosterKey
 from fleetpull.state import RosterDelta
 from fleetpull.timing import FrozenClock
@@ -343,3 +350,72 @@ class TestApplyListing:
         coordinator.apply_listing(_roster_definition(), {'1'})
         assert ledger.started == []
         assert ledger.completed == []
+
+
+class TestReconcileGuard:
+    """The reconcile guard: a roster is never reconciled to empty (Part D)."""
+
+    def test_apply_listing_rejects_a_zero_record_listing(self) -> None:
+        # Trigger shape 1: the feeder listed nothing at all.
+        coordinator, store, ledger = _coordinator(
+            feeder=_snapshot_feeder(),
+            last_success=None,
+            current={'1': 0, '2': 1},
+            client=_CannedClient([]),
+        )
+        with pytest.raises(ProviderResponseError, match='never reconciled to empty'):
+            coordinator.apply_listing(_roster_definition(), set())
+        assert store.applied == []  # the prior roster is untouched
+        assert ledger.completed == []  # staleness cannot advance
+
+    def test_apply_listing_rejects_an_all_null_column_listing(self) -> None:
+        # Trigger shape 2: records existed but every member value was null,
+        # so the extractor filtered the listing down to nothing.
+        collector_frame = pl.DataFrame({'vehicle_id': [None, None]})
+        listed = extract_roster_members(collector_frame, 'vehicle_id')
+        assert listed == set()
+        coordinator, store, ledger = _coordinator(
+            feeder=_snapshot_feeder(),
+            last_success=None,
+            current={'1': 0},
+            client=_CannedClient([]),
+        )
+        with pytest.raises(ProviderResponseError, match='never reconciled to empty'):
+            coordinator.apply_listing(_roster_definition(), listed)
+        assert store.applied == []
+        assert ledger.completed == []
+
+    def test_harvest_with_an_empty_listing_degrades_like_a_failed_refresh(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # The harvest routes its reconcile through apply_listing, so an empty
+        # feeder listing takes exactly the failed-HTTP-refresh path: the run
+        # is marked failed, the prior roster stays, staleness never advances.
+        coordinator, store, ledger = _coordinator(
+            feeder=_snapshot_feeder(),
+            last_success=_NOW - timedelta(days=2),
+            current={'1': 0, '2': 1},
+            client=_CannedClient([_page([])]),
+        )
+        with caplog.at_level(logging.WARNING):
+            coordinator.refresh_if_stale(_roster_definition())
+        assert store.applied == []
+        assert ledger.completed == []
+        assert len(ledger.failed) == 1
+        assert any(
+            'keeping 2 existing members' in r.getMessage() for r in caplog.records
+        )
+
+    def test_harvest_with_an_empty_listing_reraises_on_cold_start(self) -> None:
+        # No prior roster to keep means nothing to degrade to: re-raise.
+        coordinator, store, ledger = _coordinator(
+            feeder=_snapshot_feeder(),
+            last_success=None,
+            current={},
+            client=_CannedClient([_page([])]),
+        )
+        with pytest.raises(ProviderResponseError, match='never reconciled to empty'):
+            coordinator.refresh_if_stale(_roster_definition())
+        assert store.applied == []
+        assert ledger.completed == []
+        assert len(ledger.failed) == 1
