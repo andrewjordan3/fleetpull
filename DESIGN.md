@@ -942,7 +942,8 @@ FleetpullError
 │   └── UnknownQuotaScopeError
 ├── AuthenticationError
 ├── ProviderResponseError
-└── RetriesExhaustedError
+├── RetriesExhaustedError
+└── SyncFailuresError
 ```
 
 | Exception | Consumer action |
@@ -951,6 +952,7 @@ FleetpullError
 | `AuthenticationError` | Fix credentials / account access. |
 | `ProviderResponseError` | Provider response was non-retryable or contract-violating; do not blindly rerun. |
 | `RetriesExhaustedError` | The transient/rate-limit budget ran out; rerunning later is reasonable. |
+| `SyncFailuresError` | One or more endpoints failed inside a sync run whose siblings continued; inspect `failures` (per-endpoint, in run order) and act per member. |
 
 Members are plain data carriers: typed fields for programmatic handling, a
 composed human message for `str()`. Instances never carry raw request or
@@ -1092,11 +1094,13 @@ typed schema — never `None`, never a schemaless frame — so downstream
 Polars is the only supported frame library for now; others are out of scope.
 
 **Public exceptions.** The documented `Raises` promise: consumers catch
-`FleetpullError` or its four public subclasses — `ConfigurationError`,
-`AuthenticationError`, `RetriesExhaustedError`, `ProviderResponseError` (§8).
-Every other exception type is internal and renameable. The aggregate
-multi-endpoint failure exception joins the public set when sync lands
-(item 6).
+`FleetpullError` or its public subclasses — `ConfigurationError`,
+`AuthenticationError`, `RetriesExhaustedError`, `ProviderResponseError` (§8),
+and `SyncFailuresError`, the aggregate a sync run raises after letting
+siblings continue: it carries the per-endpoint failures (`EndpointFailure`:
+provider, endpoint, the caught exception) in run order, and is deliberately
+not an `ExceptionGroup` so the documented `except FleetpullError:` contract
+keeps catching it. Every other exception type is internal and renameable.
 
 **`sync` — the config-driven verb.** Constructed on a path to the YAML config
 (`Path` or `str`); a `run()` method returning `None`; failure signaled by
@@ -1106,6 +1110,26 @@ sync means designing the config schema, so sync's full vocabulary is
 deliberately deferred to roadmap item 6, where the schema and the programmatic
 shell (`Sync(path).run()`) are designed as one unit. `fetch` was separable and
 designed first because its vocabulary does not depend on the schema.
+
+**`Sync`, as built (`fleetpull/api/sync.py`).** Construction is validation
+only: the config loads via `from_yaml`, every selected endpoint name is
+checked against the public catalog (the validation deliberately absent below
+the `api` tier), and zero enabled providers raises — a sync that syncs
+nothing is a configuration failure to surface, not a no-op. `run()` applies
+the logging section first (`setup_logger`), then composes the whole run from
+the validated config: the state database at the resolved
+`state.database_path`, the stores, the discovered endpoint and roster
+registries, the limiter registry from the precedence-resolved provider
+configs, and per-provider client profiles through the auth ingress (which
+accepts the config's `SecretStr` directly). Endpoints run sequentially
+(concurrency is the next vertical) in feeder-first order derived from the
+roster bindings via `sourced_by` — never a user-facing key; config order
+stands within ties — and commit independently: an endpoint's
+`FleetpullError` is recorded while siblings continue, any other exception is
+a bug and propagates immediately, and a run with failures ends by raising
+`SyncFailuresError` with every failure in run order. Only the selected set
+runs — an unselected feeder is never run on a consumer's behalf; roster
+freshness stays the refresh coordinator's job at fan-out time.
 
 **The settled YAML schema (rebuilt — `FleetpullConfig.from_yaml` is the
 loading API).** One frozen nested model family IS the schema: the sections
@@ -1658,9 +1682,16 @@ observer on the run — the runner hands each post-validation frame to an
 opaque `BatchObserver` hook and stays roster-blind — collecting each sourced
 roster's distinct `source_column` values (values only, never frames), and
 after the run returns `Executed` it hands each collected listing to the
-coordinator's `apply_listing` to reconcile unconditionally. A failed run
-applies nothing; a `CaughtUp` run executed nothing, so there is no listing to
-apply. A sourced definition that is not snapshot-mode is rejected with
+coordinator's `apply_listing` — the reconcile choke point, whose guard means
+reconciliation is no longer unconditional: **a roster is never reconciled to
+empty**. An empty listing (the provider returned nothing, or every member
+value filtered out) is a failed refresh, not a membership fact — reconciling
+it would mass-increment absence counts and, with an eviction threshold,
+evict the entire roster through systematic provider garbage. The prior
+membership stands; the harvest route degrades exactly like a failed HTTP
+refresh (run marked failed, staleness unadvanced), and the tap route
+propagates, failing the endpoint loudly. A failed run applies nothing; a
+`CaughtUp` run executed nothing, so there is no listing to apply. A sourced definition that is not snapshot-mode is rejected with
 `ConfigurationError` before anything runs — `reconcile` is only correct over
 a complete listing, which only a snapshot feeder produces — mirroring the
 coordinator's harvest-route guard, with the same rule enforced at build time

@@ -24,6 +24,10 @@ storage:
   # fight the writer's atomic renames.
   dataset_root: /data/fleetpull
 
+  # Whether write-time compaction drops exact-duplicate rows (semantic
+  # dedup is out of scope by design). Optional; default true.
+  # drop_exact_duplicates: true
+
 # state:
 #   # Where operational state (SQLite) lives. Keep it on a real local disk
 #   # even when dataset_root sits on a network filesystem. Optional; default:
