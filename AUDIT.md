@@ -396,6 +396,8 @@ against `build_endpoint_registry`) → `ProviderProfile` from the auth ingress
 `Endpoints` catalog module, the snapshot-typed identities, and the two-way
 parity test (§10). Nothing else.
 
+**Built as mapped (roadmap item 5, 2026-07-07):** `fleetpull/api/` composes exactly this trace; the parity test and the exposure-gate negative shapes ride the pytest gate.
+
 ### The item-6 schema seed (the config-knob column)
 
 | Candidate key | Source | Exists today? |
