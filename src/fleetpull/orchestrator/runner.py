@@ -34,7 +34,7 @@ from typing import Protocol
 
 import polars as pl
 
-from fleetpull.config import SyncConfig
+from fleetpull.config import FleetpullConfig
 from fleetpull.endpoints.shared import (
     EndpointDefinition,
     FeedMode,
@@ -203,9 +203,9 @@ class EndpointRunner:
     """Runs one endpoint to completion, dispatching on its sync mode.
 
     Constructed once with its five collaborators (client source, run recorder,
-    clock, cursor access, sync config); ``run`` takes the endpoint and its request
-    driver, so one instance runs every endpoint. The snapshot and watermark arms
-    are built; the feed arm raises ``NotImplementedError``.
+    clock, cursor access, the root config); ``run`` takes the endpoint and its
+    request driver, so one instance runs every endpoint. The snapshot and
+    watermark arms are built; the feed arm raises ``NotImplementedError``.
     """
 
     def __init__(
@@ -214,7 +214,7 @@ class EndpointRunner:
         run_recorder: RunRecorder,
         clock: Clock,
         cursor_access: CursorAccess,
-        sync_config: SyncConfig,
+        config: FleetpullConfig,
     ) -> None:
         """
         Args:
@@ -222,15 +222,17 @@ class EndpointRunner:
             run_recorder: Records each run's lifecycle (the ledger).
             clock: Supplies the run instant (trailing edge, future-event guard).
             cursor_access: Reads the stored watermark and persists the advance.
-            sync_config: Sync-wide settings (the dataset root and the cold-start
-                anchor).
+            config: The root config -- the container its composition root
+                already holds. The runner reads exactly two values:
+                ``sync.default_start_datetime`` (the cold-start anchor) and
+                ``storage.dataset_root`` (where the writers land).
         """
         self._client_source = client_source
         self._run_recorder = run_recorder
         self._clock = clock
         self._cursor_access = cursor_access
-        self._sync_config = sync_config
-        self._dataset_root = sync_config.dataset_root
+        self._sync_config = config.sync
+        self._dataset_root = config.storage.dataset_root
 
     def run(
         self,

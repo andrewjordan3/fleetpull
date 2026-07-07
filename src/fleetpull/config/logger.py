@@ -10,15 +10,18 @@ Level fields accept standard level names case-insensitively ('debug',
 'INFO') or the standard integer levels (10, 20, 30, 40, 50) and are
 normalized to integers at validation time. Booleans, nonstandard
 integers, deprecated aliases (WARN, FATAL), and NOTSET are rejected.
-``file_path`` expands ``~`` and resolves to an absolute path at
-validation time.
+``file_path`` normalizes through ``paths.resolve_path`` at validation
+time, like every path field in the config layer.
 """
 
 import logging
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import field_validator
+
+from fleetpull.config.base import ConfigModel
+from fleetpull.paths import resolve_path
 
 __all__: list[str] = ['LoggerConfig']
 
@@ -96,7 +99,7 @@ def _coerce_log_level(raw_value: Any) -> int:
     )
 
 
-class LoggerConfig(BaseModel):
+class LoggerConfig(ConfigModel):
     """
     User-facing logging configuration.
 
@@ -104,8 +107,8 @@ class LoggerConfig(BaseModel):
         console_level: Minimum level for stderr console output. Accepts
             a standard level name or integer; normalized to int.
             Defaults to INFO.
-        file_path: Path to a log file. ``~`` is expanded and the path
-            is resolved to absolute at validation time. When None (the
+        file_path: Path to a log file, normalized through
+            ``paths.resolve_path`` at validation. When None (the
             default), file logging is disabled and ``file_level`` is
             inert.
         file_level: Minimum level for file output. Required with a
@@ -113,12 +116,6 @@ class LoggerConfig(BaseModel):
             use site; it simply has no effect while ``file_path`` is
             None.
     """
-
-    model_config = ConfigDict(
-        frozen=True,
-        extra='forbid',
-        validate_default=True,
-    )
 
     console_level: int = logging.INFO
     file_path: Path | None = None
@@ -135,18 +132,8 @@ class LoggerConfig(BaseModel):
         # correct field via its loc.
         return _coerce_log_level(raw_value)
 
-    @field_validator('file_path', mode='before')
+    @field_validator('file_path')
     @classmethod
-    # typing-justified: mode='before' validator input is contractually arbitrary
-    def _expand_and_resolve_file_path(cls, raw_value: Any) -> Path | None:
-        # ``Any``: same rationale — arbitrary pre-validation YAML
-        # input, narrowed by the isinstance check below.
-        """Expand ``~`` and resolve to absolute; ``None`` passes through."""
-        if raw_value is None:
-            return None
-        if not isinstance(raw_value, str | Path):
-            raise ValueError(
-                f'file_path must be a string, Path, or null, '
-                f'got {type(raw_value).__name__}'
-            )
-        return Path(raw_value).expanduser().resolve()
+    def _resolve(cls, value: Path | None) -> Path | None:
+        """Normalize the path lexically when present; ``None`` passes through."""
+        return None if value is None else resolve_path(value)
