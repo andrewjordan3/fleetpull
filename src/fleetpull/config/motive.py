@@ -9,7 +9,7 @@ surfaces are built. One module per config section (house rule).
 import logging
 from typing import ClassVar
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 
 from fleetpull.config.provider import ProviderConfig
 from fleetpull.config.rate_limit import RateLimitConfig
@@ -65,10 +65,20 @@ class MotiveConfig(ProviderConfig):
             defaults to the conservative values the live diagnostic proved
             safe (Motive's real published limits are unverified -- DESIGN
             §13); see ``_MOTIVE_DEFAULT_RATE_LIMIT`` for the rationale.
+        api_key: The Motive API credential for the config-driven sync
+            path (``fetch`` takes its credential as an argument instead).
+            Optional in YAML -- ``load_config`` falls back to the
+            ``MOTIVE_API_KEY`` environment variable. ``SecretStr`` from
+            parse time on: masked in every repr and never logged.
+        lookback_days / cutoff_days are runtime fields only in this cut:
+            the loader rejects them as YAML keys under
+            ``providers.motive`` -- the package-wide ``sync`` knobs are
+            the only window controls (no per-provider override).
     """
 
     quota_scope: ClassVar[QuotaScope] = QuotaScope.MOTIVE
 
+    api_key: SecretStr | None = None
     base_url: str = Field(default=_MOTIVE_DEFAULT_BASE_URL)
     rate_limit: RateLimitConfig = Field(default=_MOTIVE_DEFAULT_RATE_LIMIT)
     records_per_page: int = Field(

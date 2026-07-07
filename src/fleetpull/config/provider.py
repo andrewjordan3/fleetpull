@@ -46,6 +46,11 @@ class ProviderConfig(BaseModel):
             bind it fails loudly on first attribute access.
         rate_limit: The token-bucket budget for this provider's scope.
             Each subclass supplies its own documented default.
+        endpoints: The endpoint names this provider syncs, as listed in
+            the YAML section. Strings here -- validation against the
+            endpoint catalog happens at ``Sync`` construction, above this
+            tier, never in ``config``. Default empty; a provider with no
+            endpoints is disabled regardless of its credential.
     """
 
     model_config = ConfigDict(frozen=True, extra='forbid', validate_default=True)
@@ -53,3 +58,4 @@ class ProviderConfig(BaseModel):
     quota_scope: ClassVar[QuotaScope]
 
     rate_limit: RateLimitConfig
+    endpoints: tuple[str, ...] = ()

@@ -304,6 +304,7 @@ composition list is the item-5 build map (closing section).
 - **Verdict:** **blocks-the-API** (sync, item 6). Seed key:
   `state.database_path` with the §5 default.
 - **Owner:** item 6.
+- **Resolution (2026-07-07):** landed in config vertical 1 — `state.database_path` exists (`config/state.py`, optional in YAML) and `load_config` resolves it to the §5 default `<dataset_root>/.fleetpull/state.sqlite3` at composition time (`config/composition.py`).
 
 ### AUD-14 — stdlib tripwire exceptions escape the `FleetpullError` promise on the sync path
 - **Location (read):** `storage/writers.py` window tripwire (`ValueError`),
