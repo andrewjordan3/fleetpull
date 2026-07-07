@@ -8,12 +8,14 @@ use (inside the real authenticate function), and is never logged or
 included in ``repr()``/``str()`` output.
 """
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator
+
+from fleetpull.config.base import ConfigModel
 
 __all__: list[str] = ['GeotabAuthConfig']
 
 
-class GeotabAuthConfig(BaseModel):
+class GeotabAuthConfig(ConfigModel):
     """
     GeoTab authentication credentials and target database.
 
@@ -28,12 +30,6 @@ class GeotabAuthConfig(BaseModel):
             different resolved host — that is session state, not
             configuration, so it never lives here.
     """
-
-    model_config = ConfigDict(
-        frozen=True,
-        extra='forbid',
-        validate_default=True,
-    )
 
     username: str = Field(min_length=1)
     password: SecretStr

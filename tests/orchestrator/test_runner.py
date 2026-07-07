@@ -7,7 +7,12 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from fleetpull.config import SyncConfig
+from fleetpull.config import (
+    FleetpullConfig,
+    ProvidersConfig,
+    StorageConfig,
+    SyncConfig,
+)
 from fleetpull.endpoints.shared import (
     EndpointDefinition,
     FeedMode,
@@ -231,7 +236,11 @@ def _make_runner(  # noqa: PLR0913
         recorder,
         clock or FrozenClock(start_time_utc=_CLOCK_NOW),
         cursor_access or _StubCursorAccess(),
-        SyncConfig(default_start_date=default_start_date, dataset_root=tmp_path),
+        FleetpullConfig(
+            sync=SyncConfig(default_start_date=default_start_date),
+            storage=StorageConfig(dataset_root=tmp_path),
+            providers=ProvidersConfig(),
+        ),
     )
 
 
