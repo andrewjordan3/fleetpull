@@ -37,6 +37,7 @@ _LEVEL_NAME_TO_INT: dict[str, int] = {
 _ALLOWED_LEVEL_INTS: frozenset[int] = frozenset(_LEVEL_NAME_TO_INT.values())
 
 
+# typing-justified: mode='before' validator input is contractually arbitrary
 def _coerce_log_level(raw_value: Any) -> int:
     # ``Any``: receives the raw pre-validation value from a Pydantic
     # ``mode='before'`` validator, which is contractually arbitrary —
@@ -125,6 +126,7 @@ class LoggerConfig(BaseModel):
 
     @field_validator('console_level', 'file_level', mode='before')
     @classmethod
+    # typing-justified: mode='before' validator input is contractually arbitrary
     def _coerce_level(cls, raw_value: Any) -> int:
         # ``Any``: mode='before' validators receive arbitrary
         # pre-validation input; _coerce_log_level enumerates the
@@ -135,6 +137,7 @@ class LoggerConfig(BaseModel):
 
     @field_validator('file_path', mode='before')
     @classmethod
+    # typing-justified: mode='before' validator input is contractually arbitrary
     def _expand_and_resolve_file_path(cls, raw_value: Any) -> Path | None:
         # ``Any``: same rationale — arbitrary pre-validation YAML
         # input, narrowed by the isinstance check below.

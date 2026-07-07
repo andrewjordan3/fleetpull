@@ -11,6 +11,7 @@ from fleetpull.models.motive.vehicles import (
     Vehicle,
     VehicleStatus,
 )
+from fleetpull.vocabulary import JsonObject, JsonValue
 
 # Obviously-synthetic identifiers — never real VINs or fleet IDs in commits.
 _VEHICLE_ID: int = 8000001
@@ -18,11 +19,13 @@ _COMPANY_ID: int = 7000001
 _VIN: str = 'TESTVIN0000000001'
 _DRIVER_ID: int = 9000001
 _DEVICE_ID: int = 8800001
-_GROUP_IDS: list[int] = [101, 102]
+# list[JsonValue], not list[int]: the payload dict is a JsonObject, and the
+# invariant list arm of JsonValue would otherwise reject a list[int] value.
+_GROUP_IDS: list[JsonValue] = [101, 102]
 _SENTINEL: int = -1
 
 
-def _full_vehicle_payload() -> dict[str, object]:
+def _full_vehicle_payload() -> JsonObject:
     """Build a representative fully-populated Motive vehicle payload.
 
     Returns:
@@ -112,7 +115,7 @@ class TestVehicle:
 
     def test_deactivated_status_validates(self) -> None:
         # Live responses include 'deactivated'; confirm the enum accepts it.
-        payload: dict[str, object] = _full_vehicle_payload()
+        payload: JsonObject = _full_vehicle_payload()
         payload['status'] = 'deactivated'
         vehicle: Vehicle = Vehicle.model_validate(payload)
         assert vehicle.status is VehicleStatus.DEACTIVATED

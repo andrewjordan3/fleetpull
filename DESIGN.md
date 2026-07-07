@@ -1796,9 +1796,12 @@ bundle the two per-provider dependencies that share a session lifetime
 (auth strategy, classifier) into `ProviderProfile`, leaving the per-endpoint
 page decoder and quota scope to arrive on each `fetch_pages` call.
 
-**Vertical progress.** The Motive `vehicles` snapshot vertical is complete
-end-to-end (`client → validate_records → models_to_dataframe → persist`, exercised
-by a throwaway hand-run driver). The Motive `vehicle_locations`
+**Vertical progress.** The Motive `vehicles` snapshot vertical was proven
+complete end-to-end in June 2026 (`client → validate_records →
+models_to_dataframe → persist`, exercised by a throwaway hand-run driver).
+That driver has since been re-pointed through the public `fetch` surface
+(roadmap item 5) and no longer persists — the persist-ending trace is the
+June proof, not the script's current shape. The Motive `vehicle_locations`
 date-partitioned/watermark vertical has run end-to-end live
 (`scripts/run_vehicle_locations.py`, on local disk): the incremental loop
 mechanics are live-proven — cold backfill, watermark persistence and resume

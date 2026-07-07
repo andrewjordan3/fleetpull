@@ -45,6 +45,7 @@ def models_to_dataframe(
     """
     schema: dict[str, pl.DataType] = derive_schema(model_class)
     flat_fields = tuple(iter_flat_fields(model_class))
+    # typing-justified: flattened rows carry heterogeneous model-field values
     rows: list[dict[str, Any]] = [
         flatten_record(record=record, flat_fields=flat_fields) for record in records
     ]

@@ -63,6 +63,7 @@ def _default_provider_configs() -> list[ProviderConfig]:
     return [MotiveConfig()]
 
 
+# typing-justified: ingress guard; input unknowable by design; object forces narrowing
 def _require_snapshot_identity(endpoint: object) -> None:
     """Reject a non-snapshot identity before any client construction.
 

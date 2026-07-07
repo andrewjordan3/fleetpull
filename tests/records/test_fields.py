@@ -37,7 +37,8 @@ class _Sample(ResponseModel):
     block: _Block | None = None
 
 
-def _classify(annotation: Any) -> tuple[FieldKind, Any]:
+# typing-justified: annotation forms under test are arbitrary type expressions
+def _classify(annotation: Any) -> tuple[FieldKind, type]:
     return classify_annotation(
         annotation=annotation, owning_model_name='M', field_name='f'
     )
