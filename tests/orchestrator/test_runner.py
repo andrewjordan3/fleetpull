@@ -25,7 +25,6 @@ from fleetpull.endpoints.shared import (
 from fleetpull.exceptions import ConfigurationError, ProviderResponseError
 from fleetpull.incremental import (
     DateWatermark,
-    DateWindow,
     FeedToken,
     IncrementalCursor,
 )
@@ -33,7 +32,13 @@ from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import FetchedPage, TransportClient
 from fleetpull.network.contract import DecodedPage, PageAdvance, RequestSpec
 from fleetpull.orchestrator.outcome import CaughtUp, Executed
-from fleetpull.orchestrator.runner import ClientSource, CursorAccess, EndpointRunner
+from fleetpull.orchestrator.runner import (
+    ClientSource,
+    CursorAccess,
+    EndpointRunner,
+    RunStateAccess,
+)
+from fleetpull.state import StateDatabase, WorkUnitStore, migrate_to_head
 from fleetpull.timing import FrozenClock
 from fleetpull.vocabulary import JsonObject, JsonValue, Provider, QuotaScope
 
@@ -219,9 +224,17 @@ def _feed_definition() -> EndpointDefinition[_SnapshotModel]:
     )
 
 
-# A test construction helper centralizing the runner's five-dependency constructor:
-# its parameters are the runner's own collaborators plus the cold-start date, which
-# do not bundle into a meaningful object -- so the >5-arg count is intrinsic here.
+def _unit_store(tmp_path: Path, clock: FrozenClock) -> WorkUnitStore:
+    """A real work-unit store over a migrated tmp database."""
+    database = StateDatabase(tmp_path / 'state.sqlite3')
+    database.initialize()
+    migrate_to_head(database)
+    return WorkUnitStore(database, clock)
+
+
+# A test construction helper centralizing the runner's collaborators plus the
+# cold-start date, which do not bundle into a meaningful object -- so the
+# >5-arg count is intrinsic here.
 def _make_runner(  # noqa: PLR0913
     recorder: _RecordingRecorder,
     tmp_path: Path,
@@ -231,11 +244,15 @@ def _make_runner(  # noqa: PLR0913
     cursor_access: CursorAccess | None = None,
     default_start_date: date = date(2024, 1, 1),
 ) -> EndpointRunner:
+    run_clock = clock or FrozenClock(start_time_utc=_CLOCK_NOW)
     return EndpointRunner(
         client_source or _StubClientSource(),
-        recorder,
-        clock or FrozenClock(start_time_utc=_CLOCK_NOW),
-        cursor_access or _StubCursorAccess(),
+        RunStateAccess(
+            recorder=recorder,
+            cursors=cursor_access or _StubCursorAccess(),
+            units=_unit_store(tmp_path, run_clock),
+        ),
+        run_clock,
         FleetpullConfig(
             sync=SyncConfig(default_start_date=default_start_date),
             storage=StorageConfig(dataset_root=tmp_path),
@@ -648,105 +665,3 @@ class TestWatermarkRun:
         runner = _make_runner(recorder, tmp_path, default_start_date=date(2026, 6, 12))
         with pytest.raises(RuntimeError, match='fetch blew up'):
             runner.run(_watermark_definition(), _FailingDriver())
-
-
-class TestRunBackfillUnit:
-    def _window(self, start_day: int, end_day: int) -> DateWindow:
-        return DateWindow(
-            start=datetime(2026, 6, start_day, tzinfo=UTC),
-            end=datetime(2026, 6, end_day, tzinfo=UTC),
-        )
-
-    def test_executes_the_given_window(self, tmp_path: Path) -> None:
-        recorder = _RecordingRecorder()
-        cursor = _StubCursorAccess()
-        runner = _make_runner(recorder, tmp_path, cursor_access=cursor)
-        window = self._window(1, 4)
-        batch = _wm_batch(datetime(2026, 6, 2, 9, tzinfo=UTC))
-        outcome = runner.run_backfill_unit(
-            _watermark_definition(), _CannedDriver([batch]), window
-        )
-        assert isinstance(outcome, Executed)
-        assert outcome.records_fetched == 1
-        assert recorder.windows == [(window.start, window.end)]
-        assert recorder.completed == [(1, 1)]
-        assert (tmp_path / 'motive' / 'locations' / 'date=2026-06-02').exists()
-
-    def test_advances_no_cursor(self, tmp_path: Path) -> None:
-        # A strictly-forward observation would advance the watermark arm; the
-        # backfill entry suppresses the advance (advance=None).
-        recorder = _RecordingRecorder()
-        cursor = _StubCursorAccess(
-            DateWatermark(watermark=datetime(2026, 6, 1, tzinfo=UTC))
-        )
-        runner = _make_runner(recorder, tmp_path, cursor_access=cursor)
-        batch = _wm_batch(datetime(2026, 6, 3, 12, tzinfo=UTC))
-        outcome = runner.run_backfill_unit(
-            _watermark_definition(), _CannedDriver([batch]), self._window(1, 4)
-        )
-        assert isinstance(outcome, Executed)
-        assert cursor.set_calls == []
-        assert recorder.completed == [(1, 1)]
-
-    def test_fans_whole_roster_into_chunk_partitions(self, tmp_path: Path) -> None:
-        # Several members' pages over one chunk: the partition is replaced with
-        # every member's rows (the in-full refetch), finalized once.
-        recorder = _RecordingRecorder()
-        runner = _make_runner(recorder, tmp_path)
-        member_one = _wm_batch(
-            datetime(2026, 6, 2, 8, tzinfo=UTC), datetime(2026, 6, 3, 8, tzinfo=UTC)
-        )
-        member_two = _wm_batch(datetime(2026, 6, 2, 9, tzinfo=UTC))
-        driver = _CannedDriver([member_one, member_two])
-        outcome = runner.run_backfill_unit(
-            _watermark_definition(), driver, self._window(1, 5)
-        )
-        assert isinstance(outcome, Executed)
-        assert outcome.records_fetched == 3
-        locations = tmp_path / 'motive' / 'locations'
-        june_two = pl.read_parquet(locations / 'date=2026-06-02' / 'part.parquet')
-        june_three = pl.read_parquet(locations / 'date=2026-06-03' / 'part.parquet')
-        assert june_two.height == 2
-        assert june_three.height == 1
-        assert recorder.completed == [(1, 3)]
-
-    def test_out_of_window_rows_are_dropped(self, tmp_path: Path) -> None:
-        recorder = _RecordingRecorder()
-        runner = _make_runner(recorder, tmp_path)
-        batch = _wm_batch(
-            datetime(2026, 6, 1, 8, tzinfo=UTC),  # before start (06-02): out
-            datetime(2026, 6, 3, 9, tzinfo=UTC),  # in
-            datetime(2026, 6, 5, 1, tzinfo=UTC),  # at/after end (06-05): out
-        )
-        outcome = runner.run_backfill_unit(
-            _watermark_definition(), _CannedDriver([batch]), self._window(2, 5)
-        )
-        assert isinstance(outcome, Executed)
-        assert outcome.records_fetched == 1
-        locations = tmp_path / 'motive' / 'locations'
-        assert (locations / 'date=2026-06-03').exists()
-        assert not (locations / 'date=2026-06-01').exists()
-        assert not (locations / 'date=2026-06-05').exists()
-
-    def test_future_event_fails_the_run(self, tmp_path: Path) -> None:
-        # The window is in the past, but a row dated after the clock instant trips
-        # the future-event guard -- proving ``now`` from the context is wired through.
-        recorder = _RecordingRecorder()
-        runner = _make_runner(recorder, tmp_path)
-        batch = _wm_batch(datetime(2026, 6, 17, 8, tzinfo=UTC))  # after now (06-16)
-        with pytest.raises(ProviderResponseError):
-            runner.run_backfill_unit(
-                _watermark_definition(), _CannedDriver([batch]), self._window(1, 20)
-            )
-        assert len(recorder.failed) == 1
-        assert recorder.completed == []
-
-    def test_fetch_failure_records_failure_and_reraises(self, tmp_path: Path) -> None:
-        recorder = _RecordingRecorder()
-        runner = _make_runner(recorder, tmp_path)
-        with pytest.raises(RuntimeError, match='fetch blew up'):
-            runner.run_backfill_unit(
-                _watermark_definition(), _FailingDriver(), self._window(1, 4)
-            )
-        assert recorder.completed == []
-        assert len(recorder.failed) == 1

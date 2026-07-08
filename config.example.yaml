@@ -17,6 +17,15 @@ sync:
   # lookback_days: 7
   # cutoff_days: 0
 
+  # The width, in whole days, of the work units a windowed run is planned
+  # into. Every windowed pull -- the daily sync and a long backfill alike --
+  # is tiled into units that fetch and commit independently (partitions,
+  # ledger row, watermark), so a crash resumes from the last completed unit
+  # instead of refetching the whole window. Smaller chunks mean finer
+  # crash-resume granularity at the cost of more commits; a window smaller
+  # than one chunk is simply one unit. Optional; default 7.
+  # backfill_chunk_days: 7
+
 storage:
   # REQUIRED. The root directory the parquet dataset is written under
   # ({root}/{provider}/{endpoint}/). Use a real local path -- never a

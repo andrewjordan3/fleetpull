@@ -58,6 +58,7 @@ from fleetpull.orchestrator import (
     FetchPoolRegistry,
     RosterMachinery,
     RosterRefreshCoordinator,
+    RunStateAccess,
     run_endpoint,
 )
 from fleetpull.roster import RosterRegistry
@@ -66,6 +67,7 @@ from fleetpull.state import (
     RosterStore,
     RunLedger,
     StateDatabase,
+    WorkUnitStore,
     migrate_to_head,
 )
 from fleetpull.timing import SystemClock
@@ -169,6 +171,7 @@ class Sync:
         cursor_store = CursorStore(database, clock)
         run_ledger = RunLedger(database, clock)
         roster_store = RosterStore(database)
+        unit_store = WorkUnitStore(database, clock)
         runtime = ClientRuntime(
             http_config=self._config.http,
             retry_config=self._config.retry,
@@ -189,7 +192,12 @@ class Sync:
                 endpoint_registry, roster_store, run_ledger, clients, clock
             )
             runner = EndpointRunner(
-                clients, run_ledger, clock, cursor_store, self._config
+                clients,
+                RunStateAccess(
+                    recorder=run_ledger, cursors=cursor_store, units=unit_store
+                ),
+                clock,
+                self._config,
             )
             rosters = RosterMachinery(
                 registry=roster_registry, refresher=coordinator, members=roster_store
