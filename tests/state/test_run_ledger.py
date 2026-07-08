@@ -41,7 +41,9 @@ def _database_path(directory: Path) -> Path:
     return directory / 'state.sqlite3'
 
 
-def _read_run(database_path: Path, run_id: int) -> dict[str, object]:
+def _read_run(
+    database_path: Path, run_id: int
+) -> dict[str, str | int | float | bytes | None]:
     """Read one run row by id via a bare connection, keyed by column name."""
     connection = sqlite3.connect(database_path)
     try:

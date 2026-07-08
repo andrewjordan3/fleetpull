@@ -197,6 +197,7 @@ composition list is the item-5 build map (closing section).
   composition point, plus a parity test against declarations, preserves
   explicit construction while removing per-root hand-listing.
 - **Owner:** item 6.
+- **Resolution (2026-07-07, the Sync vertical):** closed structurally, not by the seed remedy — rosters joined the endpoint discovery walk (`build_roster_registry`, `endpoints/registry.py`): a roster is a public module-level `RosterDefinition` constant beside its feeder, discovered in the same pass as the endpoint factories, so there is one source of truth and nothing to drift (the per-provider export + parity test were deliberately not built). No production hand-listed `RosterRegistry([...])` construction survives.
 
 ### AUD-06 — nothing constrains a roster's feeder to snapshot mode at declaration time
 - **Location:** `roster/definition.py` (no mode field or check);
@@ -304,6 +305,8 @@ composition list is the item-5 build map (closing section).
 - **Verdict:** **blocks-the-API** (sync, item 6). Seed key:
   `state.database_path` with the §5 default.
 - **Owner:** item 6.
+- **Resolution (2026-07-07):** landed in config vertical 1 — `state.database_path` exists (`config/state.py`, optional in YAML) and `load_config` resolves it to the §5 default `<dataset_root>/.fleetpull/state.sqlite3` at composition time (`config/composition.py`).
+- **Superseded (2026-07-07, config rebuild):** the vertical-1 loader machinery named above is deleted; the resolution now lives in `FleetpullConfig`'s `mode='before'` validators (`config/root.py`, pure functions in `config/resolution.py`) with `FleetpullConfig.from_yaml` as the loading API, and the field's home is `config/sections.py`. Same §5 default, same semantics.
 
 ### AUD-14 — stdlib tripwire exceptions escape the `FleetpullError` promise on the sync path
 - **Location (read):** `storage/writers.py` window tripwire (`ValueError`),
@@ -365,6 +368,7 @@ composition list is the item-5 build map (closing section).
   document the dual semantics in the DDL comment/`RunLedger` docstring.
 - **Owner:** item 6 wave (which touches the ledger for sync reporting) or
   polish.
+- **Resolution (2026-07-07, the Sync vertical):** documented, not split — `runs.row_count` uniformly means "records the run produced"; the sink (roster for a coordinator harvest, parquet for a runner-driven fetch) follows from the run's mode and origin, which the row already carries. Recorded in the DDL comment (`state/migrations.py`) and the `RunLedger` docstring.
 
 ### Part E sweep — inspected and found consistent (no finding)
 

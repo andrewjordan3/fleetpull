@@ -80,7 +80,7 @@ Use sub-agents for parallelizable tasks: renaming a symbol across many files, up
 **Files and folders are cheap. Cramming is expensive.** When in doubt, create a new file. One responsibility per file. Target 150–200 lines; split rather than extend. Never combine unrelated things to avoid creating a file.
 
 - **Package root is user-facing only.** `src/fleetpull/` holds only user-facing modules. All internal code lives in subpackages, even when a subpackage holds a single module — a folder with one file is always preferred over exposing an internal module at the package root.
-- **YAML config models live in `src/fleetpull/config/`.** Pydantic models parsing user-provided YAML configuration go there, one module per config section.
+- **YAML config models live in `src/fleetpull/config/`.** Pydantic models parsing user-provided YAML configuration go there, one model family per file — different families live in different files.
 - **`__init__.py` files:** Imports and re-exports only. No functions, no classes, no logic.
 - **Re-exports:** Only `__init__.py` may re-export symbols from other modules. No other file should re-export something it didn't define.
 - **Import direction:** External callers import from the package (`from fleetpull import X`). Internal callers import from siblings (`from fleetpull.sibling import X`).
@@ -107,8 +107,14 @@ Functions over ~50 lines should be split. Orchestrators orchestrate — they cal
 
 - Strict type hints on every parameter, return type, and variable where non-obvious.
 - Container types must be specific: `list[str]` not `list`, `dict[str, float]` not `dict`.
-- No `Any` without an inline justification.
-- No `object` as a type annotation — use the actual type, a `Protocol`, or a `TypeVar`.
+- No `Any` without an inline justification: `# typing-justified: <reason>` on the
+  annotation's line or the line immediately above (mechanically enforced by
+  `tests/test_typing_discipline.py`).
+- No `object` as a type annotation without the same justification — prefer the
+  actual type, a `Protocol`, or a `TypeVar`. Exempt: dunder methods whose
+  typeshed signatures require `object` (`__eq__` and kin), and deliberate
+  catch-all `*args` / `**kwargs` parameters, where `object` is the strictest
+  annotation available.
 - No `from __future__ import annotations`. Fix forward references by reordering definitions or splitting modules. No `TYPE_CHECKING` guards — imports stay at module level.
 - Typed containers (frozen dataclasses, `TypedDict`) over plain dicts for structured data.
 

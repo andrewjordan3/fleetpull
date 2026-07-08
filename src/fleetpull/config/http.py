@@ -7,14 +7,16 @@ rule); this model is their single YAML-facing source.
 
 import logging
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
+
+from fleetpull.config.base import ConfigModel
 
 __all__: list[str] = ['HttpConfig']
 
 logger = logging.getLogger(__name__)
 
 
-class HttpConfig(BaseModel):
+class HttpConfig(ConfigModel):
     """
     User-facing HTTP transport settings, one instance per run.
 
@@ -28,8 +30,6 @@ class HttpConfig(BaseModel):
             httpx's bundled CA store; the trust-store path is opt-in
             where the proxy is the exception, not the rule.
     """
-
-    model_config = ConfigDict(frozen=True, extra='forbid', validate_default=True)
 
     connect_timeout_seconds: float = Field(default=10.0, gt=0)
     read_timeout_seconds: float = Field(default=30.0, gt=0)

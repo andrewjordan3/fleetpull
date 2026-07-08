@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from fleetpull.config.logger import LoggerConfig
+from fleetpull.paths import resolve_path
 
 LEVEL_FIELDS: tuple[str, str] = ('console_level', 'file_level')
 
@@ -86,10 +87,10 @@ class TestFilePathNormalization:
         config = LoggerConfig(file_path='~/x.log')
         assert config.file_path is not None
         assert config.file_path.is_absolute()
-        # .resolve() on the expectation too: the production contract is
-        # symlink-dereferencing resolution, and home/temp paths traverse
-        # symlinks on some platforms (e.g. macOS /var -> /private/var).
-        assert config.file_path == (Path.home() / 'x.log').resolve()
+        # resolve_path is the oracle: the production contract is lexical
+        # normalization through paths.resolve_path, like every config
+        # path field.
+        assert config.file_path == resolve_path('~/x.log')
 
     def test_relative_path_resolves_against_cwd(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -98,18 +99,18 @@ class TestFilePathNormalization:
         # resolve against wherever pytest was invoked.
         monkeypatch.chdir(tmp_path)
         config = LoggerConfig(file_path='x.log')
-        assert config.file_path == (tmp_path / 'x.log').resolve()
+        assert config.file_path == resolve_path(tmp_path / 'x.log')
 
     def test_path_instance_gets_same_normalization(self) -> None:
         config = LoggerConfig(file_path=Path('~/x.log'))
-        assert config.file_path == (Path.home() / 'x.log').resolve()
+        assert config.file_path == resolve_path('~/x.log')
 
     def test_none_stays_none(self) -> None:
         config = LoggerConfig(file_path=None)
         assert config.file_path is None
 
-    def test_non_str_non_path_rejected_naming_type(self) -> None:
-        with pytest.raises(ValidationError, match='int'):
+    def test_non_str_non_path_rejected(self) -> None:
+        with pytest.raises(ValidationError, match='path'):
             LoggerConfig(file_path=123)
 
 

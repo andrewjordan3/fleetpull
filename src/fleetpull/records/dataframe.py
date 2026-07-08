@@ -17,7 +17,9 @@ __all__: list[str] = ['build_dataframe', 'normalize_empty_strings']
 
 
 def build_dataframe(
-    rows: Sequence[dict[str, Any]], schema: dict[str, pl.DataType]
+    # typing-justified: row values are heterogeneous model-field values
+    rows: Sequence[dict[str, Any]],
+    schema: dict[str, pl.DataType],
 ) -> pl.DataFrame:
     """Construct a typed DataFrame from flat rows and a derived schema.
 

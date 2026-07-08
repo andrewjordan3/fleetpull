@@ -9,6 +9,7 @@ from pydantic import SecretStr
 from fleetpull.network.auth.models import GeotabSession
 from fleetpull.network.auth.strategies import GeotabSessionAuth, StaticHeaderAuth
 from fleetpull.network.contract.request import HttpMethod, RequestSpec
+from fleetpull.vocabulary import JsonObject
 
 SYNTHETIC_TOKEN = 'synthetic-token-plaintext'
 
@@ -111,14 +112,14 @@ class TestGeotabSessionAuthPrepare:
     def test_incoming_json_body_not_mutated(self) -> None:
         stub_manager = StubSessionManager([build_session(generation=1)])
         strategy = build_strategy(stub_manager)
-        original_body: dict[str, object] = {
+        original_body: JsonObject = {
             'method': 'Get',
             'params': {'typeName': 'Device'},
         }
         spec = RequestSpec(
             method=HttpMethod.POST,
             url='https://my.geotab.com/apiv1',
-            json_body=original_body,  # type: ignore[arg-type]
+            json_body=original_body,
         )
         strategy.prepare(spec)
         assert original_body == {'method': 'Get', 'params': {'typeName': 'Device'}}

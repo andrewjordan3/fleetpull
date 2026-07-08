@@ -30,7 +30,7 @@ class _Sample(ResponseModel):
 
 
 class _Bad(ResponseModel):
-    blob: Any
+    blob: Any  # typing-justified: the unmappable annotation this fixture exists for
 
 
 def test_maps_each_scalar_kind() -> None:
