@@ -98,16 +98,19 @@ class SingleFileWriter(ABC):
     base never reads -- the read is opt-in by the subclass.
     """
 
-    def __init__(self, target_dir: Path) -> None:
+    def __init__(self, target_dir: Path, *, drop_duplicates: bool = True) -> None:
         """Bind the writer to an endpoint directory.
 
         Args:
             target_dir: The endpoint directory holding ``data.parquet``.
+            drop_duplicates: Whether ``finalize`` drops exact-duplicate rows
+                (``storage.drop_exact_duplicates``, default on).
 
         Side Effects:
             None.
         """
         self._target_dir = target_dir
+        self._drop_duplicates = drop_duplicates
         self._frames: list[pl.DataFrame] = []
 
     def write(self, frame: pl.DataFrame) -> None:
@@ -122,7 +125,7 @@ class SingleFileWriter(ABC):
         self._frames.append(frame)
 
     def finalize(self) -> WriteResult:
-        """Dedup the subclass's finalized frame and atomically write it.
+        """Dedup (unless off) the subclass's finalized frame and write it.
 
         Returns:
             The write report (``files_written`` is always ``1``).
@@ -132,11 +135,11 @@ class SingleFileWriter(ABC):
         """
         frame = self._finalize_frame()
         before = frame.height
-        deduped = drop_exact_duplicates(frame)
-        atomic_write_parquet(deduped, data_file(self._target_dir))
+        written = drop_exact_duplicates(frame) if self._drop_duplicates else frame
+        atomic_write_parquet(written, data_file(self._target_dir))
         return WriteResult(
-            rows_written=deduped.height,
-            duplicates_dropped=before - deduped.height,
+            rows_written=written.height,
+            duplicates_dropped=before - written.height,
             files_written=1,
         )
 
@@ -225,7 +228,12 @@ class PartitionedWriter(ABC):
         ...
 
     def __init__(
-        self, target_dir: Path, event_time_column: str, window: DateWindow
+        self,
+        target_dir: Path,
+        event_time_column: str,
+        window: DateWindow,
+        *,
+        drop_duplicates: bool = True,
     ) -> None:
         """Bind the writer to an endpoint directory, event-time column, and window.
 
@@ -247,6 +255,8 @@ class PartitionedWriter(ABC):
                 partitions.
             window: The run's half-open resume window -- the prune's bound and the
                 covered-date set the construction-time staging clear sweeps.
+            drop_duplicates: Whether compaction drops exact-duplicate rows
+                (``storage.drop_exact_duplicates``, default on).
 
         Side Effects:
             Removes any existing ``staging/`` directory under the window's covered
@@ -255,6 +265,7 @@ class PartitionedWriter(ABC):
         self._target_dir = target_dir
         self._event_time_column = event_time_column
         self._window = window
+        self._drop_duplicates = drop_duplicates
         self._covered_dates: frozenset[date] = frozenset(window_dates(window))
         self._written_dates: set[date] = set()
         clear_partition_staging(target_dir, self._covered_dates)
@@ -309,7 +320,12 @@ class PartitionedWriter(ABC):
                 if self._reads_existing
                 else None
             )
-            result = compact_partition(self._target_dir, partition_date, existing)
+            result = compact_partition(
+                self._target_dir,
+                partition_date,
+                existing,
+                drop_duplicates=self._drop_duplicates,
+            )
             rows_written += result.rows_written
             duplicates_dropped += result.duplicates_dropped
         clear_partition_staging(self._target_dir, self._written_dates)
@@ -352,6 +368,7 @@ def select_writer(
     dataset_root: PathInput,
     *,
     window: DateWindow | None = None,
+    drop_duplicates: bool = True,
 ) -> DatasetWriter:
     """Construct the writer for an endpoint's ``(StorageKind, SyncMode)`` cell.
 
@@ -366,6 +383,8 @@ def select_writer(
             directory names and the storage-kind / sync-mode cell.
         dataset_root: The dataset root directory.
         window: The run's half-open resume window, for incremental cells.
+        drop_duplicates: Whether the writer's compaction drops exact-duplicate
+            rows (``storage.drop_exact_duplicates``, default on).
 
     Returns:
         The cell's ``DatasetWriter``.
@@ -388,7 +407,7 @@ def select_writer(
                     f'{definition.provider.value}.{definition.name}: snapshot '
                     f'endpoints have no resume window.'
                 )
-            return SnapshotWriter(target_dir)
+            return SnapshotWriter(target_dir, drop_duplicates=drop_duplicates)
         case (StorageKind.DATE_PARTITIONED, WatermarkMode()):
             if window is None:
                 raise ValueError(
@@ -401,7 +420,12 @@ def select_writer(
                     f'{definition.provider.value}.{definition.name}: a '
                     f'date-partitioned endpoint requires an event_time_column.'
                 )
-            return WatermarkPartitionedWriter(target_dir, event_time_column, window)
+            return WatermarkPartitionedWriter(
+                target_dir,
+                event_time_column,
+                window,
+                drop_duplicates=drop_duplicates,
+            )
         case _:
             raise NotImplementedError(
                 f'no writer for storage_kind={definition.storage_kind} '

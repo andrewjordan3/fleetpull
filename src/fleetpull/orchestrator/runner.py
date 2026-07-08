@@ -233,6 +233,7 @@ class EndpointRunner:
         self._cursor_access = cursor_access
         self._sync_config = config.sync
         self._dataset_root = config.storage.dataset_root
+        self._drop_duplicates = config.storage.drop_exact_duplicates
 
     def run(
         self,
@@ -336,7 +337,9 @@ class EndpointRunner:
             definition.provider, definition.name
         )
         try:
-            writer = select_writer(definition, self._dataset_root)
+            writer = select_writer(
+                definition, self._dataset_root, drop_duplicates=self._drop_duplicates
+            )
             records_fetched = 0
             batches = stream_processed_batches(
                 definition, driver, client, resume=None, context=None
@@ -453,7 +456,12 @@ class EndpointRunner:
             definition.provider, definition.name, window=(window.start, window.end)
         )
         try:
-            writer = select_writer(definition, self._dataset_root, window=window)
+            writer = select_writer(
+                definition,
+                self._dataset_root,
+                window=window,
+                drop_duplicates=self._drop_duplicates,
+            )
             records_fetched = 0
             latest_observed: datetime | None = None
             for processed in batches:

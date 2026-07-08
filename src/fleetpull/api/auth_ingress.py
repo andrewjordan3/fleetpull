@@ -38,8 +38,11 @@ __all__: list[str] = ['AuthInput', 'build_provider_profile']
 logger = logging.getLogger(__name__)
 
 # The §10 auth union. GeoTab's arms are accepted by the signature today
-# so its arrival (roadmap item 7) changes no public signature.
-type AuthInput = str | Mapping[str, str] | GeotabAuthConfig
+# so its arrival (roadmap item 7) changes no public signature. SecretStr
+# is accepted alongside the bare string so the config path (Sync) hands
+# its already-wrapped credential straight through -- the raw value never
+# needs unwrapping just to be re-wrapped at the boundary.
+type AuthInput = str | SecretStr | Mapping[str, str] | GeotabAuthConfig
 
 # Provider knowledge no consumer should type (AUDIT row 20): the header
 # a Motive static key travels in.
@@ -69,18 +72,19 @@ def build_provider_profile(
     """
     match endpoint.provider:
         case Provider.MOTIVE:
-            if not isinstance(auth, str):
+            if not isinstance(auth, str | SecretStr):
                 raise ConfigurationError(
                     'auth shape mismatch',
                     provider=endpoint.provider.value,
                     endpoint=endpoint.name,
                     detail=(
-                        f'Motive auth is a bare API-key string; '
+                        f'Motive auth is a bare API-key string (or SecretStr); '
                         f'got {type(auth).__name__}'
                     ),
                 )
+            secret = auth if isinstance(auth, SecretStr) else SecretStr(auth)
             return ProviderProfile(
-                auth=StaticHeaderAuth(_MOTIVE_AUTH_HEADER, SecretStr(auth)),
+                auth=StaticHeaderAuth(_MOTIVE_AUTH_HEADER, secret),
                 classifier=MotiveResponseClassifier(),
             )
         case Provider.SAMSARA | Provider.GEOTAB:
