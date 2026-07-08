@@ -9,6 +9,7 @@ identifier is synthetic.
 
 import sqlite3
 import ssl
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import NoReturn
@@ -273,3 +274,60 @@ class TestDedupFlagThreading:
         Sync(config_path).run()
         snapshot = pl.read_parquet(tmp_path / 'data/motive/vehicles/data.parquet')
         assert snapshot.height == 2
+
+
+def _fleetpull_worker_threads() -> list[threading.Thread]:
+    return [
+        thread
+        for thread in threading.enumerate()
+        if thread.name.startswith('fleetpull-')
+    ]
+
+
+class TestFanOutConcurrency:
+    """The per-provider executor, observed through the whole composition."""
+
+    def test_fan_out_overlaps_requests_through_the_real_executor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Real overlap, proven not assumed: every vehicle_locations request
+        # parks on a two-party barrier, so the fetch completes only if two
+        # requests are in flight at once. A serial fan-out sends one chain
+        # at a time -- its lone request would wait until the barrier's
+        # timeout converts the deadlock into a loud BrokenBarrierError --
+        # so a passing run requires the real per-provider pool (Motive's
+        # default max_concurrency of 2 supplies exactly two workers).
+        barrier = threading.Barrier(2)
+
+        def overlapping_handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == '/v1/vehicles':
+                return _vehicles_response(1, 2)
+            if request.url.path.startswith('/v3/vehicle_locations/'):
+                barrier.wait(timeout=10)
+                return _locations_response(request.url.path.rsplit('/', 1)[1])
+            return httpx.Response(404, text='no route')
+
+        _install_transport(monkeypatch, overlapping_handler)
+        Sync(_write_config(tmp_path)).run()
+        partition = pl.read_parquet(
+            tmp_path / 'data/motive/vehicle_locations/date=2026-06-02/part.parquet'
+        )
+        assert partition.height == 2
+
+    def test_no_worker_threads_outlive_a_successful_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _install_transport(monkeypatch, _happy_handler)
+        Sync(_write_config(tmp_path)).run()
+        assert _fleetpull_worker_threads() == []
+
+    def test_no_worker_threads_outlive_a_failed_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def all_fail(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404, text='no route')
+
+        _install_transport(monkeypatch, all_fail)
+        with pytest.raises(SyncFailuresError):
+            Sync(_write_config(tmp_path)).run()
+        assert _fleetpull_worker_threads() == []

@@ -22,12 +22,14 @@ from fleetpull.orchestrator.drivers import (
     RequestDriver,
     SingleRequestDriver,
 )
-from fleetpull.orchestrator.entry import run_endpoint
+from fleetpull.orchestrator.entry import RosterMachinery, run_endpoint
+from fleetpull.orchestrator.fanout import FetchPool
 from fleetpull.orchestrator.outcome import CaughtUp, Executed, RunOutcome
 from fleetpull.orchestrator.runner import BatchObserver
 from fleetpull.roster import RosterDefinition, RosterKey, RosterRegistry
 from fleetpull.storage import WriteResult
 from fleetpull.vocabulary import JsonValue, Provider, QuotaScope
+from tests.orchestrator.serial_executor import SerialExecutor
 
 VEHICLE_IDS_KEY = RosterKey(Provider.MOTIVE, 'vehicle_ids')
 
@@ -162,12 +164,33 @@ class _CannedMembers:
         return self._members
 
 
+class _StubPoolSource:
+    """A FetchPoolSource handing one synchronous pool, recording lookups."""
+
+    def __init__(self) -> None:
+        self.pool = FetchPool(executor=SerialExecutor(), submission_window=2)
+        self.requested: list[Provider] = []
+
+    def pool_for(self, provider: Provider) -> FetchPool:
+        self.requested.append(provider)
+        return self.pool
+
+
+def _machinery(
+    registry: RosterRegistry, refresher: _RecordingRefresher, members: _CannedMembers
+) -> RosterMachinery:
+    return RosterMachinery(registry=registry, refresher=refresher, members=members)
+
+
 def test_no_fan_out_gets_the_single_fetch_driver_and_never_touches_rosters() -> None:
     runner = _RecordingRunner()
     refresher = _RecordingRefresher()
     members = _CannedMembers(['should-not-be-read'])
     outcome = run_endpoint(
-        _snapshot_definition(), runner, RosterRegistry([]), refresher, members
+        _snapshot_definition(),
+        runner,
+        _machinery(RosterRegistry([]), refresher, members),
+        _StubPoolSource(),
     )
     assert isinstance(outcome, CaughtUp)
     [(_, driver)] = runner.runs
@@ -183,7 +206,12 @@ def test_fan_out_resolves_refreshes_reads_and_fans_out() -> None:
     refresher = _RecordingRefresher()
     members = _CannedMembers(['101', '202'])
     registry = RosterRegistry([VEHICLE_IDS_DEFINITION])
-    run_endpoint(_fan_out_definition(), runner, registry, refresher, members)
+    run_endpoint(
+        _fan_out_definition(),
+        runner,
+        _machinery(registry, refresher, members),
+        _StubPoolSource(),
+    )
     assert refresher.refreshed == [VEHICLE_IDS_DEFINITION]
     assert members.reads == [VEHICLE_IDS_KEY]
     [(_, driver)] = runner.runs
@@ -201,7 +229,10 @@ def test_cold_start_refresh_failure_propagates_unswallowed() -> None:
     registry = RosterRegistry([VEHICLE_IDS_DEFINITION])
     with pytest.raises(ProviderResponseError, match='feeder unreachable'):
         run_endpoint(
-            _fan_out_definition(), runner, registry, refresher, _CannedMembers([])
+            _fan_out_definition(),
+            runner,
+            _machinery(registry, refresher, _CannedMembers([])),
+            _StubPoolSource(),
         )
     assert runner.runs == []
 
@@ -214,7 +245,12 @@ def test_failed_refresh_degrades_to_the_existing_members() -> None:
     refresher = _RecordingRefresher()  # a no-op models the swallowed failure
     members = _CannedMembers(['existing-1', 'existing-2'])
     registry = RosterRegistry([VEHICLE_IDS_DEFINITION])
-    run_endpoint(_fan_out_definition(), runner, registry, refresher, members)
+    run_endpoint(
+        _fan_out_definition(),
+        runner,
+        _machinery(registry, refresher, members),
+        _StubPoolSource(),
+    )
     [(_, driver)] = runner.runs
     assert isinstance(driver, FanOutRequestDriver)
     assert driver.members == ['existing-1', 'existing-2']
@@ -227,9 +263,8 @@ def test_empty_roster_after_refresh_raises() -> None:
         run_endpoint(
             _fan_out_definition(),
             runner,
-            registry,
-            _RecordingRefresher(),
-            _CannedMembers([]),
+            _machinery(registry, _RecordingRefresher(), _CannedMembers([])),
+            _StubPoolSource(),
         )
     assert runner.runs == []
 
@@ -239,9 +274,10 @@ def test_unregistered_roster_raises() -> None:
         run_endpoint(
             _fan_out_definition(),
             _RecordingRunner(),
-            RosterRegistry([]),
-            _RecordingRefresher(),
-            _CannedMembers(['1']),
+            _machinery(
+                RosterRegistry([]), _RecordingRefresher(), _CannedMembers(['1'])
+            ),
+            _StubPoolSource(),
         )
 
 
@@ -259,7 +295,10 @@ def test_feeder_run_reconciles_its_sourced_rosters() -> None:
     refresher = _RecordingRefresher()
     registry = RosterRegistry([VEHICLE_IDS_DEFINITION])
     outcome = run_endpoint(
-        _snapshot_definition(), runner, registry, refresher, _CannedMembers([])
+        _snapshot_definition(),
+        runner,
+        _machinery(registry, refresher, _CannedMembers([])),
+        _StubPoolSource(),
     )
     assert isinstance(outcome, Executed)
     assert refresher.applied == [(VEHICLE_IDS_DEFINITION, {'101', '202', '303'})]
@@ -276,7 +315,10 @@ def test_failed_feeder_run_applies_nothing() -> None:
     registry = RosterRegistry([VEHICLE_IDS_DEFINITION])
     with pytest.raises(RuntimeError, match='run blew up'):
         run_endpoint(
-            _snapshot_definition(), runner, registry, refresher, _CannedMembers([])
+            _snapshot_definition(),
+            runner,
+            _machinery(registry, refresher, _CannedMembers([])),
+            _StubPoolSource(),
         )
     assert refresher.applied == []
 
@@ -288,7 +330,10 @@ def test_caught_up_feeder_run_applies_nothing() -> None:
     refresher = _RecordingRefresher()
     registry = RosterRegistry([VEHICLE_IDS_DEFINITION])
     run_endpoint(
-        _snapshot_definition(), runner, registry, refresher, _CannedMembers([])
+        _snapshot_definition(),
+        runner,
+        _machinery(registry, refresher, _CannedMembers([])),
+        _StubPoolSource(),
     )
     assert refresher.applied == []
 
@@ -310,7 +355,10 @@ def test_watermark_definition_sourcing_a_roster_raises_before_anything_runs() ->
     registry = RosterRegistry([VEHICLE_IDS_DEFINITION, watermark_sourced])
     with pytest.raises(ConfigurationError, match='snapshot'):
         run_endpoint(
-            _fan_out_definition(), runner, registry, refresher, _CannedMembers(['1'])
+            _fan_out_definition(),
+            runner,
+            _machinery(registry, refresher, _CannedMembers(['1'])),
+            _StubPoolSource(),
         )
     assert runner.runs == []
     assert refresher.refreshed == []
@@ -335,7 +383,9 @@ def test_endpoint_that_sources_nothing_and_fans_out_nothing_is_untouched() -> No
         storage_kind=StorageKind.SINGLE,
         sync_mode=SnapshotMode(),
     )
-    run_endpoint(other, runner, registry, refresher, members)
+    run_endpoint(
+        other, runner, _machinery(registry, refresher, members), _StubPoolSource()
+    )
     assert runner.observers == [None]
     assert refresher.refreshed == []
     assert refresher.applied == []
@@ -355,8 +405,9 @@ def test_identical_entry_serves_snapshot_and_fan_out_polymorphically() -> None:
     snapshot = _snapshot_definition()
     fan_out = _fan_out_definition()
 
-    run_endpoint(snapshot, runner, registry, refresher, members)
-    run_endpoint(fan_out, runner, registry, refresher, members)
+    rosters = _machinery(registry, refresher, members)
+    run_endpoint(snapshot, runner, rosters, _StubPoolSource())
+    run_endpoint(fan_out, runner, rosters, _StubPoolSource())
 
     (first_definition, first_driver), (second_definition, second_driver) = runner.runs
     assert first_definition is snapshot
@@ -374,3 +425,31 @@ def test_identical_entry_serves_snapshot_and_fan_out_polymorphically() -> None:
     declared_binding = fan_out.fan_out
     assert declared_binding is not None
     assert second_driver.path_placeholder == declared_binding.path_placeholder
+
+
+def test_fan_out_driver_carries_the_providers_fetch_pool() -> None:
+    runner = _RecordingRunner()
+    registry = RosterRegistry([VEHICLE_IDS_DEFINITION])
+    pools = _StubPoolSource()
+    run_endpoint(
+        _fan_out_definition(),
+        runner,
+        _machinery(registry, _RecordingRefresher(), _CannedMembers(['101'])),
+        pools,
+    )
+    [(_, driver)] = runner.runs
+    assert isinstance(driver, FanOutRequestDriver)
+    assert driver.fetch_pool is pools.pool
+    assert pools.requested == [Provider.MOTIVE]
+
+
+def test_single_fetch_path_never_consults_the_pool_source() -> None:
+    runner = _RecordingRunner()
+    pools = _StubPoolSource()
+    run_endpoint(
+        _snapshot_definition(),
+        runner,
+        _machinery(RosterRegistry([]), _RecordingRefresher(), _CannedMembers([])),
+        pools,
+    )
+    assert pools.requested == []

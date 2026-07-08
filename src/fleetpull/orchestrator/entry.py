@@ -45,14 +45,17 @@ snapshot-mode feeder produces, so a watermark-mode source is a wiring bug
 runner stays roster-blind: it sees only the generic observer.
 
 Stateful collaborators are narrow Protocols (``EndpointExecutor``,
-``RosterRefresher``, ``RosterMembersReader``) the composition root satisfies
-with the real runner, coordinator, and store; the ``RosterRegistry`` is the
-immutable catalog passed concrete (the run-executor precedent, DESIGN
-section 14).
+``RosterRefresher``, ``RosterMembersReader``, ``FetchPoolSource``) the
+composition root satisfies with the real runner, coordinator, store, and
+fetch-pool registry; the ``RosterRegistry`` is the immutable catalog passed
+concrete (the run-executor precedent, DESIGN section 14). The three roster
+collaborators always travel together, so they ride as one ``RosterMachinery``
+bundle (the bundle rule).
 """
 
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Protocol
 
 import polars as pl
@@ -65,13 +68,17 @@ from fleetpull.orchestrator.drivers import (
     RequestDriver,
     SingleRequestDriver,
 )
+from fleetpull.orchestrator.fanout import FetchPool
 from fleetpull.orchestrator.outcome import CaughtUp, Executed, RunOutcome
 from fleetpull.orchestrator.runner import BatchObserver
 from fleetpull.records import extract_roster_members
 from fleetpull.roster import RosterDefinition, RosterKey, RosterRegistry
+from fleetpull.vocabulary import Provider
 
 __all__: list[str] = [
     'EndpointExecutor',
+    'FetchPoolSource',
+    'RosterMachinery',
     'RosterMembersReader',
     'RosterRefresher',
     'run_endpoint',
@@ -111,6 +118,37 @@ class RosterMembersReader(Protocol):
     def read_members(self, key: RosterKey) -> list[str]:
         """Return the roster's members, ascending; empty when none stored."""
         ...
+
+
+class FetchPoolSource(Protocol):
+    """The pool-lookup surface the entry needs (``FetchPoolRegistry``'s shape)."""
+
+    def pool_for(self, provider: Provider) -> FetchPool:
+        """Return the fetch pool for a provider."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class RosterMachinery:
+    """The three roster collaborators a run consults, bundled.
+
+    They always travel together -- the fan-out resolution reads all three and
+    the feeder tap reads the catalog -- so they ride as one parameter (the
+    bundle rule). The composition root builds it once per run from the
+    discovered catalog, the refresh coordinator, and the roster store.
+
+    Attributes:
+        registry: The immutable roster catalog -- forward lookup for a
+            fan-out binding, reverse lookup for the rosters a definition
+            sources.
+        refresher: The roster-policy coordinator; owns staleness,
+            degradation, cold-start, and reconciliation whole.
+        members: The stored-membership read surface.
+    """
+
+    registry: RosterRegistry
+    refresher: RosterRefresher
+    members: RosterMembersReader
 
 
 class _RosterMemberCollector:
@@ -154,32 +192,29 @@ class _RosterMemberCollector:
 def run_endpoint(
     definition: EndpointDefinition[ResponseModel],
     runner: EndpointExecutor,
-    roster_registry: RosterRegistry,
-    roster_refresher: RosterRefresher,
-    roster_members: RosterMembersReader,
+    rosters: RosterMachinery,
+    fetch_pools: FetchPoolSource,
 ) -> RunOutcome:
     """Run one endpoint through its declared request driver, tapping feeder runs.
 
     The provider- and endpoint-agnostic entry: dispatch keys off the
     definition's declared fields and the roster catalog only. ``fan_out=None``
     runs with the single-fetch driver; a declared binding is resolved to a
-    refreshed roster membership and fanned out. When the endpoint sources any
-    roster (``sourced_by``), the run is observed and -- on ``Executed`` -- each
-    sourced roster is reconciled from the run's collected members, so every
-    feeder execution updates its rosters (the coupling rule; the run row comes
-    from the runner, and parquet was written because the user asked for this
-    endpoint). An endpoint that neither fans out nor sources a roster touches
-    no roster machinery at all.
+    refreshed roster membership and fanned out over the provider's fetch pool.
+    When the endpoint sources any roster (``sourced_by``), the run is observed
+    and -- on ``Executed`` -- each sourced roster is reconciled from the run's
+    collected members, so every feeder execution updates its rosters (the
+    coupling rule; the run row comes from the runner, and parquet was written
+    because the user asked for this endpoint). An endpoint that neither fans
+    out nor sources a roster touches no roster machinery at all.
 
     Args:
         definition: The endpoint to run, already resolved by the caller.
         runner: The run executor (``EndpointRunner``'s ``run`` surface).
-        roster_registry: The roster catalog -- forward lookup for the fan-out
-            binding, reverse lookup for the rosters this endpoint sources.
-        roster_refresher: The roster-policy coordinator; owns staleness,
-            degradation, cold-start, and reconciliation whole.
-        roster_members: The stored-membership read (``RosterStore``'s
-            ``read_members`` surface).
+        rosters: The roster catalog, policy coordinator, and stored-membership
+            read, bundled.
+        fetch_pools: The per-provider fetch pools (``FetchPoolRegistry``'s
+            ``pool_for`` surface); consulted only on the fan-out path.
 
     Returns:
         The run outcome (``Executed`` or ``CaughtUp``), unchanged from the
@@ -201,7 +236,7 @@ def run_endpoint(
         writes, and state-store commits by the injected collaborators; on a
         successful feeder run, the sourced rosters' reconciled deltas.
     """
-    sourced = roster_registry.sourced_by(definition.provider, definition.name)
+    sourced = rosters.registry.sourced_by(definition.provider, definition.name)
     if sourced and not isinstance(definition.sync_mode, SnapshotMode):
         # The refresh coordinator guards its own harvest route with the same
         # vocabulary; this guards the tap route, where a windowed run's
@@ -216,9 +251,7 @@ def run_endpoint(
                 'reconcile is only correct over a complete listing'
             ),
         )
-    driver = _resolve_driver(
-        definition, roster_registry, roster_refresher, roster_members
-    )
+    driver = _resolve_driver(definition, rosters, fetch_pools)
     if not sourced:
         return runner.run(definition, driver)
     collector = _RosterMemberCollector(sourced)
@@ -226,7 +259,7 @@ def run_endpoint(
     match outcome:
         case Executed():
             for roster_definition in sourced:
-                roster_refresher.apply_listing(
+                rosters.refresher.apply_listing(
                     roster_definition, collector.members_for(roster_definition.key)
                 )
         case CaughtUp():
@@ -238,9 +271,8 @@ def run_endpoint(
 
 def _resolve_driver(
     definition: EndpointDefinition[ResponseModel],
-    roster_registry: RosterRegistry,
-    roster_refresher: RosterRefresher,
-    roster_members: RosterMembersReader,
+    rosters: RosterMachinery,
+    fetch_pools: FetchPoolSource,
 ) -> RequestDriver:
     """Resolve the definition's declared fan-out into a request driver.
 
@@ -249,14 +281,14 @@ def _resolve_driver(
 
     Args:
         definition: The endpoint whose ``fan_out`` declaration routes.
-        roster_registry: Resolves the binding's ``RosterKey``.
-        roster_refresher: Refreshes the membership when stale.
-        roster_members: Reads the refreshed membership.
+        rosters: Resolves the binding's ``RosterKey``, refreshes the
+            membership when stale, and reads it back.
+        fetch_pools: Supplies the provider's fetch pool for a fan-out driver.
 
     Returns:
         The ``SingleRequestDriver`` for ``fan_out=None``; otherwise the
         ``FanOutRequestDriver`` over the roster's members with the binding's
-        declared placeholder.
+        declared placeholder and the provider's fetch pool.
 
     Raises:
         ConfigurationError: The binding names an unregistered roster (from
@@ -271,9 +303,9 @@ def _resolve_driver(
     binding = definition.fan_out
     if binding is None:
         return SingleRequestDriver()
-    roster_definition = roster_registry.get(binding.roster)
-    roster_refresher.refresh_if_stale(roster_definition)
-    members = roster_members.read_members(binding.roster)
+    roster_definition = rosters.registry.get(binding.roster)
+    rosters.refresher.refresh_if_stale(roster_definition)
+    members = rosters.members.read_members(binding.roster)
     if not members:
         raise ConfigurationError(
             'fan-out roster is empty',
@@ -292,5 +324,7 @@ def _resolve_driver(
         len(members),
     )
     return FanOutRequestDriver(
-        members=members, path_placeholder=binding.path_placeholder
+        members=members,
+        path_placeholder=binding.path_placeholder,
+        fetch_pool=fetch_pools.pool_for(definition.provider),
     )

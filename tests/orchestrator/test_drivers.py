@@ -22,9 +22,20 @@ from fleetpull.network.contract import (
     RequestSpec,
 )
 from fleetpull.orchestrator.drivers import FanOutRequestDriver, SingleRequestDriver
+from fleetpull.orchestrator.fanout import FetchPool
 from fleetpull.vocabulary import JsonObject, JsonValue, Provider, QuotaScope
+from tests.orchestrator.serial_executor import SerialExecutor
 
 _PLACEHOLDER = 'vehicle_id'
+
+
+def _fan_out(members: list[str]) -> FanOutRequestDriver:
+    """A fan-out driver on the deterministic seam: the synchronous executor."""
+    return FanOutRequestDriver(
+        members=members,
+        path_placeholder=_PLACEHOLDER,
+        fetch_pool=FetchPool(executor=SerialExecutor(), submission_window=2),
+    )
 
 
 class _StubModel(ResponseModel):
@@ -134,7 +145,7 @@ def test_fan_out_yields_pages_member_by_member() -> None:
     member_one = [_page([{'id': 1, 'name': 'a'}]), _page([{'id': 2, 'name': 'b'}])]
     member_two = [_page([{'id': 3, 'name': 'c'}]), _page([{'id': 4, 'name': 'd'}])]
     client = _SequencedClient([member_one, member_two])
-    driver = FanOutRequestDriver(members=['v1', 'v2'], path_placeholder=_PLACEHOLDER)
+    driver = _fan_out(['v1', 'v2'])
     pages = list(driver.record_batches(definition, client, None))
     assert [page.records for page in pages] == [
         [{'id': 1, 'name': 'a'}],
@@ -148,7 +159,7 @@ def test_fan_out_builds_path_values_per_member() -> None:
     spec_builder = _RecordingSpecBuilder()
     definition = _definition(spec_builder)
     client = _SequencedClient([[_page([])], [_page([])]])
-    driver = FanOutRequestDriver(members=['v1', 'v2'], path_placeholder=_PLACEHOLDER)
+    driver = _fan_out(['v1', 'v2'])
     list(driver.record_batches(definition, client, None))
     assert [path_values for _resume, path_values in spec_builder.calls] == [
         {_PLACEHOLDER: 'v1'},
@@ -163,7 +174,7 @@ def test_fan_out_forwards_resume_to_every_member() -> None:
     window = DateWindow(
         start=datetime(2026, 6, 1, tzinfo=UTC), end=datetime(2026, 6, 2, tzinfo=UTC)
     )
-    driver = FanOutRequestDriver(members=['v1', 'v2'], path_placeholder=_PLACEHOLDER)
+    driver = _fan_out(['v1', 'v2'])
     list(driver.record_batches(definition, client, window))
     assert [resume for resume, _path_values in spec_builder.calls] == [window, window]
 
@@ -172,7 +183,7 @@ def test_fan_out_single_member_issues_one_chain() -> None:
     spec_builder = _RecordingSpecBuilder()
     definition = _definition(spec_builder)
     client = _SequencedClient([[_page([{'id': 1, 'name': 'a'}])]])
-    driver = FanOutRequestDriver(members=['v1'], path_placeholder=_PLACEHOLDER)
+    driver = _fan_out(['v1'])
     pages = list(driver.record_batches(definition, client, None))
     assert [page.records for page in pages] == [[{'id': 1, 'name': 'a'}]]
     assert [path_values for _resume, path_values in spec_builder.calls] == [
@@ -185,7 +196,7 @@ def test_fan_out_preserves_durable_progress() -> None:
     record: JsonObject = {'id': 1, 'name': 'a'}
     progressing = FetchedPage(records=[record], durable_progress='v42')
     client = _SequencedClient([[progressing]])
-    driver = FanOutRequestDriver(members=['v1'], path_placeholder=_PLACEHOLDER)
+    driver = _fan_out(['v1'])
     pages = list(driver.record_batches(definition, client, None))
     assert pages[0].durable_progress == 'v42'
 
@@ -193,7 +204,7 @@ def test_fan_out_preserves_durable_progress() -> None:
 def test_fan_out_empty_member_still_yields_a_page() -> None:
     definition = _definition(_RecordingSpecBuilder())
     client = _SequencedClient([[_page([])], [_page([])]])
-    driver = FanOutRequestDriver(members=['v1', 'v2'], path_placeholder=_PLACEHOLDER)
+    driver = _fan_out(['v1', 'v2'])
     pages = list(driver.record_batches(definition, client, None))
     assert [page.records for page in pages] == [[], []]
 
@@ -207,9 +218,7 @@ def test_fan_out_preserves_member_order() -> None:
             [_page([{'id': 3, 'name': 'm3'}])],
         ]
     )
-    driver = FanOutRequestDriver(
-        members=['m1', 'm2', 'm3'], path_placeholder=_PLACEHOLDER
-    )
+    driver = _fan_out(['m1', 'm2', 'm3'])
     pages = list(driver.record_batches(definition, client, None))
     assert [page.records for page in pages] == [
         [{'id': 1, 'name': 'm1'}],

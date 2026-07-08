@@ -642,14 +642,52 @@ The orchestrator never touches the limiter. Quota limits are therefore
 respected regardless of caller: config runner, manual Python, tests,
 notebooks, custom user executors.
 
-### Per-provider executors (starvation fix)
+### Per-provider executors (built: `orchestrator/executors.py` + `orchestrator/fanout.py`)
 
-A single shared thread pool + blocking `request_slot()` causes cross-provider
-starvation: a Motive 429 penalty parks workers holding pool slots, stalling
-Samsara/GeoTab work. Therefore: **one executor per enabled provider, sized
-`max_workers = max_concurrency`.** The semaphore inside the limiter is then
-redundant in the orchestrated path but is kept as belt-and-suspenders — it
-protects the invariant for any caller outside the orchestrator.
+A single shared thread pool + blocking `request_slot()` would cause
+cross-provider starvation: a Motive 429 penalty parks workers holding pool
+slots, stalling Samsara/GeoTab work. Therefore: **one executor per enabled
+provider, sized `max_workers = max_concurrency`**, created at `Sync.run()`'s
+composition root as a context-managed `FetchPoolRegistry` — shut down
+deterministically when the run ends, success or failure — and injected down
+the collaborator chain (the `Clock` / sleeper / transport seam family) to the
+fan-out driver as a `FetchPool` (the executor plus the channel bound below).
+Tests inject a synchronous same-thread executor through the same seam. The
+limiter's concurrency semaphore is exactly matched, never exceeded, by the
+orchestrated path and is kept as belt-and-suspenders — it protects the
+invariant for any caller outside the orchestrator. The limiter remains the
+only enforcement point on the wire; the pool supplies workers and never
+becomes one.
+
+The concurrency grain is the (member × window) piece within one endpoint's
+fan-out run. Workers **fetch only** — each runs one member's full request
+chain, acquiring tokens and the concurrency semaphore per attempt exactly as
+the serial path did; validation, dataframe assembly, and every write stay on
+the single consumer thread (§3's single-writer discipline, untouched).
+
+**The bounded-streaming property.** Fetched pieces flow through a bounded
+channel (`stream_pieces`: a bounded submission window over futures, drained
+in submission order) and are never collected: at most `submission_window + 1`
+(= `2 × max_workers + 1`) fetched-but-unwritten pieces exist at any moment —
+a function of the pool size, never of the member count. Backpressure reaches
+the workers: when the writer lags, no further piece is submitted, so
+rate-budget tokens are never burned on results that cannot yet be written.
+Submission-order draining keeps the yield order identical to the serial
+loop's, so correctness never assumes a completion order anywhere.
+
+**Failure semantics.** The first exception the consumer encounters wins:
+pieces beyond the in-flight window are never requested (queued futures are
+cancelled; unsubmitted members are never submitted), in-flight requests are
+allowed to finish and their results discarded (a discarded piece's own
+failure is logged, never raised over the first), and the run fails by
+re-raising the first exception — the same loud outcome as the serial loop.
+
+Explicit non-goals of this cut: `Sync`'s endpoint loop stays sequential (the
+concurrency grain lives inside one endpoint's fan-out); provider-parallel
+activation awaits a second ported provider (the executors are per-provider
+by construction, which is all the shaping this cut does); and page-fanning
+within one member's chain awaits envelope verification and will be recorded
+with its own design when it lands.
 
 ### Acquisition protocol
 
@@ -1649,6 +1687,22 @@ tzinfo-construction rules mechanically.
   batch granularity interacts with them; today's entry runs whole-roster
   single-transaction (the incremental path), and the question governs the
   backfill loop when it lands.
+
+- **Logging policy (pinned during the concurrency vertical — open questions,
+  deliberately unanswered there).** Three decisions, recorded so no scoped
+  task preempts them with ad-hoc narration:
+  - *Log-line timestamps: UTC vs local-with-offset.* The user leans local
+    (the operator reading a console lives in local time); the counterpoint
+    is that everything the lines describe — windows, watermarks, partitions
+    — is UTC, so mixed clocks invite off-by-a-timezone misreadings.
+  - *Handler scope:* configure the root logger or the `fleetpull` package
+    logger only — and whether third-party verbosity (httpx and kin) becomes
+    a deliberate opt-in rather than an accident of root configuration.
+  - *What `Sync` narrates at INFO during long fan-outs:* the last live run
+    was ~80 minutes and produced two log lines. Progress narration (members
+    completed, pages fetched, penalties waited out) is the open surface; the
+    concurrency vertical added no narration pending this policy (its one new
+    log call is the error-path record of a discarded in-flight failure).
 
 ---
 
