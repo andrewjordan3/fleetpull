@@ -46,8 +46,9 @@ from fleetpull.network.contract import (
 from fleetpull.orchestrator.drivers import FanOutRequestDriver
 from fleetpull.orchestrator.fanout import FetchPool
 from fleetpull.orchestrator.outcome import Executed
-from fleetpull.orchestrator.runner import EndpointRunner
+from fleetpull.orchestrator.runner import EndpointRunner, RunStateAccess
 from fleetpull.paths import endpoint_directory
+from fleetpull.state import StateDatabase, WorkUnitStore, migrate_to_head
 from fleetpull.timing import FrozenClock
 from fleetpull.vocabulary import JsonObject, JsonValue, Provider, QuotaScope
 from tests.orchestrator.serial_executor import SerialExecutor
@@ -187,12 +188,20 @@ def _make_runner(
     cursor_access: _StubCursorAccess,
 ) -> EndpointRunner:
     # The resolved window is [2026-06-10, 2026-06-15): default start below,
-    # trailing edge one cutoff day before the frozen clock.
+    # trailing edge one cutoff day before the frozen clock. Five days fits
+    # one default chunk, so the run is the single-unit degenerate case.
+    clock = FrozenClock(start_time_utc=_CLOCK_NOW)
+    database = StateDatabase(dataset_root / 'state.sqlite3')
+    database.initialize()
+    migrate_to_head(database)
     return EndpointRunner(
         _ClientSourceOf(client),
-        recorder,
-        FrozenClock(start_time_utc=_CLOCK_NOW),
-        cursor_access,
+        RunStateAccess(
+            recorder=recorder,
+            cursors=cursor_access,
+            units=WorkUnitStore(database, clock),
+        ),
+        clock,
         FleetpullConfig(
             sync=SyncConfig(default_start_date=date(2026, 6, 10)),
             storage=StorageConfig(dataset_root=dataset_root),

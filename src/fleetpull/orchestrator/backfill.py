@@ -1,11 +1,12 @@
-"""Backfill decomposition: a range into per-chunk work units.
+"""Window decomposition: a windowed run's range into per-chunk work units.
 
-The caller-side planning the work-unit store defers to its driver (DESIGN §5). A
-watermark endpoint's history is backfilled by tiling its (provider, endpoint)
-range into whole-UTC-day chunks, one unit per chunk. A chunk fans the whole
-roster at execution, so the unit carries no member -- one planner serves fan-out
-and non-fan-out watermark endpoints alike, the fan-out distinction being the
-loop's, not the unit's. Pure functions only: the coordinator computes the span,
+The caller-side planning the work-unit store defers to its driver (DESIGN §5).
+Every windowed run -- the daily pull and a long backfill alike -- tiles its
+(provider, endpoint) window into whole-UTC-day chunks, one unit per chunk (a
+window smaller than one chunk is a single unit). A unit fans the whole roster
+at execution, so it carries no member -- one planner serves fan-out and
+non-fan-out watermark endpoints alike, the fan-out distinction being the
+driver's, not the unit's. Pure functions only: the runner resolves the window,
 calls these to plan, and drives the queue.
 """
 
@@ -90,13 +91,13 @@ def plan_backfill_units(
 
     The caller-side decomposition the work-unit store leaves to its driver
     (DESIGN §5): tile the span into whole-UTC-day chunks, one unit per chunk. A
-    backfill chunk fans the whole roster at execution, so the unit carries no
-    member (``partition_key=None``); the loop reads the roster and builds the
-    fan-out driver when it runs the chunk. So one planner serves fan-out and
-    non-fan-out watermark endpoints alike; the fan-out distinction is the loop's,
-    not the unit's. Pure: it returns the specs; enqueuing them idempotently is the
-    coordinator's, kept separate so the plan can be inspected and the enqueue stays
-    the store's one write.
+    unit fans the whole roster at execution, so it carries no member
+    (``partition_key=None``); the unit loop drives each chunk through the
+    endpoint's already-resolved driver. So one planner serves fan-out and
+    non-fan-out watermark endpoints alike; the fan-out distinction is the
+    driver's, not the unit's. Pure: it returns the specs; enqueuing them
+    idempotently is the caller's, kept separate so the plan can be inspected and
+    the enqueue stays the store's one write.
 
     Args:
         provider: The provider being backfilled.
