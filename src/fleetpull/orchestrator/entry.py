@@ -34,7 +34,9 @@ when any exist, it installs a generic batch observer that collects each
 sourced roster's distinct ``source_column`` values -- values only, never
 frames, so memory stays bounded by the distinct-key count -- and, after the
 run returns ``Executed``, hands each collected listing to the coordinator's
-``apply_listing`` to reconcile unconditionally. On a failed run nothing is
+``apply_listing``, whose reconcile guard rejects an empty listing loudly (a
+roster is never reconciled to empty; the failure propagates and fails the
+endpoint while the prior membership stands). On a failed run nothing is
 applied; on ``CaughtUp`` nothing executed, so there is no listing to apply.
 A sourced definition that is not snapshot-mode is rejected before anything
 runs -- ``reconcile`` is only correct over a complete listing, which only a

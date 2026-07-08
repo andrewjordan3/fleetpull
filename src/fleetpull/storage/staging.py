@@ -94,16 +94,21 @@ def stage_shard(
 
 
 def compact_partition(
-    endpoint_dir: Path, partition_date: date, existing: pl.DataFrame | None
+    endpoint_dir: Path,
+    partition_date: date,
+    existing: pl.DataFrame | None,
+    *,
+    drop_duplicates: bool = True,
 ) -> CompactionResult:
     """Fold one date's staged shards into its ``part.parquet``.
 
     Reads every ``.shard`` under the date's ``staging/`` directory, concatenates
     them (and ``existing`` if the cell folds in the prior partition), drops exact
-    duplicates, and writes the result atomically to ``part.parquet``, replacing any
-    prior file. The whole partition is materialized here; it is bounded by the chunk
-    (DESIGN §3), not the endpoint. Folds and nothing else -- the writer clears the
-    staging afterward (``clear_partition_staging``), keeping this single-concern.
+    duplicates unless the flag turns that off, and writes the result atomically
+    to ``part.parquet``, replacing any prior file. The whole partition is
+    materialized here; it is bounded by the chunk (DESIGN §3), not the endpoint.
+    Folds and nothing else -- the writer clears the staging afterward
+    (``clear_partition_staging``), keeping this single-concern.
 
     Args:
         endpoint_dir: The endpoint directory holding the ``date=`` partitions.
@@ -111,6 +116,9 @@ def compact_partition(
             directory must hold at least one shard.
         existing: The prior ``part.parquet`` contents to fold in (append cells), or
             ``None`` to replace the partition wholesale (watermark cells).
+        drop_duplicates: Whether to drop exact-duplicate rows (DESIGN §6 --
+            ``storage.drop_exact_duplicates``, default on). ``False`` writes the
+            combined rows byte-for-byte.
 
     Returns:
         The written partition's row counts.
@@ -127,10 +135,10 @@ def compact_partition(
         shard_frames.append(existing)
     combined = pl.concat(shard_frames)
     before = combined.height
-    deduped = drop_exact_duplicates(combined)
-    atomic_write_parquet(deduped, partition_part_file(endpoint_dir, partition_date))
+    written = drop_exact_duplicates(combined) if drop_duplicates else combined
+    atomic_write_parquet(written, partition_part_file(endpoint_dir, partition_date))
     return CompactionResult(
-        rows_written=deduped.height, duplicates_dropped=before - deduped.height
+        rows_written=written.height, duplicates_dropped=before - written.height
     )
 
 

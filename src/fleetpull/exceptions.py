@@ -15,15 +15,18 @@ specs, credentials-adjacent values) — every instance is safe to log.
 """
 
 import logging
+from dataclasses import dataclass
 
 from fleetpull.vocabulary import ResponseCategory
 
 __all__: list[str] = [
     'AuthenticationError',
     'ConfigurationError',
+    'EndpointFailure',
     'FleetpullError',
     'ProviderResponseError',
     'RetriesExhaustedError',
+    'SyncFailuresError',
     'UnknownQuotaScopeError',
 ]
 
@@ -266,3 +269,51 @@ class RetriesExhaustedError(FleetpullError):
         super().__init__(head, provider=provider, endpoint=endpoint, detail=detail)
         self.category = category
         self.attempt_count = attempt_count
+
+
+@dataclass(frozen=True, slots=True)
+class EndpointFailure:
+    """One endpoint's failure inside a sync run, as the aggregate carries it.
+
+    Attributes:
+        provider: The failed endpoint's provider name (the lowercase value).
+        endpoint: The failed endpoint's name.
+        error: The caught operational failure, unmodified.
+    """
+
+    provider: str
+    endpoint: str
+    error: FleetpullError
+
+
+class SyncFailuresError(FleetpullError):
+    """
+    One or more endpoints failed inside a sync run that let its
+    siblings continue. Raised after every selected endpoint has run;
+    each carried failure is itself a public-family exception.
+
+    Deliberately not an ``ExceptionGroup``: the documented catch
+    contract stays ``except FleetpullError:``, which a group would
+    silently bypass.
+
+    Attributes:
+        failures: The per-endpoint failures, in run order.
+    """
+
+    failures: tuple[EndpointFailure, ...]
+
+    def __init__(self, failures: tuple[EndpointFailure, ...]) -> None:
+        """
+        Compose the message from the failed endpoints.
+
+        Args:
+            failures: The per-endpoint failures, in run order.
+        """
+        failed_names = ', '.join(
+            f'{failure.provider}.{failure.endpoint}' for failure in failures
+        )
+        super().__init__(
+            f'sync failed for {len(failures)} endpoint(s)',
+            detail=failed_names,
+        )
+        self.failures = failures

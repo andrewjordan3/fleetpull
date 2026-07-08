@@ -1,5 +1,5 @@
 # src/fleetpull/endpoints/registry.py
-"""The endpoint catalog: ``EndpointRegistry`` and ``build_endpoint_registry``.
+"""The endpoint catalog: ``EndpointRegistry`` and the discovery walk.
 
 ``EndpointRegistry`` is a dumb, immutable map from ``(provider, name)`` to the
 endpoint's ``EndpointDefinition``. It answers ``get(provider, name)``; a duplicate
@@ -13,6 +13,13 @@ every endpoint leaf by walking the ``endpoints.<provider>`` packages (skipping
 provider config by matching the factory's annotated config type against the supplied
 configs, calls it, and indexes the results. Adding an endpoint is adding one leaf
 module: no manifest, no registration, no provider list here.
+
+``build_roster_registry`` is its sibling over the same walk: rosters are declared
+as public module-level ``RosterDefinition`` constants beside their feeders, in
+exactly the leaf modules the endpoint walk visits, so they are discovered the
+same way (AUD-05's close -- no hand-maintained registration list, no per-provider
+export to drift). Adding a roster is declaring one constant in its feeder's
+module.
 
 Discovery reaches the leaf modules dynamically rather than through each provider
 package's face. That is a deliberate, named exception to the clause-3 face-routing
@@ -35,9 +42,14 @@ from fleetpull.config import ProviderConfig
 from fleetpull.endpoints.shared import EndpointDefinition
 from fleetpull.exceptions import ConfigurationError
 from fleetpull.model_contract import ResponseModel
+from fleetpull.roster import RosterDefinition, RosterRegistry
 from fleetpull.vocabulary import Provider
 
-__all__: list[str] = ['EndpointRegistry', 'build_endpoint_registry']
+__all__: list[str] = [
+    'EndpointRegistry',
+    'build_endpoint_registry',
+    'build_roster_registry',
+]
 
 _FACTORY_NAME: str = 'build_endpoint'
 _SHARED_PACKAGE: str = 'shared'
@@ -131,6 +143,49 @@ def build_endpoint_registry(configs: Iterable[ProviderConfig]) -> EndpointRegist
         config = _config_for_factory(factory, module_name, config_by_type)
         definitions.append(factory(config))
     return EndpointRegistry(definitions)
+
+
+def build_roster_registry() -> RosterRegistry:
+    """Discover every declared roster and catalog them.
+
+    The sibling of ``build_endpoint_registry``, sharing the same leaf walk: a
+    roster is a public module-level ``RosterDefinition`` constant declared
+    beside its feeder, so it is discovered rather than hand-listed. Takes no
+    configs -- roster declarations are constants, not factories.
+
+    Returns:
+        The populated ``RosterRegistry``.
+
+    Raises:
+        ConfigurationError: Two collected definitions share a ``RosterKey``
+            (e.g. a constant re-exported into a second leaf module), from
+            ``RosterRegistry`` construction.
+    """
+    definitions: list[RosterDefinition] = []
+    for module_name in _iter_endpoint_leaf_modules():
+        module = importlib.import_module(module_name)
+        definitions.extend(_module_roster_definitions(module))
+    return RosterRegistry(definitions)
+
+
+def _module_roster_definitions(module: ModuleType) -> list[RosterDefinition]:
+    """The public module-level roster declarations of one endpoint leaf.
+
+    Only non-underscore names register: an underscore-prefixed definition is
+    file-private by the naming rule and stays out of the catalog.
+
+    Args:
+        module: The imported leaf module.
+
+    Returns:
+        The module's declared ``RosterDefinition`` constants, in definition
+        order (module namespace order).
+    """
+    return [
+        value
+        for name, value in vars(module).items()
+        if not name.startswith('_') and isinstance(value, RosterDefinition)
+    ]
 
 
 def _iter_endpoint_leaf_modules() -> Iterator[str]:

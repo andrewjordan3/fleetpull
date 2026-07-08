@@ -86,9 +86,14 @@ class StorageConfig(ConfigModel):
             (OneDrive and kin), whose sync clients fight the writer's
             atomic renames. Normalized through ``resolve_path`` at
             validation.
+        drop_exact_duplicates: Whether write-time compaction drops
+            exact-duplicate rows (DESIGN section 6 -- the default-on
+            dedup with a config flag off; semantic dedup stays out of
+            scope). ``False`` preserves duplicates byte-for-byte.
     """
 
     dataset_root: Path
+    drop_exact_duplicates: bool = True
 
     @field_validator('dataset_root')
     @classmethod
