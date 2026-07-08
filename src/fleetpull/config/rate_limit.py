@@ -28,7 +28,11 @@ class RateLimitConfig(ConfigModel):
         requests_per_period: Requests allowed per period (>= 1).
         period_seconds: Length of the rate period in seconds (> 0).
         burst: Bucket capacity in tokens (>= 1).
-        max_concurrency: Maximum requests in flight at once (>= 1).
+        max_concurrency: Maximum requests in flight at once (>= 1) --
+            enforced by the limiter's semaphore, and also the size of the
+            per-provider fetch executor a fan-out run's workers come from
+            (``max_workers``, DESIGN section 7), so the pool can never
+            outrun the semaphore.
     """
 
     requests_per_period: int = Field(ge=1)

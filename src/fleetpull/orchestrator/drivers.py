@@ -5,7 +5,8 @@ A ``RequestDriver`` owns how many request chains one endpoint run issues, and yi
 the run's fetched pages as a stream of batches. ``SingleRequestDriver`` issues
 exactly one request chain (``path_values={}``) and yields its pages one at a time;
 ``FanOutRequestDriver`` issues one chain per supplied member
-(``path_values={path_placeholder: member}``) and yields each member's pages -- the
+(``path_values={path_placeholder: member}``), fetching members concurrently on its
+injected ``FetchPool`` and yielding each member's pages in member order -- the
 member list is the caller's, one member for a single backfill work unit, the whole
 roster for an incremental run. ``path_values`` live only here -- the run executor
 never builds them and the coordinator never supplies them; only the driver does. A
@@ -18,11 +19,13 @@ own choice; the runner consumes batches uniformly.
 import logging
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from typing import Protocol
 
 from fleetpull.endpoints.shared import EndpointDefinition, ResumeValue
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import FetchedPage, TransportClient
+from fleetpull.orchestrator.fanout import FetchPool, stream_pieces
 
 __all__: list[str] = ['FanOutRequestDriver', 'RequestDriver', 'SingleRequestDriver']
 
@@ -127,27 +130,34 @@ class SingleRequestDriver:
 
 @dataclass(frozen=True, slots=True)
 class FanOutRequestDriver:
-    """Issue one request chain per member, streaming each a page at a time.
+    """Issue one request chain per member, fetched concurrently, yielded in order.
 
     The driver for endpoints that fan a request out over per-entity keys (the
-    per-vehicle ``vehicle_locations`` endpoint). For each member it builds the
-    request with ``path_values={path_placeholder: member}`` and yields that
-    member's pages -- nothing is accumulated per member, so memory stays bounded
-    by one provider page no matter how wide the window or how many rows a member
-    has. The member list is the caller's: one member for a single backfill work
-    unit, the whole roster for an incremental run. ``path_values`` (and so the
-    fan-out) live only here; the coordinator supplies the members and the
-    placeholder already extracted, never ``path_values`` and never the endpoint's
-    ``fan_out``.
+    per-vehicle ``vehicle_locations`` endpoint). Each member is one piece: a
+    worker on the injected ``fetch_pool`` runs that member's whole chain
+    (``path_values={path_placeholder: member}``, tokens and the concurrency
+    semaphore acquired per attempt exactly as a serial fetch would), and the
+    consuming thread receives the pages through the bounded channel
+    (``stream_pieces``) in member order -- so memory holds at most
+    ``submission_window + 1`` members' pages at once, a function of the pool
+    size, never of the roster. The member list is the caller's: one member for
+    a single backfill work unit, the whole roster for an incremental run.
+    ``path_values`` (and so the fan-out) live only here; the coordinator
+    supplies the members and the placeholder already extracted, never
+    ``path_values`` and never the endpoint's ``fan_out``.
 
     Attributes:
         members: The fan-out keys to issue one chain each for, in order.
         path_placeholder: The URL-path template placeholder each member fills
             (from the endpoint's ``FanOutBinding.path_placeholder``).
+        fetch_pool: The provider's fetch workers and channel bound (from the
+            composition root's ``FetchPoolRegistry``; tests inject a
+            synchronous same-thread executor through this same seam).
     """
 
     members: Sequence[str]
     path_placeholder: str
+    fetch_pool: FetchPool
 
     def record_batches(
         self,
@@ -155,11 +165,19 @@ class FanOutRequestDriver:
         client: TransportClient,
         resume: ResumeValue,
     ) -> Iterator[FetchedPage]:
-        """Yield each member's fetched pages, one chain per member, in order.
+        """Yield each member's fetched pages, one chain per member, in member order.
+
+        Members fetch concurrently on the pool's workers; pages still yield
+        member by member, in the given order, so the consumer observes the
+        serial loop's stream. The first failing member's exception fails the
+        run: members past the channel's window are never requested, in-flight
+        members finish and are discarded (a discarded failure is logged, never
+        raised over the first).
 
         Args:
             definition: The endpoint being run.
-            client: The transport client for this endpoint's provider.
+            client: The transport client for this endpoint's provider (safe to
+                share across the pool's workers -- the client is reentrant).
             resume: The resume value injected into every member's first request
                 (the shared window -- one watermark, fanned across members).
 
@@ -167,7 +185,37 @@ class FanOutRequestDriver:
             Each fetched page, member by member, in order. Each member drives at
             least one (possibly empty) page.
         """
-        for member in self.members:
-            yield from _stream_chain_pages(
+        piece_tasks = (
+            partial(self._fetch_member_pages, definition, client, resume, member)
+            for member in self.members
+        )
+        yield from stream_pieces(piece_tasks, self.fetch_pool)
+
+    def _fetch_member_pages(
+        self,
+        definition: EndpointDefinition[ResponseModel],
+        client: TransportClient,
+        resume: ResumeValue,
+        member: str,
+    ) -> list[FetchedPage]:
+        """Fetch one member's whole chain -- the piece a pool worker executes.
+
+        Runs on a worker thread: it touches the transport (which owns the
+        limiter consultation) and nothing else -- no validation, no framing,
+        no writing, per the single-writer invariant.
+
+        Args:
+            definition: The endpoint being run.
+            client: The provider's reentrant transport client.
+            resume: The resume value injected into the member's first request.
+            member: The fan-out key this piece fetches.
+
+        Returns:
+            The member's pages, in chain order -- at least one (possibly
+            empty) page.
+        """
+        return list(
+            _stream_chain_pages(
                 definition, client, resume, {self.path_placeholder: member}
             )
+        )
