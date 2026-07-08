@@ -117,6 +117,9 @@ def _write_config_file(dataset_root: Path) -> Path:
     The credential is deliberately absent: Sync's environment fallback
     resolves MOTIVE_API_KEY, so the secret never lands in a file.
 
+    The logging section carries the designed console/file split: INFO on
+    the console, full DEBUG flow in a log file beside the dataset.
+
     Args:
         dataset_root: Where the dataset (and the generated config) live.
 
@@ -132,6 +135,10 @@ def _write_config_file(dataset_root: Path) -> Path:
         f'  default_start_date: {default_start_date.isoformat()}\n'
         f'storage:\n'
         f'  dataset_root: {dataset_root}\n'
+        f'logging:\n'
+        f'  console_level: INFO\n'
+        f'  file_path: {dataset_root / "fleetpull-diagnostic.log"}\n'
+        f'  file_level: DEBUG\n'
         f'http:\n'
         f'  use_truststore: {str(USE_TRUSTSTORE).lower()}\n'
         f'providers:\n'

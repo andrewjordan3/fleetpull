@@ -15,8 +15,6 @@ set, e.g.:
 Errors propagate with a traceback by design -- this is a debugging driver.
 """
 
-import os
-
 from fleetpull import Endpoints, fetch
 
 # Paste your Motive API key here for a quick run, or (preferred) set
