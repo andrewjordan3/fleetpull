@@ -15,8 +15,9 @@ a sync that syncs nothing is a configuration failure to surface, not a
 no-op. Nothing global mutates and nothing but the config file is read.
 
 ``run()`` applies the logging section first, then composes and executes.
-Endpoints run sequentially (concurrency is the next vertical) in
-feeder-first order derived from the roster bindings -- never a
+Endpoints run sequentially -- the concurrency grain is the fan-out
+within one endpoint, on that provider's fetch pool (DESIGN section 7) --
+in feeder-first order derived from the roster bindings -- never a
 user-facing key -- and commit independently: one endpoint's operational
 failure (the ``FleetpullError`` family) is recorded while its siblings
 continue, and the run ends by raising ``SyncFailuresError`` carrying
@@ -54,6 +55,8 @@ from fleetpull.network.client import (
 from fleetpull.network.limits import RateLimiterRegistry, rate_limits_from_configs
 from fleetpull.orchestrator import (
     EndpointRunner,
+    FetchPoolRegistry,
+    RosterMachinery,
     RosterRefreshCoordinator,
     run_endpoint,
 )
@@ -118,12 +121,14 @@ class Sync:
         at the resolved ``state.database_path`` (migrated to head), the
         stores, the discovered endpoint and roster registries, the
         limiter registry from the precedence-resolved provider configs,
-        and one transport client per enabled provider through the auth
-        ingress. Endpoints run sequentially, feeders before their
-        consumers (derived from the roster bindings; config order within
-        ties), and commit independently -- parquet and state land per
-        endpoint as each finishes, so a sibling's failure never rolls
-        anything back.
+        one transport client per enabled provider through the auth
+        ingress, and one fetch pool per enabled provider sized by its
+        ``rate_limit.max_concurrency`` (the fan-out workers; shut down
+        when the run ends, success or failure). Endpoints run
+        sequentially, feeders before their consumers (derived from the
+        roster bindings; config order within ties), and commit
+        independently -- parquet and state land per endpoint as each
+        finishes, so a sibling's failure never rolls anything back.
 
         Returns:
             None. Every selected endpoint ran and committed.
@@ -143,9 +148,10 @@ class Sync:
         Side Effects:
             Configures the ``fleetpull`` logger from the config's
             logging section; creates/migrates the SQLite state database;
-            fetches over the network; writes parquet under
-            ``storage.dataset_root``; records runs, cursors, and roster
-            state.
+            fetches over the network (fan-out fetches on per-provider
+            worker threads, all joined before this returns); writes
+            parquet under ``storage.dataset_root``; records runs,
+            cursors, and roster state.
 
         Scope: retrieval, dtype coercion, and light structural
         normalization only -- no cross-endpoint joins, no unified
@@ -170,20 +176,28 @@ class Sync:
                 rate_limits_from_configs(provider_configs)
             ),
         )
+        fetch_workers = {
+            provider: config.rate_limit.max_concurrency
+            for provider, config in self._enabled_providers()
+        }
         failures: list[EndpointFailure] = []
-        with ProviderClientRegistry(self._provider_profiles(), runtime) as clients:
+        with (
+            ProviderClientRegistry(self._provider_profiles(), runtime) as clients,
+            FetchPoolRegistry(fetch_workers) as fetch_pools,
+        ):
             coordinator = RosterRefreshCoordinator(
                 endpoint_registry, roster_store, run_ledger, clients, clock
             )
             runner = EndpointRunner(
                 clients, run_ledger, clock, cursor_store, self._config
             )
+            rosters = RosterMachinery(
+                registry=roster_registry, refresher=coordinator, members=roster_store
+            )
             for provider, name in ordered:
                 definition = endpoint_registry.get(provider, name)
                 try:
-                    run_endpoint(
-                        definition, runner, roster_registry, coordinator, roster_store
-                    )
+                    run_endpoint(definition, runner, rosters, fetch_pools)
                 except FleetpullError as failure:
                     logger.exception(
                         'endpoint failed: provider=%s endpoint=%s',
