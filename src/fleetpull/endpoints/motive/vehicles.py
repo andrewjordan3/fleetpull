@@ -13,10 +13,11 @@ a factory taking a validated ``MotiveConfig`` and returning the frozen
 ``VEHICLE_IDS_ROSTER`` is declared here, beside the feeder it describes:
 the roster names this module's endpoint and its frame column, which is
 provider-specific knowledge that belongs in the provider leaf. Unlike the
-endpoint factory it needs no config, so it is a frozen constant. Roster
-registration is explicit construction -- the composition root passes it
-to ``RosterRegistry([...])``; there is no discovery walk (the endpoint
-registry's walk stays the single sanctioned import-discipline exception).
+endpoint factory it needs no config, so it is a frozen constant -- and a
+public one deliberately: ``build_roster_registry`` discovers public
+module-level ``RosterDefinition`` constants in the same walk that finds
+``build_endpoint``, so declaring the constant IS the registration
+(AUD-05's close; no hand-maintained list exists to drift).
 The include-inactive guarantee binds at the feeder population, not at
 eviction policy: ``/v1/vehicles`` lists inactive and retired vehicles, so
 a fan-out over this roster covers vehicles that were active during a

@@ -12,12 +12,14 @@ from fleetpull.api.auth_ingress import AuthInput
 from fleetpull.api.catalog import Endpoints, available_endpoints
 from fleetpull.api.fetch import fetch
 from fleetpull.api.identity import EndpointIdentity, SnapshotEndpoint, WindowedEndpoint
+from fleetpull.api.sync import Sync
 
 __all__: list[str] = [
     'AuthInput',
     'EndpointIdentity',
     'Endpoints',
     'SnapshotEndpoint',
+    'Sync',
     'WindowedEndpoint',
     'available_endpoints',
     'fetch',

@@ -20,11 +20,15 @@ asks the ledger when the feeder last succeeded, and only if a refresh is due
 (``is_roster_stale``, or an empty stored roster, which is stale regardless of
 the ledger verdict -- ledger history may predate the harvest/ledger coupling)
 re-lists the feeder, reconciles the listing against the stored roster, applies
-the delta, and completes the run. ``apply_listing`` is the feeder-tap handoff:
-the entry collects a successful feeder run's listed members and hands them
-here to reconcile unconditionally -- staleness gates only whether the
-coordinator *initiates* a harvest, never whether an executed run's listing is
-applied; the run row on that path was already recorded by the run executor.
+the delta, and completes the run. ``apply_listing`` is the feeder-tap handoff
+and the reconcile choke point: the entry collects a successful feeder run's
+listed members and hands them here, and the harvest routes its own listing
+through the same method -- so the reconcile guard (a roster is never
+reconciled to empty; an empty listing is a failed refresh, not a membership
+fact) covers both routes once. Staleness gates only whether the coordinator
+*initiates* a harvest, never whether an executed run's non-empty listing is
+applied; the run row on the tap path was already recorded by the run
+executor.
 
 The full-listing requirement lives here: a roster needs its feeder's complete
 current membership each refresh, so the feeder must be a snapshot endpoint. The
@@ -61,7 +65,11 @@ from typing import Protocol
 
 from fleetpull.endpoints import EndpointRegistry
 from fleetpull.endpoints.shared import SnapshotMode
-from fleetpull.exceptions import ConfigurationError, FleetpullError
+from fleetpull.exceptions import (
+    ConfigurationError,
+    FleetpullError,
+    ProviderResponseError,
+)
 from fleetpull.network.client import TransportClient
 from fleetpull.orchestrator.drivers import SingleRequestDriver
 from fleetpull.orchestrator.roster_harvest import harvest_roster_members
@@ -213,6 +221,11 @@ class RosterRefreshCoordinator:
             listed = harvest_roster_members(
                 feeder, SingleRequestDriver(), client, definition.source_column
             )
+            # Routed through apply_listing so its reconcile guard (a roster
+            # is never reconciled to empty) covers the harvest inside this
+            # same failed-refresh path: an empty listing marks the run
+            # failed and degrades exactly like a failed HTTP refresh.
+            self.apply_listing(definition, listed)
         except (FleetpullError, ValueError) as failure:
             self._fail_run_safely(run_id, failure)
             if not current:
@@ -225,10 +238,6 @@ class RosterRefreshCoordinator:
                 failure,
             )
             return
-        self._store.apply(
-            definition.key,
-            reconcile(current, listed, definition.eviction_threshold),
-        )
         # A harvest run's row count is the distinct-member count of the
         # listing -- the rows this execution produced for its consumer.
         self._ledger.complete_run(run_id, row_count=len(listed))
@@ -236,22 +245,44 @@ class RosterRefreshCoordinator:
     def apply_listing(self, definition: RosterDefinition, listed: set[str]) -> None:
         """Reconcile an executed feeder run's listed membership into the store.
 
-        The feeder-tap handoff: the orchestration entry collects the distinct
-        ``source_column`` values from a successful runner-driven feeder run and
-        hands them here. Applied unconditionally -- staleness gates only
-        whether the coordinator *initiates* a harvest, never whether an
-        executed run's complete listing is reconciled -- and the whole
-        reconcile policy (eviction hysteresis included) stays here, exactly as
-        on the harvest path. Records no ledger row: the run that produced
-        ``listed`` was already recorded by the run executor.
+        The reconcile choke point, shared by the feeder tap (the orchestration
+        entry hands a successful runner-driven feeder run's distinct
+        ``source_column`` values here) and the coordinator's own harvest. The
+        reconcile guard lives here so both routes are covered once: **a roster
+        is never reconciled to empty**. An empty listing -- the provider
+        returned nothing, or every record's member value filtered out -- is a
+        failed refresh, not a membership fact: reconciling it would
+        mass-increment absence counts and, with an eviction threshold, evict
+        the entire roster through systematic provider garbage. The prior
+        roster stays intact and the caller's failed-refresh semantics apply
+        (the harvest degrades exactly like a failed HTTP refresh; the tap
+        propagates, failing the endpoint loudly). A non-empty listing is
+        applied whole -- staleness gates only whether the coordinator
+        *initiates* a harvest, never whether an executed run's complete
+        listing is reconciled. Records no ledger row: the harvest route owns
+        its run row; the tap route's run was recorded by the run executor.
 
         Args:
             definition: The sourced roster -- its key and eviction policy.
             listed: The feeder run's complete listed membership.
 
+        Raises:
+            ProviderResponseError: ``listed`` is empty (the reconcile guard);
+                the store is untouched.
+
         Side Effects:
             Writes the reconciled delta to the store (one transaction).
         """
+        if not listed:
+            raise ProviderResponseError(
+                provider=definition.key.provider.value,
+                endpoint=definition.source_endpoint,
+                detail=(
+                    f'feeder listed no members for roster '
+                    f'{definition.key.name!r}; a roster is never reconciled '
+                    f'to empty -- the prior membership stands'
+                ),
+            )
         current = self._store.read_counts(definition.key)
         self._store.apply(
             definition.key,

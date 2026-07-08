@@ -942,7 +942,8 @@ FleetpullError
 │   └── UnknownQuotaScopeError
 ├── AuthenticationError
 ├── ProviderResponseError
-└── RetriesExhaustedError
+├── RetriesExhaustedError
+└── SyncFailuresError
 ```
 
 | Exception | Consumer action |
@@ -951,6 +952,7 @@ FleetpullError
 | `AuthenticationError` | Fix credentials / account access. |
 | `ProviderResponseError` | Provider response was non-retryable or contract-violating; do not blindly rerun. |
 | `RetriesExhaustedError` | The transient/rate-limit budget ran out; rerunning later is reasonable. |
+| `SyncFailuresError` | One or more endpoints failed inside a sync run whose siblings continued; inspect `failures` (per-endpoint, in run order) and act per member. |
 
 Members are plain data carriers: typed fields for programmatic handling, a
 composed human message for `str()`. Instances never carry raw request or
@@ -1092,11 +1094,13 @@ typed schema — never `None`, never a schemaless frame — so downstream
 Polars is the only supported frame library for now; others are out of scope.
 
 **Public exceptions.** The documented `Raises` promise: consumers catch
-`FleetpullError` or its four public subclasses — `ConfigurationError`,
-`AuthenticationError`, `RetriesExhaustedError`, `ProviderResponseError` (§8).
-Every other exception type is internal and renameable. The aggregate
-multi-endpoint failure exception joins the public set when sync lands
-(item 6).
+`FleetpullError` or its public subclasses — `ConfigurationError`,
+`AuthenticationError`, `RetriesExhaustedError`, `ProviderResponseError` (§8),
+and `SyncFailuresError`, the aggregate a sync run raises after letting
+siblings continue: it carries the per-endpoint failures (`EndpointFailure`:
+provider, endpoint, the caught exception) in run order, and is deliberately
+not an `ExceptionGroup` so the documented `except FleetpullError:` contract
+keeps catching it. Every other exception type is internal and renameable.
 
 **`sync` — the config-driven verb.** Constructed on a path to the YAML config
 (`Path` or `str`); a `run()` method returning `None`; failure signaled by
@@ -1106,6 +1110,60 @@ sync means designing the config schema, so sync's full vocabulary is
 deliberately deferred to roadmap item 6, where the schema and the programmatic
 shell (`Sync(path).run()`) are designed as one unit. `fetch` was separable and
 designed first because its vocabulary does not depend on the schema.
+
+**`Sync`, as built (`fleetpull/api/sync.py`).** Construction is validation
+only: the config loads via `from_yaml`, every selected endpoint name is
+checked against the public catalog (the validation deliberately absent below
+the `api` tier), and zero enabled providers raises — a sync that syncs
+nothing is a configuration failure to surface, not a no-op. `run()` applies
+the logging section first (`setup_logger`), then composes the whole run from
+the validated config: the state database at the resolved
+`state.database_path`, the stores, the discovered endpoint and roster
+registries, the limiter registry from the precedence-resolved provider
+configs, and per-provider client profiles through the auth ingress (which
+accepts the config's `SecretStr` directly). Endpoints run sequentially
+(concurrency is the next vertical) in feeder-first order derived from the
+roster bindings via `sourced_by` — never a user-facing key; config order
+stands within ties — and commit independently: an endpoint's
+`FleetpullError` is recorded while siblings continue, any other exception is
+a bug and propagates immediately, and a run with failures ends by raising
+`SyncFailuresError` with every failure in run order. Only the selected set
+runs — an unselected feeder is never run on a consumer's behalf; roster
+freshness stays the refresh coordinator's job at fan-out time.
+
+**The settled YAML schema (rebuilt — `FleetpullConfig.from_yaml` is the
+loading API).** One frozen nested model family IS the schema: the sections
+and the models agree exactly, so no loader machinery bridges them (the
+vertical-1 masks, injections, and post-validation rewriting are deleted, not
+deprecated). Sections: `sync` (`default_start_date` required; optional
+package-wide `lookback_days` / `cutoff_days`), `storage` (`dataset_root`
+required — its one and only home; `SyncConfig` no longer carries it), `state`
+(`database_path`, defaulting to `<dataset_root>/.fleetpull/state.sqlite3`),
+`logging` (`console_level` / `file_level` / `file_path`; either file key
+enables file logging and the missing partner is defaulted — level to DEBUG,
+path to `<dataset_root>/.fleetpull/fleetpull.log`), `http` and `retry` (the
+existing models' fields, wholesale-optional), and `providers.motive`
+(`api_key`, `endpoints`, `base_url`, `records_per_page`, `rate_limit`, and
+the per-provider `lookback_days` / `cutoff_days` overrides). Window-knob
+precedence: a provider's own key stands; else a declared `sync` value fans
+in; else the provider model's documented default — resolved by
+`mode='before'` validation on the root over the raw document (thin wrappers
+over pure functions in `config/resolution.py`), so any `FleetpullConfig`
+validated from a raw document is fully resolved, every path field normalized
+through `paths.resolve_path`. Unknown keys are `ConfigurationError`s at
+every level (`extra='forbid'` throughout). A provider is enabled iff its
+credential resolves AND its `endpoints` list is non-empty: endpoints with no
+credential raise at validation (direct construction included), naming the
+YAML field and the environment variable; a credential with no endpoints logs
+one load-time WARNING and the provider stays disabled. Credentials come from
+the YAML literal or fall back to the conventional environment variable
+(`MOTIVE_API_KEY`, declared per provider in the providers family), the
+literal winning and empty counting as unset — environment access lives in
+the `from_yaml` path only, never in validators. Values are `SecretStr` from
+parse time on. Endpoint names stay unvalidated strings at this tier — the
+catalog lives in `api`, above `config`, so name validation happens at `Sync`
+construction. The public windowed-bound vocabulary (`start_date` /
+`end_date`) appears nowhere in this schema, by design.
 
 **Vocabulary bound now for item 6.** The public names for windowed bounds are
 `start_date` / `end_date` — never bare `start`/`end` — matching the package's
@@ -1141,13 +1199,33 @@ fleetpull/
                    #   the network contract, records, and the orchestrator
     provider.py    # Provider (§8) — the second vocabulary enum; provider identity, homed in the
                    #   leaf for the same cycle-free reason as ResponseCategory
-  config/          # Pydantic models for user-provided YAML, one module per section; the YAML loader joins in a later prompt
+  config/          # Pydantic models for user-provided YAML — one model FAMILY per
+                   #   file (different families in different files); the schema and
+                   #   the models are the same shape, loaded via
+                   #   FleetpullConfig.from_yaml (§10)
+    base.py        # ConfigModel — the frozen/extra-forbid/validate-default policy,
+                   #   stated exactly once and inherited by every config model
+    sections.py    # the run-scoped standalone sections: SyncConfig
+                   #   (default_start_date + the package-wide window knobs),
+                   #   StorageConfig (dataset_root — its only home), StateConfig
+                   #   (database_path — AUD-13's landing); path fields normalize
+                   #   through paths.resolve_path at validation
+    providers.py   # the provider family: ProviderConfig (quota_scope, rate_limit,
+                   #   endpoints), MotiveConfig (api_key, base_url, records_per_page,
+                   #   per-provider lookback_days/cutoff_days), ProvidersConfig, the
+                   #   credential env-var convention map, and the enablement checker
+    root.py        # FleetpullConfig — the whole-document root; cross-section
+                   #   resolution as mode='before' validators (thin wrappers over
+                   #   resolution.py) and from_yaml as the loading API
+    resolution.py  # pure raw-document resolution: knob precedence, state-path and
+                   #   log-path defaults; no I/O, no env, no logging
+    loading.py     # from_yaml's steps: read/parse with actionable errors, the env
+                   #   credential merge (the only env access in config), validation
+                   #   detail shaping, the disabled-provider warning
     logger.py      # LoggerConfig
     geotab.py      # GeotabAuthConfig (server validated as a bare hostname, §8)
     retry.py       # RetryConfig — attempt budgets, backoff shape, fallback penalty (§7)
     http.py        # HttpConfig — connect/read timeouts, truststore opt-in
-    motive.py      # MotiveConfig (base_url, records_per_page, lookback_days, cutoff_days)
-    sync.py        # SyncConfig (default_start_date) — the cold-start backfill anchor
     rate_limit.py  # RateLimitConfig — one quota scope's token-bucket budget; each
                    #   provider config defaults its own (AUDIT AUD-12)
   logger/
@@ -1604,9 +1682,16 @@ observer on the run — the runner hands each post-validation frame to an
 opaque `BatchObserver` hook and stays roster-blind — collecting each sourced
 roster's distinct `source_column` values (values only, never frames), and
 after the run returns `Executed` it hands each collected listing to the
-coordinator's `apply_listing` to reconcile unconditionally. A failed run
-applies nothing; a `CaughtUp` run executed nothing, so there is no listing to
-apply. A sourced definition that is not snapshot-mode is rejected with
+coordinator's `apply_listing` — the reconcile choke point, whose guard means
+reconciliation is no longer unconditional: **a roster is never reconciled to
+empty**. An empty listing (the provider returned nothing, or every member
+value filtered out) is a failed refresh, not a membership fact — reconciling
+it would mass-increment absence counts and, with an eviction threshold,
+evict the entire roster through systematic provider garbage. The prior
+membership stands; the harvest route degrades exactly like a failed HTTP
+refresh (run marked failed, staleness unadvanced), and the tap route
+propagates, failing the endpoint loudly. A failed run applies nothing; a
+`CaughtUp` run executed nothing, so there is no listing to apply. A sourced definition that is not snapshot-mode is rejected with
 `ConfigurationError` before anything runs — `reconcile` is only correct over
 a complete listing, which only a snapshot feeder produces — mirroring the
 coordinator's harvest-route guard, with the same rule enforced at build time
@@ -1671,9 +1756,11 @@ remains the one open piece.
 **The run is constructed, not self-assembling.** The `EndpointRunner` is injected
 with five collaborators — the `ProviderClientRegistry` (client source), the
 `RunLedger` (run recorder), the `Clock`, the `CursorStore` (cursor access), and the
-`SyncConfig`, which now carries both the dataset root and the cold-start anchor (a
-sync-wide setting belongs on the sync config, not threaded per-runner — and it keeps
-the constructor at five flat parameters). The `EndpointDefinition` and the driver are
+root `FleetpullConfig` — the container its composition root already holds, read for
+exactly two values: `sync.default_start_datetime` (the cold-start anchor) and
+`storage.dataset_root` (where the writers land). Passing the root keeps the
+constructor at five flat parameters without minting a bundle type for the pair
+(pass-the-container over field-threading). The `EndpointDefinition` and the driver are
 `run()` arguments, not constructor fields, so one runner instance runs `vehicles`,
 then `vehicle_locations`, each with the driver its caller built. The runner
 constructs no clients and reads no credentials. One `Clock` instance is shared by the
@@ -1796,9 +1883,12 @@ bundle the two per-provider dependencies that share a session lifetime
 (auth strategy, classifier) into `ProviderProfile`, leaving the per-endpoint
 page decoder and quota scope to arrive on each `fetch_pages` call.
 
-**Vertical progress.** The Motive `vehicles` snapshot vertical is complete
-end-to-end (`client → validate_records → models_to_dataframe → persist`, exercised
-by a throwaway hand-run driver). The Motive `vehicle_locations`
+**Vertical progress.** The Motive `vehicles` snapshot vertical was proven
+complete end-to-end in June 2026 (`client → validate_records →
+models_to_dataframe → persist`, exercised by a throwaway hand-run driver).
+That driver has since been re-pointed through the public `fetch` surface
+(roadmap item 5) and no longer persists — the persist-ending trace is the
+June proof, not the script's current shape. The Motive `vehicle_locations`
 date-partitioned/watermark vertical has run end-to-end live
 (`scripts/run_vehicle_locations.py`, on local disk): the incremental loop
 mechanics are live-proven — cold backfill, watermark persistence and resume
