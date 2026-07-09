@@ -966,6 +966,44 @@ tolerates both being sent — the strategy always strips);
 `resultsLimit` is read from the sent body, so strategy-versus-endpoint
 divergence is structurally impossible.
 
+### GeoTab probe-settled decisions (2026-07-09)
+
+Settled as design by the live probe session (the captured rows in the
+observed-behaviors table below); the build prompts implement them.
+
+1. **Device harvest mechanism: sort-seek paging by `id` ascending.** The
+   initial request carries the `sort` object (`sortBy: "id"`) with a null
+   `offset`; each advance sets `offset` to the last returned id; termination
+   is the empty result list; `lastId` is never sent with id-sort (docs:
+   `ArgumentException`). Rationale: the silent 5,000 cap makes a single
+   uncursored `Get` unsound for any cappable entity, so `SinglePageDecoder`
+   is ruled out for capped `Get` entities and a seek-paging Get decoder
+   joins the PageDecoder family.
+2. **Completeness guard: `GetCountOf` beside every Device harvest.** A
+   count/harvest mismatch triggers exactly one refetch — absorbing
+   mid-harvest churn without inventing a tolerance number — and a persistent
+   mismatch raises `ProviderResponseError` naming both counts. Rationale:
+   silent truncation must be loud; the same doctrine family as the
+   empty-listing reconcile guard (§13).
+3. **Rate posture: self-limit at the header-advertised per-class budgets**,
+   regardless of whether GeoTab is enforcing yet; GeoTab's rate-limit config
+   defaults cite the captured headers, and no ramp probe is needed — the
+   headers are the probe. Runtime posture is unchanged: the reactive control
+   loop stands and the headers stay unconsumed at runtime (the table row
+   below); they informed the configured budgets, nothing else.
+4. **Feed semantics: the bootstrap is *ingested-since*.** Date watermarks
+   are never derived from feed `dateTime`s — the version-order capture (the
+   feed is version-ordered, with `dateTime` dipping before the requested
+   `fromDate`) is the empirical justification for `FeedToken` opacity
+   (`incremental/cursor.py`, §4/§5): the token is the only sound resume
+   coordinate. Date-partitioned feed storage assigns partitions per-record
+   and tolerates event-time disorder by construction.
+5. **Accepted residual: the exactly-full-final-page feed edge.** When the
+   final feed page holds exactly `resultsLimit` records, the decoder issues
+   one extra call that returns empty — the worst case is one empty
+   `GetFeed` per sync. Accepted, not open; recorded in §13 with this
+   rationale.
+
 ### The exception hierarchy (implemented: `exceptions.py`)
 
 The operational errors consumers catch, mirroring the classification
@@ -1012,6 +1050,21 @@ budgets → `RetriesExhaustedError`, failed auth paths →
 | GeoTab | `OverLimitException` pairs with an integer `Retry-After` header (e.g. `56`). |
 | GeoTab | Success responses carry `X-Rate-Limit-*` budget headers; deliberately unconsumed — the reactive control loop (configured budgets plus the 429 penalty) is the v1 design, and a second feed-forward loop is rejected. Re-litigate on sustained 429 churn on GeoTab in production. |
 | GeoTab | `toVersion` is a string cursor; `GetFeed` with `search.fromDate` supports historical bootstrap (feeds the state design). |
+| GeoTab | `Authenticate` re-run returned `path: "ThisServer"`; the envelope byte-shape matches the June fixture (captured 2026-07-09). |
+| GeoTab | `Get` honors `resultsLimit` exactly when at or under the cap (captured 2026-07-09). |
+| GeoTab | `Get` hard-caps at 5,000 records **silently** — no continuation signal or metadata of any kind; a `resultsLimit` above the cap still returns exactly 5,000 (captured 2026-07-09). |
+| GeoTab | `GetCountOf` returns the true entity count: 5,666 captured against the capped 5,000 — 666 records invisible to a bare `Get` (captured 2026-07-09). |
+| GeoTab | Sort-seek paging works as documented: `sort.sortBy: "id"` ascending with `offset` set to the last returned id; page sums matched `GetCountOf` exactly; adjacent page-boundary ids were numerically consecutive — no loss, no overlap at the seam; the terminal signal is an **empty result list**, now captured. `lastId` must not be sent with id-sort — `ArgumentException` (docs, not captured) (captured 2026-07-09). |
+| GeoTab | Device schema is polymorphic across device generations and types: at least three shapes observed (GO7-era, GO9-era, and untracked/trailer entries with `deviceType: "None"`, `productId: -1`, and a `tmpTrailerId` field absent from the others); one tracked record lacked `deviceFlags`/`devicePlans` entirely — modeling requires the union of fields with everything optional (captured 2026-07-09). |
+| GeoTab | Sentinel values: `activeTo: 2050-01-01` means active, and retired devices remain listed — the full-harvest property holds on GeoTab; VIN fields carry `""` and a literal `"?"`; `ignoreDownloadsUntil` observed at both `1986-01-01` and `0001-01-01` — the year-one value overflows nanosecond-precision timestamp columns, so datetime parsing of such fields requires microsecond precision or exclusion (captured 2026-07-09). |
+| GeoTab | A bare `GetFeed` (no `fromVersion`, no `search`) returns empty `data` with the **current** `toVersion`: cursor-at-now, not replay-from-start — which explains the June fixture's empty data (captured 2026-07-09). |
+| GeoTab | The `search.fromDate` bootstrap returns records and a walkable token — the June acceptance is now backed by a data-bearing capture (captured 2026-07-09). |
+| GeoTab | The feed is **version-ordered, not event-time-ordered**: `dateTime` was non-monotonic within a page and dipped before the requested `fromDate` (buffered device uploads land later versions with earlier event times). Bootstrap semantics are *ingested-since*, not *occurred-since* (captured 2026-07-09). |
+| GeoTab | Token advance is strict: records carry versions strictly after the sent `fromVersion`, no overlap; record ids and `toVersion` share one counter space — the docs' own example pair `"b14C3EE"` ↔ `"000000000014c3ee"` shows the mapping (captured 2026-07-09). |
+| GeoTab | A short page (`len(data) < resultsLimit`) was observed live as the caught-up shape; the exactly-full-final-page edge remains unobserved (captured 2026-07-09). |
+| GeoTab | LogRecord's shape is six fields: `latitude`, `longitude`, `speed`, `dateTime`, `device` (a nested id ref), `id` (captured 2026-07-09). |
+| GeoTab | Every response carries `X-Rate-Limit-Limit` (a period), `X-Rate-Limit-Remaining`, and `X-Rate-Limit-Reset`; budgets are per method class — the GetFeed class showed remaining 59 after one call in multiple independent windows (implied 60/min); the Get class showed 649 after one call (implied ~650/min, single datum). The docs state the headers may precede enforcement ("Coming Soon" — docs, not captured). June's captured "Maximum admitted 10 per 1m" OverLimit is consistent with an Authenticate-class budget (captured 2026-07-09). |
+| GeoTab | The read-the-type-never-the-message rule's strongest exhibit: an unknown `typeName` returns `MissingMethodException` whose *message* falsely claims the method itself doesn't exist while `error.data.type` stays truthful; a malformed JSON body returns `JsonSerializerException` (code `-32700`) in the same envelope shape (both captured 2026-07-09). |
 | Samsara | 429 with fractional `Retry-After` (e.g. `0.40235`); 401 body is `{"message": ...}`; 5xx bodies are plain strings, never JSON. |
 | Motive | 401 body is `{"error_message": ...}`; the documented /vehicle_locations limit was not observed to enforce — generic 429 posture. |
 | Motive | `/v3/vehicle_locations/{vehicle_id}` verified live: envelope `{"vehicle_locations": [{"vehicle_location": {...}}]}`, `located_at` is UTC ISO-8601 (`Z`-suffixed), one non-paginated page per fetch (so `SinglePageDecoder` fits), and a single per-vehicle fetch spans multiple calendar dates (the sample crossed two) — confirming `split_by_date`'s multi-partition output is load-bearing in production, not a theoretical edge: one fetch genuinely fans into several partitions. |
@@ -1638,7 +1691,15 @@ tzinfo-construction rules mechanically.
 
 ## 13. Open Questions
 
-- GeoTab specifics pending API access: `GetFeed` semantics in practice, real rate limits, which entities map to which storage strategies (the auth model is settled — session-based, §8)
+- GeoTab specifics pending API access: `GetFeed` semantics in practice, real rate limits, which entities map to which storage strategies (the auth model is settled — session-based, §8). *Update (2026-07-09): the live probe session closed the `GetFeed`-semantics and rate-limit halves — see §8's observed-behaviors table and probe-settled decisions. Still open: which remaining entities map to which storage strategies, and the calculated-feed questions (version re-emission shape, tombstones — the bullet below), deferred to Trip's port.*
+
+- **Accepted residual (2026-07-09): the exactly-full-final-page feed edge.**
+  When a feed's final page holds exactly `resultsLimit` records, the
+  short-page termination rule issues one extra call that returns empty
+  `data` (with the current `toVersion`). Worst case is one empty
+  `GetFeed` per sync per feed endpoint — accepted with that rationale
+  rather than left implicitly unresolved; the empty-page terminal shape is
+  captured (§8's table). Not an open question.
 - Real rate-limit values for Motive/Samsara (YAML numbers above are placeholders)
 - Whether any endpoint actually warrants the flattening opt-out
 - Per-endpoint quota scopes for Samsara: a provider metering one endpoint apart adds a `QuotaScope` member (code), while that scope's limits stay config — a code-plus-config change, not config-only.
