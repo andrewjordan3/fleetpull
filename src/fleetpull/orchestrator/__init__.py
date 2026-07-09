@@ -25,7 +25,7 @@ from fleetpull.orchestrator.executors import FetchPoolRegistry
 from fleetpull.orchestrator.fanout import FetchPool
 from fleetpull.orchestrator.outcome import CaughtUp, Executed, RunOutcome
 from fleetpull.orchestrator.roster_refresh import RosterRefreshCoordinator
-from fleetpull.orchestrator.runner import EndpointRunner
+from fleetpull.orchestrator.runner import EndpointRunner, RunStateAccess
 
 __all__: list[str] = [
     'CaughtUp',
@@ -39,6 +39,7 @@ __all__: list[str] = [
     'RosterMachinery',
     'RosterRefreshCoordinator',
     'RunOutcome',
+    'RunStateAccess',
     'SingleRequestDriver',
     'run_endpoint',
 ]

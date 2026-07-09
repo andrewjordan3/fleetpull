@@ -54,6 +54,12 @@ def _write_config(
     tmp_path: Path, *, endpoints: str = '[vehicles, vehicle_locations]', extra: str = ''
 ) -> Path:
     config_path = tmp_path / 'config.yaml'
+    # The rate limit is deliberately generous: the fixed default_start_date
+    # against the real clock plans one work unit per elapsed week, so the
+    # fan-out's request count grows over calendar time -- the default burst
+    # of 10 would make these tests sleep on the real token bucket. Only
+    # max_concurrency stays at the default 2: the overlap barrier depends
+    # on exactly two workers.
     config_path.write_text(
         'sync:\n'
         '  default_start_date: 2026-06-01\n'
@@ -63,7 +69,12 @@ def _write_config(
         'providers:\n'
         '  motive:\n'
         f"    api_key: '{_SYNTHETIC_KEY}'\n"
-        f'    endpoints: {endpoints}\n',
+        f'    endpoints: {endpoints}\n'
+        '    rate_limit:\n'
+        '      requests_per_period: 6000\n'
+        '      period_seconds: 60.0\n'
+        '      burst: 1000\n'
+        '      max_concurrency: 2\n',
         encoding='utf-8',
     )
     return config_path

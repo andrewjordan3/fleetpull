@@ -1174,7 +1174,9 @@ loading API).** One frozen nested model family IS the schema: the sections
 and the models agree exactly, so no loader machinery bridges them (the
 vertical-1 masks, injections, and post-validation rewriting are deleted, not
 deprecated). Sections: `sync` (`default_start_date` required; optional
-package-wide `lookback_days` / `cutoff_days`), `storage` (`dataset_root`
+package-wide `lookback_days` / `cutoff_days`; optional `backfill_chunk_days`,
+default 7 — the whole-day work-unit width every windowed run's plan tiles its
+window into, §13), `storage` (`dataset_root`
 required — its one and only home; `SyncConfig` no longer carries it), `state`
 (`database_path`, defaulting to `<dataset_root>/.fleetpull/state.sqlite3`),
 `logging` (`console_level` / `file_level` / `file_path`; either file key
@@ -1667,8 +1669,9 @@ tzinfo-construction rules mechanically.
   with a docs note: `dataset_root` should be a real filesystem path, not a
   live cloud-synced folder.
 
-- **The work-unit transaction boundary (still open; its empty-roster twin is
-  settled).** *Empty roster — settled and implemented:* the orchestration entry
+- **The work-unit transaction boundary (settled — the unified plan-and-drive
+  loop; its empty-roster twin was settled earlier).** *Empty roster — settled
+  and implemented:* the orchestration entry
   reads the roster (the driver does not, §14) and short-circuits before
   `runner.run()` — an empty roster after refresh raises `ConfigurationError`.
   Error-by-default because a feeder that silently returned nothing is a failure
@@ -1678,15 +1681,32 @@ tzinfo-construction rules mechanically.
   member yields ≥1 batch, and the only zero-batch case never reaches the
   runner). The `FanOutBinding.allow_empty_roster` escape is deliberately not
   built — it joins the binding when an endpoint genuinely needs it, not before.
-  *Transaction boundary — open:* whether one fan-out run is a
-  single transaction (`finalize`/cursor/`complete` once — a mid-run crash refetches
-  the whole roster, no per-member resumability, `WorkUnitStore` unused on this path)
-  or per-member transactions (`finalize` + commit per member — resumable via
-  `WorkUnitStore`, but the watermark-advances-once model and per-member commits must
-  be reconciled). This decides where progress commits live and whether the driver's
-  batch granularity interacts with them; today's entry runs whole-roster
-  single-transaction (the incremental path), and the question governs the
-  backfill loop when it lands.
+  *Transaction boundary — settled and implemented:* neither of the two
+  candidates, but the third the `WorkUnitStore` was built for — per **unit**
+  (a date chunk of the whole roster), not per run and not per member. Every
+  windowed run plans its window into `sync.backfill_chunk_days`-wide units (a
+  daily window degenerates to one unit) and drives them serially in ascending
+  window order; each unit is its own transaction — fetch the unit's window,
+  finalize its partitions, advance the watermark on a strictly-forward
+  observation, record its ledger row, mark it done. Ascending completion
+  keeps completed units a contiguous prefix, so every persisted watermark is
+  true at every instant — the truth invariant, and the reason unit order is
+  not a free choice. Resume precedence: incomplete units outrank the
+  watermark — a run re-claims and drives them first (an in-progress unit
+  found at run start is by definition orphaned, because fleetpull assumes a
+  **single driver per state database**), then plans the residual, resolved
+  exactly as the resume chain always has (watermark less lookback, floored;
+  else frontier; else anchor; cutoff trailing edge), as new units at the
+  current chunk size — persisted unit boundaries are honored on resume even
+  when `backfill_chunk_days` changed. The first failed unit fail-fasts the
+  endpoint: it returns to a claimable state with nothing committed, the
+  completed prefix stands, and the next run re-claims what remains.
+  Completed unit rows are kept, not pruned — the runs-ledger provenance
+  doctrine. One emergent consequence, deliberate: a re-invocation whose
+  residual window exactly matches an already-done unit's bounds drives
+  nothing (the idempotent enqueue collapses onto the kept `done` row), so a
+  same-day identical-window re-run is a no-op; the late-arrival margin
+  refetch still happens whenever the window shifts.
 
 - **Logging policy (pinned during the concurrency vertical — open questions,
   deliberately unanswered there).** Three decisions, recorded so no scoped
@@ -1850,20 +1870,20 @@ rows (the require-inside half of the normalize-at-boundary doctrine, §12). Thes
 `orchestrator/resume.py` (cursor interpretation and its guards) and
 `incremental/resolution.py` (cursor-free date math); the runner reads the cursor,
 the clock, and the frontier, calls them, and writes — no resume logic on the class,
-the same split as `process_batch` in `orchestrator/batch.py`. The window transaction
-itself — open the run, drive/write/finalize, optionally advance the cursor, complete
-— is the shared spine `_execute_window`, in the parquet -> cursor -> ledger order
-below. `_run_watermark` resolves the window (above) then calls the spine with its
-advance intent; the cursor advances only when `should_advance_watermark` confirms the
-folded in-window maximum is strictly past the stored watermark (the monotonicity the
-cursor store omits) and only when the run observed at least one in-window event; the
-`set_cursor` write is inline, between `finalize` and `complete_run`.
-`run_backfill_unit` runs the same spine over a caller-given chunk window with the
-advance suppressed: it records the run (so the coverage frontier advances date-wise)
-but no global watermark — out-of-order chunks can't track a single max-event-time
-watermark, so it is set once at backfill completion. A backfill chunk fans the whole
-roster, so the partition is replaced with every member's rows, exactly the in-full
-refetch the partitioned writer already assumes — the writer is unchanged.
+the same split as `process_batch` in `orchestrator/batch.py`. The per-unit transaction
+— open the run, drive/write/finalize, advance the cursor, complete — is the
+shared spine `_execute_window`, in the parquet -> cursor -> ledger order below.
+`_run_watermark` is the plan-and-drive loop (§13's settled record): it drives
+every claimable work unit through the spine, each with the freshly read prior
+cursor; the cursor advances only when `should_advance_watermark` confirms the
+unit's folded in-window maximum is strictly past that prior (the monotonicity
+the cursor store omits) and only when the unit observed at least one in-window
+event; the `set_cursor` write is inline, between `finalize` and `complete_run`.
+Serial ascending units make the per-unit advance sound — the out-of-order
+concern that once suppressed the advance on backfill chunks is gone with
+out-of-order execution itself. A unit fans the whole roster, so each partition
+is replaced with every member's rows, exactly the in-full refetch the
+partitioned writer already assumes — the writer is unchanged.
 
 **Crash-safety ordering — parquet, then cursor, then ledger.** §5 fixes
 parquet-before-cursor; the run executor adds a second ordering, cursor before run
@@ -1925,7 +1945,7 @@ the coordinator follow, wiring `vehicle_locations.fan_out`.
 ## 15. Next Steps
 
 1. Review/amend this document
-2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → retry policy (done, `config/retry.py` + `network/retry/`) → page-decoder abstraction (done, `network/contract/page_decoder.py` + `decoders/`) → HTTP config + the real GeoTab authenticator (done, `config/http.py` + `network/auth/authenticate.py`) → `network/client/` (done) → `endpoints/shared/base.py` (done) → `records` (done) → `storage` (done: `snapshot`+`single` plus the date-partitioned/watermark writer, §3) → `state` (done in full — §5) → `orchestrator` (built: the run executor's snapshot and watermark arms, the request drivers, and the roster refresh — §14; the fan-out composition root and the backfill loop remain). The chain's original endpoint, `cli.py`, is superseded by the build roadmap below — the public API (§10) precedes any YAML/CLI surface.
+2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → retry policy (done, `config/retry.py` + `network/retry/`) → page-decoder abstraction (done, `network/contract/page_decoder.py` + `decoders/`) → HTTP config + the real GeoTab authenticator (done, `config/http.py` + `network/auth/authenticate.py`) → `network/client/` (done) → `endpoints/shared/base.py` (done) → `records` (done) → `storage` (done: `snapshot`+`single` plus the date-partitioned/watermark writer, §3) → `state` (done in full — §5) → `orchestrator` (built in full: the run executor's snapshot arm and plan-and-drive watermark arm, the request drivers, the fan-out machinery, the unit loop, and the roster refresh — §7/§13/§14). The chain's original endpoint, `cli.py`, is superseded by the build roadmap below — the public API (§10) precedes any YAML/CLI surface.
 
 The `network/client/` step inherits a recorded agenda: classify
 prepare-time transport exceptions (the authenticator propagates
@@ -2038,10 +2058,21 @@ resolution (item 1, done).
    missing-`tzdata` failure automatically), and the parked staging
    robustness (§13).
 
-**Deliberately deferred — off the roadmap's critical path.** The full
-`work_units` backfill orchestration (per-provider executor and per-endpoint
-writer threads — the `work_units` *store*, the chunk planner
-(`plan_backfill_units`), and the runner's `run_backfill_unit` arm are built;
-the loop that claims and drives units is not), and `metadata.json` generation
-(cosmetic, projected from SQLite, never read by the program). The YAML config
-loader, previously deferred here, is now roadmap item 6.
+**The `work_units` orchestration — built in full (no longer deferred).** The
+unified plan-and-drive loop is the only windowed path: the store, the chunk
+planner (`plan_backfill_units`), and the claim-and-drive loop
+(`orchestrator/unit_loop.py` composed by the runner's watermark arm) plan
+every windowed run as units and drive them serially ascending with per-unit
+commits (§13's settled transaction-boundary record). The whole-window
+watermark arm and the never-wired no-advance per-chunk arm are deleted — the
+single-unit degenerate case is the daily run. (The old
+deferred-inventory line here read "per-provider executor and per-endpoint
+writer threads" — a conflation: the per-provider executor shipped with the
+concurrency vertical (§7) as fan-out machinery, orthogonal to backfill, and
+per-endpoint writer threads were never part of the settled design; the
+single writer per endpoint stands, §3.)
+
+**Deliberately deferred — off the roadmap's critical path.**
+`metadata.json` generation (cosmetic, projected from SQLite, never read by
+the program). The YAML config loader, previously deferred here, is now
+roadmap item 6.
