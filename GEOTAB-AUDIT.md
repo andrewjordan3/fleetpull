@@ -13,6 +13,11 @@ alone" (DESIGN.md:1022–1028).
 
 Findings are numbered `GTA-xx` and indexed at the end.
 
+**Update doctrine.** This is a point-in-time report and is never silently
+rewritten: changes land as dated appended notes under the affected entries
+(`**Update (2026-07-09):** …`-style), mirroring AUDIT.md's resolution-line
+doctrine. Original text stands as written on its date.
+
 ---
 
 ## 1. Built inventory
@@ -131,6 +136,15 @@ in brackets.
 | G7 | **`models/geotab/` response model** for the first entity — written from captured JSON, not docs (the standing rule, DESIGN.md:1022-1028). No capture of a full `Device` or non-empty feed record exists in the tree | **S–M per entity** [Postman P3/P5/P8] |
 | G8 | **Transport POST end-to-end proof**: wired (§1.5) but never driven through `fetch_pages` → limiter → classifier with a live body | **S** (falls out of the first endpoint) [G5] |
 
+**Update (2026-07-09):** G7's capture dependency is closed — the probe
+session captured full `Device` records (three polymorphic shapes, including
+the trailer shape) and data-bearing `LogRecord` feed pages, so both first
+models can now be written from captured JSON; the build work itself remains.
+Sizing unchanged, with one addition from the Device polymorphism finding
+(GTA-13): the model is the union of observed fields with everything
+optional, and the year-one sentinel datetimes need microsecond-precision
+handling or exclusion.
+
 ### 2.1 Snapshot path (`Get`, e.g. `typeName=Device`) — additional
 
 | # | Gap | Size | Notes |
@@ -140,6 +154,17 @@ in brackets.
 | G11 | Writer: **no gap** — `SnapshotWriter` exists (writers.py:176-193); snapshot arm, `fetch` exposure, and the run path all exist. No roster needed | — |
 
 Snapshot total beyond the shared foundation: **S**.
+
+**Update (2026-07-09) — G10 REVERSED.** `SinglePageDecoder` does **not** fit
+GeoTab `Get`: the probe found a silent hard cap at 5,000 records with no
+continuation signal of any kind (a single-page decode would silently truncate
+a 5,666-device fleet — GTA-11). Replaced by two gaps, per the probe-settled
+decisions (DESIGN §8, 2026-07-09): a **seek-paging Get decoder** —
+`sort.sortBy: "id"` ascending, `offset` = last returned id, terminal on the
+empty page, `lastId` never sent (**S–M**) — and the **`GetCountOf`
+completeness guard** beside every Device harvest — one refetch on mismatch,
+persistent mismatch raises `ProviderResponseError` naming both counts
+(**S**). Snapshot total beyond the shared foundation becomes **S–M**.
 
 ### 2.2 Feed path (`GetFeed`) — additional
 
@@ -189,6 +214,44 @@ every capture should note the **HTTP status code** alongside the body — the
 classifier's whole design rests on errors arriving in 200
 (classifiers/geotab.py:4-7; DESIGN.md:1010).
 
+**Update (2026-07-09) — probe session executed** (Andrew, live MyGeotab;
+findings recorded in DESIGN §8's observed-behaviors table and probe-settled
+decisions). Status per probe:
+
+- **P1 ✓** — `path: "ThisServer"` re-captured; envelope byte-shape matches
+  the June fixture. The redirect case remains documented-only.
+- **P2 ✓** — closed by the cap discovery: `Get` hard-caps at 5,000
+  silently; `GetCountOf` captured 5,666 against it (GTA-11).
+- **P3 ✓** — `resultsLimit` honored exactly at/under the cap; above it,
+  still exactly 5,000; no continuation signal exists on plain `Get`.
+- **P4 ✓** — data-bearing `search.fromDate` bootstrap captured (LogRecord,
+  six-field shape); the June empty-data fixture is explained: a bare
+  `GetFeed` is cursor-at-now.
+- **P5 ✓** — strict token advance captured: versions strictly after the
+  sent `fromVersion`, no overlap; ids and `toVersion` share one counter
+  space (the docs' `"b14C3EE"` ↔ `"000000000014c3ee"` pair).
+- **P6 partial** — the short-page caught-up shape observed live (GTA-09's
+  live half closed); the exactly-full-final-page edge is **accepted as a
+  residual**, not left open — worst case one extra empty call per sync
+  (DESIGN §13, 2026-07-09).
+- **P7 deferred** — explicitly deferred to Trip's port: LogRecord is a raw
+  immutable feed, so the calculated-feed questions (version re-emission,
+  tombstones — GTA-10) don't bite it.
+- **P8 ✓** — plus a bonus capture: `MissingMethodException` whose message
+  lies while `error.data.type` stays truthful (the
+  read-the-type-never-the-message rule's strongest exhibit), and
+  `JsonSerializerException` (code `-32700`) for a malformed body, same
+  envelope shape.
+- **P9 skipped** — the June `OverLimitException` capture stands.
+
+**Fixture earmarks (2026-07-09)** — captures earmarked to become committed
+test fixtures in the build prompts (earmarked only; the build prompts commit
+them, scrubbed per this section's convention): the terminal empty feed page;
+a seek page boundary (last id of page N + first id of page N+1); the
+`MissingMethodException` and `JsonSerializerException` envelopes; the
+data-bearing bootstrap LogRecord page; a trailer-shape Device record
+(`deviceType: "None"`, `productId: -1`, `tmpTrailerId`).
+
 ---
 
 ## 4. Recommended build order
@@ -234,6 +297,13 @@ Either order, nothing should be built ahead of the Postman captures: the
 tree's own standing rule is that bindings settle against probes, never docs
 alone (DESIGN.md:1022-1028).
 
+**Update (2026-07-09):** the probes ran; P2/P3 settled the GTA-06 bet
+*against* decoder-triviality (see the G10 reversal in §2.1). The
+snapshot-first recommendation stands: the seek-paging decoder plus the
+`GetCountOf` guard move the snapshot delta from S to S–M, still well short
+of the feed arm's L, and the captures the feed design needs (P4–P6) are now
+in hand as this order assumed.
+
 ---
 
 ## Findings index
@@ -250,3 +320,22 @@ alone (DESIGN.md:1022-1028).
 | GTA-08 | `DbUnavailableException` → TRANSIENT is documented-only (its fixture is marked CONSTRUCTED); unprovokable on demand — capture opportunistically | classifiers/geotab.py:81-86; test_geotab.py:56-64 |
 | GTA-09 | The GetFeed page-boundary rule (`len(data) < resultsLimit` terminal) has never been observed across a live page boundary (decoder fixtures are synthetic) — routes to P6 | decoders/geotab.py:133-138; tests/network/decoders/test_geotab.py:1-5 |
 | GTA-10 | Calculated-feed removal (tombstone) semantics are an open empirical question that shapes consumer guidance, not v1 storage — routes to P7 and longer-lived observation | DESIGN.md:403-411 |
+
+**Update (2026-07-09) — resolutions and new findings from the live probe
+session** (details in DESIGN §8's observed-behaviors table and probe-settled
+decisions):
+
+- GTA-06 — **resolved, reversed**: `SinglePageDecoder` does not fit `Get`
+  (the silent 5,000 cap); see the G10 reversal, §2.1.
+- GTA-09 — **half resolved**: the short-page caught-up shape was observed
+  live; the exactly-full-final-page edge is accepted as a residual
+  (DESIGN §13, 2026-07-09), no longer routed to probing.
+- GTA-10 — **deferred, unchanged**: P7 deferred to Trip's port; LogRecord
+  is a raw immutable feed the calculated-feed questions don't bite.
+
+| # | Finding (added 2026-07-09) | Where |
+|---|---|---|
+| GTA-11 | `Get` silently hard-caps at 5,000 records — no continuation signal or metadata; `GetCountOf` is the truth instrument (captured 5,666 vs the capped 5,000: 666 records invisible to a bare `Get`). Any uncursored `Get` harvest is silent-truncation-by-construction on large fleets | DESIGN §8 observed table (2026-07-09 rows); decisions 1–2 |
+| GTA-12 | The feed is version-ordered, not event-time-ordered: `dateTime` non-monotonic within a page and dipping before the requested `fromDate`; bootstrap semantics are *ingested-since*, not *occurred-since*. Date watermarks must never derive from feed `dateTime`s — the empirical justification for `FeedToken` opacity | DESIGN §8 observed table; decision 4 |
+| GTA-13 | Device schema polymorphism and the sentinel set: at least three record shapes (GO7-era, GO9-era, trailer with `deviceType: "None"` / `productId: -1` / `tmpTrailerId`); `activeTo: 2050-01-01` = active; VIN fields carry `""` and `"?"`; `ignoreDownloadsUntil` at `0001-01-01` overflows nanosecond timestamp columns (microsecond precision or exclusion required) | DESIGN §8 observed table |
+| GTA-14 | Rate budgets are per method class, advertised in `X-Rate-Limit-*` headers on every response (GetFeed class ~60/min, multiple windows; Get class ~650/min, single datum; June's 10/min OverLimit consistent with an Authenticate-class budget) — with the docs' caveat that headers may precede enforcement ("Coming Soon"). Config defaults cite the captured values; no ramp probe needed | DESIGN §8 observed table; decision 3 |
