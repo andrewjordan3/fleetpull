@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from fleetpull.endpoints.shared import (
+    CompletenessCheck,
     EndpointDefinition,
     FanOutBinding,
     FeedMode,
@@ -17,6 +18,7 @@ from fleetpull.endpoints.shared import (
     WatermarkMode,
 )
 from fleetpull.model_contract import ResponseModel
+from fleetpull.network.client import TransportClient
 from fleetpull.network.contract import DecodedPage, HttpMethod, PageAdvance, RequestSpec
 from fleetpull.roster import RosterKey
 from fleetpull.vocabulary import JsonValue, Provider, QuotaScope
@@ -49,12 +51,20 @@ class _StubModel(ResponseModel):
     maybe_at: datetime | None = None
 
 
+class _StubCompletenessCheck:
+    """A CompletenessCheck double returning a fixed count."""
+
+    def expected_count(self, client: TransportClient, quota_scope: str) -> int:
+        return 0
+
+
 def _make_endpoint(
     sync_mode: SyncMode,
     *,
     storage_kind: StorageKind = StorageKind.SINGLE,
     event_time_column: str | None = None,
     fan_out: FanOutBinding | None = None,
+    completeness_check: CompletenessCheck | None = None,
 ) -> EndpointDefinition[_StubModel]:
     """Build an EndpointDefinition from the stubs and the given axes."""
     return EndpointDefinition(
@@ -68,6 +78,7 @@ def _make_endpoint(
         sync_mode=sync_mode,
         event_time_column=event_time_column,
         fan_out=fan_out,
+        completeness_check=completeness_check,
     )
 
 
@@ -209,3 +220,28 @@ class TestEndpointDefinitionValidation:
     def test_feed_single_without_event_time_constructs(self) -> None:
         endpoint = _make_endpoint(FeedMode())
         assert endpoint.event_time_column is None
+
+    def test_snapshot_single_fetch_with_completeness_check_constructs(self) -> None:
+        check = _StubCompletenessCheck()
+        endpoint = _make_endpoint(SnapshotMode(), completeness_check=check)
+        assert endpoint.completeness_check is check
+
+    def test_completeness_check_defaults_to_none(self) -> None:
+        assert _make_endpoint(SnapshotMode()).completeness_check is None
+
+    def test_non_snapshot_with_completeness_check_raises(self) -> None:
+        with pytest.raises(ValueError, match='requires SnapshotMode'):
+            _make_endpoint(FeedMode(), completeness_check=_StubCompletenessCheck())
+
+    def test_fan_out_with_completeness_check_raises(self) -> None:
+        # The wiring-error rejection: the verified harvest buffers a whole
+        # run, which the fan-out driver's streaming law forbids.
+        with pytest.raises(ValueError, match='requires fan_out=None'):
+            _make_endpoint(
+                SnapshotMode(),
+                fan_out=FanOutBinding(
+                    roster=RosterKey(Provider.SAMSARA, 'trip_ids'),
+                    path_placeholder='trip_id',
+                ),
+                completeness_check=_StubCompletenessCheck(),
+            )

@@ -8,7 +8,10 @@ imported by bindings through this face. Each decoder is independent --
 provider envelopes evolve separately (blast-radius over DRY).
 """
 
-from fleetpull.network.decoders.geotab import GeotabFeedPageDecoder
+from fleetpull.network.decoders.geotab import (
+    GeotabFeedPageDecoder,
+    GeotabGetPageDecoder,
+)
 from fleetpull.network.decoders.motive import (
     MotiveWrappedListPageDecoder,
     MotiveWrappedSinglePageDecoder,
@@ -18,6 +21,7 @@ from fleetpull.network.decoders.single_page import SinglePageDecoder
 
 __all__: list[str] = [
     'GeotabFeedPageDecoder',
+    'GeotabGetPageDecoder',
     'MotiveWrappedListPageDecoder',
     'MotiveWrappedSinglePageDecoder',
     'SamsaraCursorPageDecoder',

@@ -20,26 +20,41 @@ current listing. Filtering (by vehicle, by group, by status) presumes a
 use case, and the scope refusal (§10) forbids exactly that presumption
 -- consumers filter the returned frame themselves.
 
-The composition is the audit's state-free fetch trace (AUDIT.md Part B),
-verbatim: provider configs from defaults → the discovery registry → the
-definition by identity key → the auth-ingress profile → a
-``ClientRuntime`` on internal defaults → ``TransportClient`` →
-``build_spec`` → ``fetch_pages`` → ``validate_records`` →
-``models_to_dataframe``.
+The composition is the audit's state-free fetch trace (AUDIT.md Part B):
+provider configs from defaults → the discovery registry → the definition
+by identity key → a ``ClientRuntime`` on internal defaults → the
+auth-ingress profile (its ``ProviderProfileContext`` reusing the
+runtime's HTTP posture and limiter registry, plus a clock held solely
+for GeoTab session aging) → ``TransportClient`` → the single-fetch
+driver (which builds the spec and honors a declared completeness check,
+so a guarded snapshot is verified on this verb exactly as under sync) →
+``validate_records`` → ``models_to_dataframe``.
 """
 
 import logging
 
 import polars as pl
 
-from fleetpull.api.auth_ingress import AuthInput, build_provider_profile
+from fleetpull.api.auth_ingress import (
+    AuthInput,
+    ProviderProfileContext,
+    build_provider_profile,
+)
 from fleetpull.api.identity import SnapshotEndpoint, WindowedEndpoint
-from fleetpull.config import HttpConfig, MotiveConfig, ProviderConfig, RetryConfig
+from fleetpull.config import (
+    GeotabConfig,
+    HttpConfig,
+    MotiveConfig,
+    ProviderConfig,
+    RetryConfig,
+)
 from fleetpull.endpoints import build_endpoint_registry
 from fleetpull.exceptions import ConfigurationError
 from fleetpull.network.client import ClientRuntime, TransportClient
 from fleetpull.network.limits import RateLimiterRegistry, rate_limits_from_configs
+from fleetpull.orchestrator import SingleRequestDriver
 from fleetpull.records import models_to_dataframe, validate_records
+from fleetpull.timing import SystemClock
 from fleetpull.vocabulary import JsonObject
 
 __all__: list[str] = ['fetch']
@@ -60,7 +75,7 @@ def _default_provider_configs() -> list[ProviderConfig]:
         The default-constructed provider configs, ready for both
         ``build_endpoint_registry`` and ``rate_limits_from_configs``.
     """
-    return [MotiveConfig()]
+    return [MotiveConfig(), GeotabConfig()]
 
 
 # typing-justified: ingress guard; input unknowable by design; object forces narrowing
@@ -159,7 +174,6 @@ def fetch(
     provider_configs = _default_provider_configs()
     registry = build_endpoint_registry(provider_configs)
     definition = registry.get(endpoint.provider, endpoint.name)
-    profile = build_provider_profile(endpoint, auth)
     runtime = ClientRuntime(
         http_config=HttpConfig(use_truststore=use_truststore),
         retry_config=RetryConfig(),
@@ -167,13 +181,24 @@ def fetch(
             rate_limits_from_configs(provider_configs)
         ),
     )
-    spec = definition.spec_builder.build_spec(resume=None, path_values={})
+    # fetch now holds a clock solely for GeoTab session aging; the state-free
+    # trace otherwise needs none (AUDIT.md row 23's note is dated stale).
+    profile = build_provider_profile(
+        endpoint,
+        auth,
+        ProviderProfileContext(
+            http_config=runtime.http_config,
+            limiter_registry=runtime.limiter_registry,
+            clock=SystemClock(),
+        ),
+    )
+    # The driver owns the chain (spec build, page loop) and the verified
+    # harvest when the definition declares a completeness check -- fetch
+    # must not offer a weaker read of a guarded endpoint than sync does.
     with TransportClient(profile, runtime) as client:
         raw_records: list[JsonObject] = [
             record
-            for page in client.fetch_pages(
-                spec, definition.page_decoder, definition.quota_scope.value
-            )
+            for page in SingleRequestDriver().record_batches(definition, client, None)
             for record in page.records
         ]
     logger.info(

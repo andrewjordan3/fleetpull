@@ -3,10 +3,12 @@
 The integration tests run the whole real composition (state DB, stores,
 discovered registries, limiter, clients, run executor) against
 ``httpx.MockTransport`` via the transport-test seam, from a config file
-in ``tmp_path``. Wire shapes are Motive's real envelopes; every
-identifier is synthetic.
+in ``tmp_path``. Wire shapes are each provider's real envelopes --
+Motive's synthetic-identifier bodies and GeoTab's committed 2026-07-09
+capture set (``tests/geotab_devices_capture.py``).
 """
 
+import json
 import sqlite3
 import ssl
 import threading
@@ -20,9 +22,16 @@ import pytest
 
 import fleetpull.api.sync as sync_module
 from fleetpull import ConfigurationError, Sync, SyncFailuresError
-from fleetpull.vocabulary import JsonValue
+from fleetpull.vocabulary import JsonObject, JsonValue
+from tests.geotab_devices_capture import (
+    AUTHENTICATE_SUCCESS_JSON,
+    SEEK_PAGE_1_RESPONSE,
+    SEEK_PAGE_2_RESPONSE,
+    SEEK_TERMINAL_RESPONSE,
+)
 
 _SYNTHETIC_KEY = 'synthetic-motive-key-000'
+_SYNTHETIC_GEOTAB_PASS = 'synthetic-geotab-pass-000'
 
 # The genuine class, captured before any test monkeypatches httpx.Client
 # (the transport-test precedent).
@@ -33,8 +42,9 @@ _Handler = Callable[[httpx.Request], httpx.Response]
 
 @pytest.fixture(autouse=True)
 def _no_ambient_credential(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Strip MOTIVE_API_KEY so a developer's shell never leaks into tests."""
+    """Strip the credential variables so a developer's shell never leaks in."""
     monkeypatch.delenv('MOTIVE_API_KEY', raising=False)
+    monkeypatch.delenv('GEOTAB_PASSWORD', raising=False)
 
 
 def _install_transport(monkeypatch: pytest.MonkeyPatch, handler: _Handler) -> None:
@@ -78,6 +88,67 @@ def _write_config(
         encoding='utf-8',
     )
     return config_path
+
+
+def _write_geotab_config(
+    tmp_path: Path, *, endpoints: str = '[devices]', include_motive: bool = False
+) -> Path:
+    """A geotab-enabled config; optionally with the standard Motive block."""
+    config_path = tmp_path / 'config.yaml'
+    motive_block = (
+        '  motive:\n'
+        f"    api_key: '{_SYNTHETIC_KEY}'\n"
+        '    endpoints: [vehicles]\n'
+        '    rate_limit:\n'
+        '      requests_per_period: 6000\n'
+        '      period_seconds: 60.0\n'
+        '      burst: 1000\n'
+        '      max_concurrency: 2\n'
+        if include_motive
+        else ''
+    )
+    config_path.write_text(
+        'sync:\n'
+        '  default_start_date: 2026-06-01\n'
+        'storage:\n'
+        f'  dataset_root: {tmp_path / "data"}\n'
+        'providers:\n'
+        f'{motive_block}'
+        '  geotab:\n'
+        '    auth:\n'
+        '      username: user@example.com\n'
+        f"      password: '{_SYNTHETIC_GEOTAB_PASS}'\n"
+        '      database: exampledb\n'
+        f'    endpoints: {endpoints}\n',
+        encoding='utf-8',
+    )
+    return config_path
+
+
+class _GeotabRpcHandler:
+    """The GeoTab JSON-RPC route for sync runs.
+
+    Serves the captured Authenticate success, the committed seek pages
+    (cycling per three-page harvest, so the completeness guard's refetch
+    round is servable), and a ``GetCountOf`` count the test scripts.
+    """
+
+    def __init__(self, count: int = 6) -> None:
+        self._count = count
+        self._get_calls = 0
+        self.credentials_seen: list[JsonObject] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body['method'] == 'Authenticate':
+            return httpx.Response(200, text=AUTHENTICATE_SUCCESS_JSON)
+        self.credentials_seen.append(body['params']['credentials'])
+        if body['method'] == 'GetCountOf':
+            return httpx.Response(200, json={'result': self._count, 'jsonrpc': '2.0'})
+        pages = [SEEK_PAGE_1_RESPONSE, SEEK_PAGE_2_RESPONSE, SEEK_TERMINAL_RESPONSE]
+        page = pages[self._get_calls % len(pages)]
+        self._get_calls += 1
+        return httpx.Response(200, json=page)
 
 
 def _vehicle_record(vehicle_id: int) -> dict[str, JsonValue]:
@@ -342,3 +413,84 @@ class TestFanOutConcurrency:
         with pytest.raises(SyncFailuresError):
             Sync(_write_config(tmp_path)).run()
         assert _fleetpull_worker_threads() == []
+
+
+class TestGeotabRun:
+    """The GeoTab vertical under Sync: config to parquet through the
+    session stack, the seek walk, and the completeness guard."""
+
+    def test_geotab_only_config_runs_end_to_end(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        handler = _GeotabRpcHandler()
+        _install_transport(monkeypatch, handler)
+        Sync(_write_geotab_config(tmp_path)).run()
+        snapshot = pl.read_parquet(tmp_path / 'data/geotab/devices/data.parquet')
+        assert snapshot.height == 6
+        assert set(snapshot['id'].to_list()) == {
+            'bF7C22',
+            'bF7C19',
+            'bF7C24',
+            'bF7C1C',
+            'bF7C25',
+            'bF7C18',
+        }
+        statuses = {(row[0], row[2]) for row in _ledger_rows(tmp_path / 'data')}
+        assert ('devices', 'succeeded') in statuses
+        # Every data call (three Get pages + the GetCountOf) rode the session.
+        assert len(handler.credentials_seen) == 4
+        assert all(
+            credentials['sessionId'] == 'SyntheticSessionId000001'
+            for credentials in handler.credentials_seen
+        )
+
+    def test_both_providers_run_in_one_sync(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        geotab_handler = _GeotabRpcHandler()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == '/apiv1':
+                return geotab_handler(request)
+            if request.url.path == '/v1/vehicles':
+                return _vehicles_response(1, 2)
+            return httpx.Response(404, text='no route')
+
+        _install_transport(monkeypatch, handler)
+        Sync(_write_geotab_config(tmp_path, include_motive=True)).run()
+        motive = pl.read_parquet(tmp_path / 'data/motive/vehicles/data.parquet')
+        geotab = pl.read_parquet(tmp_path / 'data/geotab/devices/data.parquet')
+        assert motive.height == 2
+        assert geotab.height == 6
+        statuses = {(row[0], row[2]) for row in _ledger_rows(tmp_path / 'data')}
+        assert ('vehicles', 'succeeded') in statuses
+        assert ('devices', 'succeeded') in statuses
+
+    def test_unknown_geotab_endpoint_names_the_geotab_valid_set(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = _write_geotab_config(tmp_path, endpoints='[devicez]')
+        with pytest.raises(ConfigurationError) as raised:
+            Sync(config_path)
+        message = str(raised.value)
+        assert 'geotab' in message
+        assert 'devicez' in message
+        assert 'devices' in message
+
+    def test_persistent_count_mismatch_fails_without_leaking_the_password(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A count that never matches: one refetch, then the guard raises;
+        # the failure aggregates and no repr anywhere carries the password.
+        _install_transport(monkeypatch, _GeotabRpcHandler(count=999))
+        with pytest.raises(SyncFailuresError) as raised:
+            Sync(_write_geotab_config(tmp_path)).run()
+        failures = raised.value.failures
+        assert [(f.provider, f.endpoint) for f in failures] == [('geotab', 'devices')]
+        assert '999' in repr(failures[0].error)  # the counts are named...
+        for rendering in (
+            str(raised.value),
+            repr(raised.value),
+            repr(failures[0].error),
+        ):
+            assert _SYNTHETIC_GEOTAB_PASS not in rendering  # ...the secret never

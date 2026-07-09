@@ -96,3 +96,37 @@ providers:
     #   period_seconds: 60.0
     #   burst: 10
     #   max_concurrency: 2
+
+  geotab:
+    # The four-field GeoTab credential, nested. Set the password as an
+    # environment variable rather than writing it here:
+    #   Linux/macOS:   export GEOTAB_PASSWORD='...'
+    #   Windows PowerShell:   $env:GEOTAB_PASSWORD = '...'
+    # A password written here wins over the environment variable; the
+    # other three fields are not secrets and always come from this file.
+    auth:
+      username: user@example.com
+      database: exampledb
+      # server: my.geotab.com              # optional; the authentication host
+
+    # The endpoints to sync, by catalog name. Uncomment to enable GeoTab.
+    # endpoints:
+    #   - devices
+
+    # The Get method-class budget (GeoTab meters per method class). The
+    # default cites the captured 2026-07-09 rate headers (~650/min; a
+    # single datum, so burst errs conservative).
+    # rate_limit:
+    #   requests_per_period: 650
+    #   period_seconds: 60.0
+    #   burst: 100
+    #   max_concurrency: 2
+
+    # The Authenticate method-class budget: 10/min (June 2026 capture;
+    # docs Status: Active). Authenticate fires rarely behind the session
+    # manager's single-flight lock.
+    # authenticate_rate_limit:
+    #   requests_per_period: 10
+    #   period_seconds: 60.0
+    #   burst: 2
+    #   max_concurrency: 1

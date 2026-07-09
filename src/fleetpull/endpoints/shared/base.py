@@ -27,10 +27,12 @@ from typing import Any, Protocol, get_args
 from fleetpull.endpoints.shared.fan_out import FanOutBinding
 from fleetpull.incremental import DateWindow, FeedToken
 from fleetpull.model_contract import ResponseModel
+from fleetpull.network.client import TransportClient
 from fleetpull.network.contract import PageDecoder, RequestSpec
 from fleetpull.vocabulary import Provider, QuotaScope
 
 __all__: list[str] = [
+    'CompletenessCheck',
     'EndpointDefinition',
     'FeedMode',
     'ResumeValue',
@@ -173,6 +175,38 @@ class SpecBuilder(Protocol):
         ...
 
 
+class CompletenessCheck(Protocol):
+    """
+    A provider-reported expected count fired beside a snapshot harvest.
+
+    The truth instrument behind the single-fetch driver's verified
+    harvest (an endpoint that silently caps its listing needs an
+    independent count to prove the walk lost nothing -- GeoTab's
+    ``GetCountOf`` beside the capped ``Get`` is the first case). An
+    implementation fires its count request through the SAME open client
+    the harvest used, so auth, the limiter (token-per-attempt on the
+    given scope), and the classifier all apply. A plain Protocol (not
+    ``@runtime_checkable``): it is only declared on the stateless
+    ``EndpointDefinition`` and called by the driver, never verified
+    dynamically.
+    """
+
+    def expected_count(self, client: TransportClient, quota_scope: str) -> int:
+        """
+        Return the provider-reported count of the harvested entity.
+
+        Args:
+            client: The open transport client the harvest ran on.
+            quota_scope: The endpoint's rate-limit scope key -- the
+                count request spends from the same budget as the data
+                pages.
+
+        Returns:
+            The provider's expected entity count.
+        """
+        ...
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class EndpointDefinition[ModelT: ResponseModel]:
     """
@@ -227,6 +261,13 @@ class EndpointDefinition[ModelT: ResponseModel]:
             ``vehicle_locations``); ``None`` for endpoints that fetch once. Names only
             a ``RosterKey`` -- the source lives in the registry. Read by the
             orchestrator; not validated here.
+        completeness_check: The provider-reported-count truth check the
+            single-fetch driver fires beside the harvest (``None`` for
+            endpoints with no silent cap to guard against). Snapshot-mode,
+            ``fan_out=None`` endpoints only -- the verified harvest buffers
+            the run, which is sound exactly because a snapshot is bounded
+            by entity count; any other declaration is a wiring error
+            rejected at construction.
     """
 
     provider: Provider
@@ -239,14 +280,16 @@ class EndpointDefinition[ModelT: ResponseModel]:
     sync_mode: SyncMode
     event_time_column: str | None = None
     fan_out: FanOutBinding | None = None
+    completeness_check: CompletenessCheck | None = None
 
     def __post_init__(self) -> None:
-        """Validate the binding's storage / sync / event-time coherence.
+        """Validate the binding's storage / sync / event-time / guard coherence.
 
         Raises:
-            ValueError: The storage-kind / sync-mode pairing is invalid, or the
+            ValueError: The storage-kind / sync-mode pairing is invalid, the
                 event-time column is required-but-missing or forbidden-but-present
-                or names no field on the response model.
+                or names no field on the response model, or a completeness check
+                is declared outside snapshot-mode single-fetch.
             TypeError: ``event_time_column`` names a non-date-like field.
 
         Side Effects:
@@ -254,6 +297,7 @@ class EndpointDefinition[ModelT: ResponseModel]:
         """
         self._validate_storage_sync_pairing()
         self._validate_event_time_column()
+        self._validate_completeness_check()
 
     def _validate_storage_sync_pairing(self) -> None:
         """Reject a snapshot endpoint laid out anything but ``SINGLE``.
@@ -312,6 +356,38 @@ class EndpointDefinition[ModelT: ResponseModel]:
             )
         if self.event_time_column is not None:
             self._require_date_like_field(self.event_time_column)
+
+    def _validate_completeness_check(self) -> None:
+        """Reject a completeness check declared outside snapshot single-fetch.
+
+        The verified harvest buffers the whole run before comparing, which is
+        sound only because a snapshot result is bounded by entity count
+        (DESIGN section 10's boundedness); a windowed run is not, and a
+        fan-out run streams O(pool size) by the streaming law. Either
+        declaration is a wiring bug, rejected here at the declaration seam so
+        the driver layer never needs to reason about it.
+
+        Raises:
+            ValueError: The check is declared on a non-snapshot or fan-out
+                endpoint.
+
+        Side Effects:
+            None.
+        """
+        if self.completeness_check is None:
+            return
+        if not isinstance(self.sync_mode, SnapshotMode):
+            raise ValueError(
+                f'{self.provider.value}.{self.name}: a completeness_check '
+                f'requires SnapshotMode -- the verified harvest buffers the '
+                f'run, which only a snapshot bounds.'
+            )
+        if self.fan_out is not None:
+            raise ValueError(
+                f'{self.provider.value}.{self.name}: a completeness_check '
+                f'requires fan_out=None -- the fan-out driver streams and '
+                f'never buffers a whole run to verify.'
+            )
 
     def _require_date_like_field(self, column: str) -> None:
         """Require ``column`` to name a date-like field on the response model.

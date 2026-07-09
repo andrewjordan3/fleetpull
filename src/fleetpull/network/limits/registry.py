@@ -5,10 +5,11 @@ derivation of its per-scope values from provider configs."""
 import threading
 from collections.abc import Iterable, Mapping
 
-from fleetpull.config import ProviderConfig, RateLimitConfig
+from fleetpull.config import GeotabConfig, ProviderConfig, RateLimitConfig
 from fleetpull.exceptions import UnknownQuotaScopeError
 from fleetpull.network.limits.limiter import QuotaScopeLimiter
 from fleetpull.timing import Clock, SystemClock
+from fleetpull.vocabulary import QuotaScope
 
 __all__: list[str] = ['RateLimiterRegistry', 'rate_limits_from_configs']
 
@@ -21,7 +22,12 @@ def rate_limits_from_configs(
     Each provider config carries its scope's budget (``rate_limit``, with a
     documented provider default) and binds the scope it governs
     (``quota_scope``, a ``ClassVar``), so composition roots hand this their
-    resolved configs and never invent rate-limit numbers.
+    resolved configs and never invent rate-limit numbers. GeoTab meters per
+    method class (DESIGN §8): its ``quota_scope`` ClassVar binds the
+    Get-class scope the generic emission covers, and its second budget --
+    the dedicated Authenticate class -- is emitted here under
+    ``QuotaScope.GEOTAB_AUTHENTICATE`` from the same config, so the
+    authenticator's scope is registered wherever a ``GeotabConfig`` is.
 
     Args:
         provider_configs: The resolved provider configs for this run -- the
@@ -30,7 +36,14 @@ def rate_limits_from_configs(
     Returns:
         The quota-scope-keyed map ``RateLimiterRegistry`` is constructed on.
     """
-    return {config.quota_scope.value: config.rate_limit for config in provider_configs}
+    configs = list(provider_configs)  # the Iterable may be one-shot
+    rate_limits = {config.quota_scope.value: config.rate_limit for config in configs}
+    for config in configs:
+        if isinstance(config, GeotabConfig):
+            rate_limits[QuotaScope.GEOTAB_AUTHENTICATE.value] = (
+                config.authenticate_rate_limit
+            )
+    return rate_limits
 
 
 class RateLimiterRegistry:
