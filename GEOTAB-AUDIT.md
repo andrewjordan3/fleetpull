@@ -145,6 +145,21 @@ Sizing unchanged, with one addition from the Device polymorphism finding
 optional, and the year-one sentinel datetimes need microsecond-precision
 handling or exclusion.
 
+**Update (2026-07-09, devices build):** G1–G8 are all closed by the devices
+vertical. G1: `GeotabConfig` in `config/providers.py` (nested
+`GeotabAuthConfig`, both method-class budgets; env fallback settled as
+password-only — `GEOTAB_PASSWORD` fills the one secret field, the other
+three always come from YAML). G2: `Sync` widened on the concrete union
+(`MotiveConfig | GeotabConfig`). G3: the ingress arm is real behind the
+`ProviderProfileContext` seam (GTA-04's resolution). G4:
+`rate_limits_from_configs` emits `GEOTAB_AUTHENTICATE` from any supplied
+`GeotabConfig`. G5/G6: `endpoints/geotab/devices.py` +
+`Endpoints.Geotab.devices`, parity-tested. G7: `models/geotab/device.py`,
+the union-of-shapes model over the committed captures. G8: the e2e tests
+drive `fetch` and `Sync` through MockTransport over the captured envelopes
+— auth stack, transport POST, classifier, seek decoder, and completeness
+guard composed for the first time.
+
 ### 2.1 Snapshot path (`Get`, e.g. `typeName=Device`) — additional
 
 | # | Gap | Size | Notes |
@@ -165,6 +180,14 @@ empty page, `lastId` never sent (**S–M**) — and the **`GetCountOf`
 completeness guard** beside every Device harvest — one refetch on mismatch,
 persistent mismatch raises `ProviderResponseError` naming both counts
 (**S**). Snapshot total beyond the shared foundation becomes **S–M**.
+
+**Update (2026-07-09, devices build):** the snapshot path is closed. G9: the
+JSON-RPC spec builder lives in the devices leaf. G10's replacements shipped:
+`GeotabGetPageDecoder` (`network/decoders/geotab.py`, boundary-capture
+tested) and `GetCountOfCheck` behind the new
+`EndpointDefinition.completeness_check` declaration, honored by the
+single-fetch driver (both verbs). G11 held as stated: `SnapshotWriter`
+carried the writes with no gap.
 
 ### 2.2 Feed path (`GetFeed`) — additional
 
@@ -332,6 +355,34 @@ decisions):
   (DESIGN §13, 2026-07-09), no longer routed to probing.
 - GTA-10 — **deferred, unchanged**: P7 deferred to Trip's port; LogRecord
   is a raw immutable feed the calculated-feed questions don't bite.
+
+**Update (2026-07-09, devices build) — resolutions from the shipped
+vertical:**
+
+- GTA-01 — **resolved**: the auth stack has production consumers. The
+  ingress GeoTab arm composes `build_geotab_authenticator` →
+  `GeotabSessionManager` → `GeotabSessionAuth` behind
+  `build_provider_profile`, and the e2e tests drive the composed stack
+  through a mock transport on the captured envelopes (one Authenticate,
+  session credentials on every data call).
+- GTA-02 — **resolved**: `GeotabConfig` exists (`config/providers.py`),
+  loads from YAML, and `ProvidersConfig.geotab` reaches it; the four-field
+  credential nests as `auth`, with `GEOTAB_PASSWORD` filling only the
+  password.
+- GTA-03 — **resolved**: `Sync`'s enablement/selection/profile chain is
+  typed on the concrete union `MotiveConfig | GeotabConfig`; Samsara
+  remains the noted future widening.
+- GTA-04 — **resolved**: the seam grew a third parameter —
+  `ProviderProfileContext(http_config, limiter_registry, clock)` — the
+  union of composition-root collaborators; `Sync` passes its shared clock,
+  `fetch` constructs one at the profile-build site (DESIGN §10).
+- GTA-05 — **resolved**: `QuotaScope.GEOTAB_AUTHENTICATE` exists and
+  `rate_limits_from_configs` registers it from `GeotabConfig`'s
+  `authenticate_rate_limit` wherever a `GeotabConfig` is supplied; the
+  ingress names it to the authenticator factory.
+- GTA-11 — **mitigated as designed**: the seek decoder + the `GetCountOf`
+  completeness guard (probe-settled decisions 1–2) shipped; silent
+  truncation on `Get` is now structurally loud.
 
 | # | Finding (added 2026-07-09) | Where |
 |---|---|---|

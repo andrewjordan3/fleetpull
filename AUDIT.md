@@ -55,7 +55,7 @@ exist in no consumer's hands).
 | 20 | `ProviderProfile(StaticHeaderAuth('X-API-Key', SecretStr(key)), MotiveResponseClassifier())` (+ the `SecretStr` import) | `:34`, `:315–318` | fetch-hides | The `auth=` ingress must own the provider → header-name/classifier map; `'X-API-Key'` is provider knowledge no consumer should type |
 | 21 | `HttpConfig(...)`, `RetryConfig()`, `RateLimiterRegistry({scope: limit})`, `ClientRuntime(...)` (`_build_client_runtime`) | `:152–161` | fetch-hides | Values are rows 3/7; `RetryConfig` defaults seed future `retry.*` YAML keys |
 | 22 | `random.Random()` and `SystemSleeper()` | `:28`, `:159–160` | accidental | Test-injection seams (`random_source`, `sleeper`) with obvious production defaults; forcing every composition root to know jitter/sleep internals exist is exposure without benefit. The internal composition should default them (as `RateLimiterRegistry` already defaults its clock — read, `limits/registry.py:28`) |
-| 23 | `SystemClock()` | `:172`, `:320` | sync-hides | The fetch trace needs no clock: the limiter self-supplies one (read, `limits/registry.py:28`); the clock serves state stores, window resolution, and the coordinator — all sync territory |
+| 23 | `SystemClock()` | `:172`, `:320` | sync-hides | The fetch trace needs no clock: the limiter self-supplies one (read, `limits/registry.py:28`); the clock serves state stores, window resolution, and the coordinator — all sync territory. *Update (2026-07-09): stale as of the GeoTab devices build — `fetch` now constructs a `SystemClock()` at the profile-build site, held solely for GeoTab session aging (`ProviderProfileContext.clock`). The original claim stands as written on its date.* |
 | 24 | `SyncConfig(default_start_date, dataset_root)` | `:324–326` | config-knob | `sync.default_start_date` + row 2; construction itself is sync-hides, the two values are the knobs |
 | 25 | `ProviderClientRegistry({Provider.MOTIVE: profile}, runtime)` | `:328` | sync-hides | Multi-provider client pooling; fetch composes one `TransportClient` directly (proven by `run_vehicles_snapshot.py:80`) |
 | 26 | `RosterRefreshCoordinator(...)` | `:329–331` | sync-hides | |
@@ -100,6 +100,14 @@ single snapshot chain, `client.fetch_pages` is called directly and
 `SingleRequestDriver` adds nothing. **No forced state dependency was found;
 there are zero blocks-the-API findings from this trace's structure.** This
 composition list is the item-5 build map (closing section).
+
+*Update (2026-07-09, the GeoTab devices build): two clauses above are dated.
+`fetch` now holds a clock — constructed at the profile-build site for GeoTab
+session aging (`ProviderProfileContext.clock`; see row 23's note) — and it
+routes its single chain through `SingleRequestDriver`, which now earns its
+place by honoring a declared `completeness_check` (the verified harvest;
+DESIGN §8 probe-settled decision 2). The state-free property itself is
+unchanged: still no SQLite, disk, cursor, ledger, or roster.*
 
 ---
 

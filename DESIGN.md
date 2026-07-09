@@ -811,7 +811,9 @@ A single-concern, single-shot, loop-free function behind a factory
 that closes the transport dependencies over a named inner function matching
 the manager's single-arg injectable type. The quota scope arrives as a
 parameter — the composition root names it — so even GeoTab-specific
-machinery honors the names-at-composition-root rule.
+machinery honors the names-at-composition-root rule. As built, the
+composition root reaches this factory through the auth ingress's GeoTab arm,
+which passes `QuotaScope.GEOTAB_AUTHENTICATE` as that name.
 
 - **Two actions only**, and the classifier is deliberately NOT reused: the classifier's `ResponseCategory` encodes the CLIENT's dispatch (five outcomes), but Authenticate has exactly two — fix credentials (`AuthenticationError`) or fail loud (`ProviderResponseError`). Reusing the classifier would map categories only to re-map them. `InvalidUserException` on Authenticate is bad credentials (`AuthenticationError`) — the context-disambiguation principle (the same type on a data call is a dead session, the auth strategy's concern, not this function's). Any other error type, a non-200 status, a non-JSON body, or an envelope with neither result nor error is `ProviderResponseError`.
 - **v1 postures, with re-litigation triggers:** Authenticate outcomes arrive in HTTP 200 per verification, so a non-200 is the API not speaking its protocol — loud-and-typed beats a retry loop against the 10/min auth quota (trigger: first observed Authenticate 5xx in production). An unknown error type fails loud rather than guessing retryability (trigger: `OverLimitException` seen here despite the local limiter).
@@ -984,7 +986,16 @@ observed-behaviors table below); the build prompts implement them.
    mid-harvest churn without inventing a tolerance number — and a persistent
    mismatch raises `ProviderResponseError` naming both counts. Rationale:
    silent truncation must be loud; the same doctrine family as the
-   empty-listing reconcile guard (§13).
+   empty-listing reconcile guard (§13). Placement, settled at the build:
+   the guard is driver-layer, declared on the definition
+   (`EndpointDefinition.completeness_check`, an optional narrow Protocol
+   whose GeoTab implementation is `GetCountOfCheck`) and honored by the
+   single-fetch driver — the runner, the entry, and every orchestrator
+   module stay provider-agnostic. Snapshot-scoped by construction: the
+   verified harvest buffers the whole run before comparing, which is sound
+   exactly because a snapshot result is bounded by entity count (§10's
+   boundedness; the streaming law governs fan-out channels, which can never
+   declare a check — the pairing is rejected at definition construction).
 3. **Rate posture: self-limit at the header-advertised per-class budgets**,
    regardless of whether GeoTab is enforcing yet; GeoTab's rate-limit config
    defaults cite the captured headers, and no ramp probe is needed — the
@@ -1172,7 +1183,13 @@ time. Ingress immediately coerces every accepted shape into the internal
 `SecretStr`-carrying auth, so nothing loggable survives past the boundary —
 the same lax-boundary-strict-interior posture `SyncConfig` already takes
 coercing string dates and paths. An `auth` whose provider mismatches the
-endpoint identity's provider is a `ConfigurationError`.
+endpoint identity's provider is a `ConfigurationError`. Settled 2026-07-09:
+profile construction takes a `ProviderProfileContext` (HTTP config, limiter
+registry, clock) alongside the identity and the credential — the union of
+composition-root collaborators a provider's auth machinery draws on (GeoTab's
+session stack consumes all three; Motive ignores it). The context grows only
+when a provider's auth machinery demands a new collaborator; it is not a
+general-purpose bag.
 
 **Return contract.** An eager `polars.DataFrame`, dtype-coerced per the
 endpoint's model. Column order is deliberately unspecified in the contract:
@@ -1305,8 +1322,10 @@ fleetpull/
                    #   through paths.resolve_path at validation
     providers.py   # the provider family: ProviderConfig (quota_scope, rate_limit,
                    #   endpoints), MotiveConfig (api_key, base_url, records_per_page,
-                   #   per-provider lookback_days/cutoff_days), ProvidersConfig, the
-                   #   credential env-var convention map, and the enablement checker
+                   #   per-provider lookback_days/cutoff_days), GeotabConfig (nested
+                   #   GeotabAuthConfig, the two method-class budgets: rate_limit for
+                   #   the Get class + authenticate_rate_limit, §8), ProvidersConfig,
+                   #   the credential env-var convention map, and the enablement checker
     root.py        # FleetpullConfig — the whole-document root; cross-section
                    #   resolution as mode='before' validators (thin wrappers over
                    #   resolution.py) and from_yaml as the loading API
@@ -1325,7 +1344,8 @@ fleetpull/
     setup.py       # package logging setup (setup_logger), driven by LoggerConfig
   network/         # organizational namespace; the surfaces live in the subpackages
     client/        # HTTP transport, retry policy, limiter consultation; consumes the page-decoder abstraction
-      transport.py   # TransportClient — the assembled fetch loop and per-attempt pipeline
+      transport.py   # TransportClient — the assembled fetch loop, the per-attempt pipeline,
+                     #   and fetch_envelope (the one-shot non-paging request surface)
       registry.py    # ProviderClientRegistry — provider -> TransportClient, opened/closed as a unit (§14)
       profile.py     # ProviderProfile — per-provider auth + classifier bundle
       runtime.py     # ClientRuntime — process-global configs, limiter registry, jitter, sleeper
@@ -1347,7 +1367,8 @@ fleetpull/
       envelopes.py   # validated_envelope_slice — shared validate-or-raise for wire slices (§8)
       page_decoder.py  # PageAdvance, DecodedPage, PageDecoder (§8)
     classifiers/   # per-provider classifiers (peers of contract/; import its face): motive.py, samsara.py, geotab.py
-    decoders/      # per-provider page decoders (peers of contract/; import its face): single_page.py, motive.py, samsara.py, geotab.py
+    decoders/      # per-provider page decoders (peers of contract/; import its face): single_page.py,
+                   #   motive.py, samsara.py, geotab.py (GetFeed toVersion + seek-paging Get, §8)
     limits/
       bucket_math.py   # pure token-bucket arithmetic (stateless functions)
       limiter.py       # QuotaScopeLimiter
@@ -1377,9 +1398,10 @@ fleetpull/
                    #   ProviderProfile, resolved at the composition root)
       base.py      # EndpointDefinition: frozen kw-only dataclass generic over its
                    #   response model (spec_builder, page_decoder, response_model,
-                   #   quota_scope, storage_kind, sync_mode, event_time_column) + the
-                   #   SpecBuilder Protocol, the SyncMode union (SnapshotMode /
-                   #   WatermarkMode / FeedMode), ResumeValue, and StorageKind
+                   #   quota_scope, storage_kind, sync_mode, event_time_column,
+                   #   completeness_check) + the SpecBuilder and CompletenessCheck
+                   #   Protocols, the SyncMode union (SnapshotMode / WatermarkMode /
+                   #   FeedMode), ResumeValue, and StorageKind
       fan_out.py   # FanOutBinding — the per-endpoint fan-out declaration (names a RosterKey)
       spec_builders.py  # StaticGetSpecBuilder — the shared snapshot spec-builder
       url_paths.py  # render_url_path_template — strict {placeholder} URL-path rendering (fan-out)
@@ -1387,7 +1409,10 @@ fleetpull/
       vehicles.py  # build_endpoint — the Motive vehicles snapshot factory
       vehicle_locations.py  # MotiveVehicleLocationsSpecBuilder + build_endpoint — the watermark binding
     samsara/       # net-new when its endpoints land
-    geotab/        # net-new; follows the GeoTab removals probe
+    geotab/
+      devices.py   # build_endpoint — the devices seek-paged snapshot factory, its
+                   #   JSON-RPC spec-builder, and GetCountOfCheck (the completeness
+                   #   guard's GeoTab implementation, §8 probe-settled decision 2)
     registry.py  # EndpointRegistry + build_endpoint_registry — the (provider, name) catalog; discovers leaves by walking endpoints.<provider>
   polars_typing/   # quarantined re-export boundary for Polars type aliases with no public
                    #   equivalent (e.g. ParquetCompression) — the sole importer of polars._typing
@@ -1404,7 +1429,9 @@ fleetpull/
       vehicles.py  # Vehicle snapshot record (+ AvailabilityDetails / AvailabilityStatus / VehicleStatus)
       vehicle_locations.py # VehicleLocation breadcrumb record (/v3/vehicle_locations)
     samsara/       # net-new when its endpoints land
-    geotab/        # net-new
+    geotab/
+      device.py    # Device — the union-of-shapes snapshot record (GO7/GO9/trailer,
+                   #   everything optional; year-one and non-derivable fields excluded)
   records/         # the records stage: models -> typed Polars DataFrame
     fields.py      # the shared field walk: classify + enumerate flat leaf columns
     schema.py      # Pydantic model -> {column: Polars dtype}
@@ -1702,7 +1729,7 @@ tzinfo-construction rules mechanically.
   captured (§8's table). Not an open question.
 - Real rate-limit values for Motive/Samsara (YAML numbers above are placeholders)
 - Whether any endpoint actually warrants the flattening opt-out
-- Per-endpoint quota scopes for Samsara: a provider metering one endpoint apart adds a `QuotaScope` member (code), while that scope's limits stay config — a code-plus-config change, not config-only.
+- Per-endpoint quota scopes for Samsara: a provider metering one endpoint apart adds a `QuotaScope` member (code), while that scope's limits stay config — a code-plus-config change, not config-only. (GeoTab's method-class scopes — `GEOTAB_GET` and `GEOTAB_AUTHENTICATE`, emitted from one `GeotabConfig`'s two budget fields — are the first shipped instance of this pattern.)
 
 - **`updated_after` as an ingestion-time CDC hook (open — for the
   incremental-strategy design conversation, not a current commitment).** The
@@ -2112,7 +2139,14 @@ resolution (item 1, done).
    bends the abstractions, that must surface before more Motive endpoints are
    stamped from the existing mold. Once it proves the pattern crosses
    providers: bulk-port the remaining Motive and GeoTab models (low-risk; can
-   run parallel to item 6).
+   run parallel to item 6). *First half shipped (2026-07-09): the `devices`
+   snapshot vertical is built end-to-end — `GeotabConfig` and the two
+   method-class scopes, the ingress `ProviderProfileContext` seam, the
+   seek-paging Get decoder, the `GetCountOf` completeness guard (probe-settled
+   decisions 1 and 2), the union-of-shapes `Device` model, `Endpoints.Geotab`,
+   and both verbs; `scripts/run_geotab_devices.py` is the live-proof driver.
+   The abstractions held — no driver, runner, or entry change carried a
+   provider branch. Second half (the feed vertical) remains.*
 8. **Polish phase, gated on a stable public surface:** full-tree ceremony
    audit, test-coverage audit, documentation audit, the real usage-driven
    README, multi-platform CI (a Windows leg would have caught the
