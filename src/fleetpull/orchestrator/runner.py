@@ -1,17 +1,25 @@
 # src/fleetpull/orchestrator/runner.py
 """The run executor: run one endpoint to completion, once per (endpoint, run).
 
-``EndpointRunner`` owns one endpoint's run transaction -- open the ledger run, build
-the writer, drive the request driver, consume each record batch it yields (validate
--> frame -> write), finalize once, advance the cursor once, complete the run once --
-and dispatches on the endpoint's ``sync_mode``. The snapshot and watermark arms are
-built; the feed arm raises ``NotImplementedError`` until its prompt. The watermark
-arm resolves its window, applies the two future-time guards, folds the observed
-maximum, and writes parquet -> cursor -> ledger in that crash order; the pure resume
-decisions live in ``orchestrator/resume.py`` and the per-batch transform in
-``orchestrator/batch.py``, so the runner only orchestrates -- read state, call pure
-functions, write state. Request cardinality and batch granularity are the driver's;
-the runner is blind to both.
+``EndpointRunner`` owns one endpoint's run and dispatches on its ``sync_mode``.
+The snapshot arm fetches once and full-replaces. The watermark arm is the
+unified plan-and-drive loop (DESIGN sections 4/5): re-claim any incomplete
+work units and drive them serially ascending, then resolve the residual
+window exactly as before -- watermark less lookback (floored), else coverage
+frontier, else the cold-start anchor, against the cutoff trailing edge --
+plan it into ``backfill_chunk_days`` units, and drive those. Every unit is
+its own transaction: fetch the unit's window (the fan-out threads unchanged
+within it), write parquet, advance the watermark on a strictly-forward
+observation, record the ledger row -- parquet -> cursor -> ledger in that
+crash order -- and mark the unit done. Serial ascending completion keeps
+completed units a contiguous prefix, so every persisted watermark is true at
+every instant; a crash resumes from the work-units ledger instead of
+refetching the window. The feed arm raises ``NotImplementedError`` until its
+prompt. The pure resume decisions live in ``orchestrator/resume.py``, the
+per-batch transform in ``orchestrator/batch.py``, and the claim choreography
+in ``orchestrator/unit_loop.py``, so the runner only orchestrates -- read
+state, call pure functions, write state. Request cardinality and batch
+granularity are the driver's; the runner is blind to both.
 
 ``run`` takes an optional ``BatchObserver``: a generic hook handed each
 post-validation frame as the run streams. The runner knows nothing about what
@@ -20,16 +28,18 @@ runs for roster reconciliation, but that knowledge lives entirely there) -- an
 observer exception fails the run like any other batch-processing failure.
 
 The runner depends on narrow Protocols rather than the concrete state and network
-classes: ``ClientSource`` (the registry's ``client_for``), ``RunRecorder`` (the
-ledger's lifecycle methods), and ``CursorAccess`` (the cursor store's get/set). It
-opens no clients and reads no credentials -- the already-open client source hands it
-the provider's client.
+classes: ``ClientSource`` (the registry's ``client_for``) and the three
+state-database surfaces bundled as ``RunStateAccess`` -- ``RunRecorder`` (the
+ledger's lifecycle methods), ``CursorAccess`` (the cursor store's get/set), and
+``UnitQueue`` (the work-unit claim queue). It opens no clients and reads no
+credentials -- the already-open client source hands it the provider's client.
 """
 
 import logging
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
+from functools import partial
 from typing import Protocol
 
 import polars as pl
@@ -52,6 +62,7 @@ from fleetpull.incremental import (
 )
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import TransportClient
+from fleetpull.orchestrator.backfill import plan_backfill_units
 from fleetpull.orchestrator.batch import (
     ProcessedBatch,
     WindowContext,
@@ -64,7 +75,8 @@ from fleetpull.orchestrator.resume import (
     should_advance_watermark,
 )
 from fleetpull.orchestrator.streaming import stream_processed_batches
-from fleetpull.storage import select_writer
+from fleetpull.orchestrator.unit_loop import UnitQueue, drive_claimable_units
+from fleetpull.storage import WriteResult, select_writer
 from fleetpull.timing import Clock
 from fleetpull.vocabulary import Provider
 
@@ -74,6 +86,7 @@ __all__: list[str] = [
     'CursorAccess',
     'EndpointRunner',
     'RunRecorder',
+    'RunStateAccess',
 ]
 
 logger = logging.getLogger(__name__)
@@ -156,6 +169,26 @@ class CursorAccess(Protocol):
         ...
 
 
+@dataclass(frozen=True, slots=True)
+class RunStateAccess:
+    """The three state-database surfaces one endpoint run commits through.
+
+    They always travel together -- the composition root builds all three
+    over the one state database and the runner's crash order sequences
+    them (parquet -> cursor -> ledger; units bracket the sequence) -- so
+    they ride as one collaborator (the bundle rule).
+
+    Attributes:
+        recorder: The run ledger's lifecycle surface.
+        cursors: The cursor store's get/set surface.
+        units: The work-unit claim queue.
+    """
+
+    recorder: RunRecorder
+    cursors: CursorAccess
+    units: UnitQueue
+
+
 def _window_context(
     definition: EndpointDefinition[ResponseModel], window: DateWindow, now: datetime
 ) -> WindowContext:
@@ -186,51 +219,39 @@ def _window_context(
     return WindowContext(window=window, now=now, event_time_column=event_time_column)
 
 
-@dataclass(frozen=True, slots=True)
-class _WatermarkAdvance:
-    """The watermark arm's intent to advance the cursor past its prior value.
-
-    Distinguishes the watermark arm (advance, when the fold is strictly past
-    ``prior``) from a backfill chunk (no advance -- ``_execute_window`` receives
-    ``None``). ``prior`` is the stored cursor the fold must out-step (``None`` on a
-    cold start, which any in-window observation out-steps).
-    """
-
-    prior: IncrementalCursor | None
-
-
 class EndpointRunner:
     """Runs one endpoint to completion, dispatching on its sync mode.
 
-    Constructed once with its five collaborators (client source, run recorder,
-    clock, cursor access, the root config); ``run`` takes the endpoint and its
-    request driver, so one instance runs every endpoint. The snapshot and
-    watermark arms are built; the feed arm raises ``NotImplementedError``.
+    Constructed once with its four collaborators (client source, the bundled
+    state surfaces, clock, the root config); ``run`` takes the endpoint and
+    its request driver, so one instance runs every endpoint. The snapshot arm
+    and the watermark arm's plan-and-drive unit loop are built; the feed arm
+    raises ``NotImplementedError``.
     """
 
     def __init__(
         self,
         client_source: ClientSource,
-        run_recorder: RunRecorder,
+        state: RunStateAccess,
         clock: Clock,
-        cursor_access: CursorAccess,
         config: FleetpullConfig,
     ) -> None:
         """
         Args:
             client_source: Hands out an open per-provider client (the registry).
-            run_recorder: Records each run's lifecycle (the ledger).
+            state: The state-database surfaces -- the ledger, the cursor
+                store, and the work-unit queue.
             clock: Supplies the run instant (trailing edge, future-event guard).
-            cursor_access: Reads the stored watermark and persists the advance.
             config: The root config -- the container its composition root
-                already holds. The runner reads exactly two values:
-                ``sync.default_start_datetime`` (the cold-start anchor) and
-                ``storage.dataset_root`` (where the writers land).
+                already holds. The runner reads exactly three values:
+                ``sync.default_start_datetime`` (the cold-start anchor),
+                ``sync.backfill_chunk_days`` (the unit width newly planned
+                windows tile into), and ``storage.dataset_root`` (where the
+                writers land).
         """
         self._client_source = client_source
-        self._run_recorder = run_recorder
+        self._state = state
         self._clock = clock
-        self._cursor_access = cursor_access
         self._sync_config = config.sync
         self._dataset_root = config.storage.dataset_root
         self._drop_duplicates = config.storage.drop_exact_duplicates
@@ -250,11 +271,12 @@ class EndpointRunner:
                 frame as the run streams; the runner is blind to what it does.
 
         Returns:
-            The run outcome (``Executed`` for the snapshot arm).
+            The run outcome -- ``Executed``, or ``CaughtUp`` when a windowed
+            run had nothing to drive.
 
         Raises:
-            NotImplementedError: The endpoint's sync mode is watermark or feed
-                (built in later prompts).
+            NotImplementedError: The endpoint's sync mode is feed (built in a
+                later prompt).
             FleetpullError: A fetch, validation, or write failure -- the run is
                 recorded failed and the error propagates.
         """
@@ -267,43 +289,6 @@ class EndpointRunner:
                 raise NotImplementedError(
                     f'{type(definition.sync_mode).__name__} is not yet executable'
                 )
-
-    def run_backfill_unit(
-        self,
-        definition: EndpointDefinition[ResponseModel],
-        driver: RequestDriver,
-        window: DateWindow,
-    ) -> Executed:
-        """Run one backfill chunk over a caller-given window, advancing no cursor.
-
-        The backfill loop claims a chunk, builds a whole-roster fan-out driver and
-        the chunk's window, and calls this. It runs the same window spine as the
-        watermark arm -- the chunk run fans the whole roster, so the partition is
-        replaced with every member's rows, exactly the in-full refetch the
-        partitioned writer assumes -- but advances no global watermark: out-of-order
-        chunks can't track a single max-event-time watermark, so the watermark is set
-        once at backfill completion. The run is still recorded, so the coverage
-        frontier advances date-wise.
-
-        Args:
-            definition: The watermark endpoint being backfilled.
-            driver: The whole-roster fan-out driver for this chunk.
-            window: The chunk's half-open window (the caller's, not resolved here).
-
-        Returns:
-            ``Executed`` with the fetched-row count and the write report.
-
-        Raises:
-            FleetpullError: A fetch, validation, write, or completion failure -- the
-                run is recorded failed and the original error re-raised.
-        """
-        client = self._client_source.client_for(definition.provider)
-        now = self._clock.now_utc()
-        context = _window_context(definition, window, now)
-        batches = stream_processed_batches(
-            definition, driver, client, resume=window, context=context
-        )
-        return self._execute_window(definition, batches, context, advance=None)
 
     def _run_snapshot(
         self,
@@ -333,7 +318,7 @@ class EndpointRunner:
                 run is recorded failed and the original error re-raised.
         """
         client = self._client_source.client_for(definition.provider)
-        run_id = self._run_recorder.start_snapshot_run(
+        run_id = self._state.recorder.start_snapshot_run(
             definition.provider, definition.name
         )
         try:
@@ -348,7 +333,7 @@ class EndpointRunner:
                 writer.write(processed.frame)
                 records_fetched += processed.frame.height
             write = writer.finalize()
-            self._run_recorder.complete_run(run_id, row_count=records_fetched)
+            self._state.recorder.complete_run(run_id, row_count=records_fetched)
             return Executed(records_fetched=records_fetched, write=write)
         except Exception as error:
             self._fail_run_safely(run_id, error)
@@ -361,88 +346,175 @@ class EndpointRunner:
         mode: WatermarkMode,
         observer: BatchObserver | None,
     ) -> RunOutcome:
-        """Run the watermark arm: resolve the window, then execute, advancing.
+        """Run the watermark arm: the plan-and-drive unit loop.
 
-        Resolves the resume window from the stored watermark (less lookback), else
-        the coverage frontier, else the cold-start anchor — the chosen start
-        floored to its UTC midnight — with the end held back by the cutoff. A
-        window that resolves to nothing is a ``CaughtUp`` no-op with no run
-        opened. Otherwise it hands the resolved window to the shared spine,
-        advancing the cursor on a strictly-forward observation.
+        Incomplete units outrank the watermark: orphaned ``claimed`` units are
+        reset (an in-progress unit found at run start is by definition
+        orphaned -- fleetpull assumes a single driver per state database) and
+        every claimable unit is re-claimed and driven, serially ascending.
+        Then the residual window is resolved exactly as before -- the stored
+        watermark less lookback (floored), else the coverage frontier, else
+        the cold-start anchor, against the cutoff trailing edge -- planned
+        into ``backfill_chunk_days`` units (a window smaller than one chunk is
+        one unit: the daily run), and driven the same way. Each unit commits
+        independently and advances the watermark on a strictly-forward
+        observation; a failing unit returns to a claimable state and fails the
+        endpoint (fail-fast). An invocation that drove nothing is ``CaughtUp``
+        -- the resume point had reached the trailing edge, or every planned
+        unit was already complete.
 
         Args:
             definition: The watermark endpoint to run.
-            driver: The request driver supplying the run's batches.
+            driver: The request driver supplying each unit's batches.
             mode: The endpoint's watermark mode (lookback and cutoff).
+            observer: The optional per-frame hook, applied within every unit.
 
         Returns:
-            ``Executed`` when a window was fetched, ``CaughtUp`` when the resume
-            point had already reached the trailing edge.
+            ``Executed`` aggregated over the driven units, or ``CaughtUp``
+            when nothing was driven.
 
         Raises:
             ConfigurationError: A stored watermark dated after ``now`` (Guard A), a
                 cross-mode feed cursor on this endpoint, or a missing event-time
                 column.
             FleetpullError: A fetch, validation, write, guard, or completion failure
-                -- the run is recorded failed and the error re-raised.
+                -- the failed unit's run is recorded failed, the unit returns to a
+                claimable state, and the error re-raises.
         """
-        client = self._client_source.client_for(definition.provider)
+        provider = definition.provider
+        name = definition.name
+        # The cursor guards (Guard A, cross-mode) fire before any unit
+        # drives; the residual resolution below re-derives this value after
+        # the leftover units have advanced the cursor.
+        resolve_watermark_start(
+            self._state.cursors.get_cursor(provider, name),
+            mode.lookback,
+            self._clock.now_utc(),
+            provider,
+            name,
+        )
+        self._state.units.reset_claimed_to_pending(provider, name)
+        drive_unit = partial(self._drive_unit, definition, driver, observer)
+        outcomes = drive_claimable_units(self._state.units, provider, name, drive_unit)
+        residual = self._resolve_residual_window(definition, mode)
+        if residual is not None:
+            chunk = timedelta(days=self._sync_config.backfill_chunk_days)
+            self._state.units.enqueue(
+                plan_backfill_units(provider, name, residual, chunk)
+            )
+            outcomes.extend(
+                drive_claimable_units(self._state.units, provider, name, drive_unit)
+            )
+        if not outcomes:
+            logger.info('caught up: provider=%s endpoint=%s', provider.value, name)
+            return CaughtUp()
+        return _merge_executed(outcomes)
+
+    def _resolve_residual_window(
+        self,
+        definition: EndpointDefinition[ResponseModel],
+        mode: WatermarkMode,
+    ) -> DateWindow | None:
+        """Resolve the not-yet-planned residual window, exactly as the resume chain.
+
+        The same resolution the whole-window arm performed, run after the
+        leftover units have driven: the stored watermark less the lookback
+        margin (floored to its UTC midnight), else the coverage frontier,
+        else the cold-start anchor -- against the cutoff-held trailing edge.
+        Both bounds are midnight-aligned by construction, which is what makes
+        the result plannable into whole-day units.
+
+        Args:
+            definition: The watermark endpoint being run.
+            mode: The endpoint's watermark mode (lookback and cutoff).
+
+        Returns:
+            The residual ``DateWindow``, or ``None`` when the resume point
+            has reached the trailing edge (nothing new to plan).
+
+        Raises:
+            ConfigurationError: A stored watermark dated after ``now`` (Guard
+                A) or a cross-mode feed cursor (from
+                ``resolve_watermark_start``).
+        """
         now = self._clock.now_utc()
         end = resolve_trailing_edge(now, mode.cutoff)
-        stored = self._cursor_access.get_cursor(definition.provider, definition.name)
+        stored = self._state.cursors.get_cursor(definition.provider, definition.name)
         watermark_start = resolve_watermark_start(
             stored, mode.lookback, now, definition.provider, definition.name
         )
-        frontier = self._run_recorder.coverage_frontier(
+        frontier = self._state.recorder.coverage_frontier(
             definition.provider, definition.name
         )
-        default_start = self._sync_config.default_start_datetime
-        start = resolve_resume_start(watermark_start, frontier, default_start)
-        window = window_or_none(start, end)
-        if window is None:
-            logger.info(
-                'caught up: provider=%s endpoint=%s',
-                definition.provider.value,
-                definition.name,
-            )
-            return CaughtUp()
+        start = resolve_resume_start(
+            watermark_start, frontier, self._sync_config.default_start_datetime
+        )
+        return window_or_none(start, end)
+
+    def _drive_unit(
+        self,
+        definition: EndpointDefinition[ResponseModel],
+        driver: RequestDriver,
+        observer: BatchObserver | None,
+        window: DateWindow,
+    ) -> Executed:
+        """Drive one unit: fetch its window, write, advance, record.
+
+        The per-unit transaction the claim loop invokes: build the unit's
+        batch stream (the fan-out threads the unit's (member x window) pieces
+        on the ``FetchPool``, unchanged) and run it through the commit spine
+        with the freshly read prior cursor, so each ascending unit's
+        strictly-forward observation advances the watermark as it completes.
+
+        Args:
+            definition: The watermark endpoint being run.
+            driver: The request driver supplying the unit's batches.
+            observer: The optional per-frame hook.
+            window: The unit's half-open window.
+
+        Returns:
+            The unit's ``Executed`` outcome.
+
+        Raises:
+            FleetpullError: A fetch, validation, write, or completion failure
+                -- the unit's run is recorded failed and the error re-raised.
+        """
+        client = self._client_source.client_for(definition.provider)
+        now = self._clock.now_utc()
         context = _window_context(definition, window, now)
+        prior = self._state.cursors.get_cursor(definition.provider, definition.name)
         batches = _observe_batches(
             stream_processed_batches(
                 definition, driver, client, resume=window, context=context
             ),
             observer,
         )
-        return self._execute_window(
-            definition, batches, context, _WatermarkAdvance(prior=stored)
-        )
+        return self._execute_window(definition, batches, context, prior)
 
     def _execute_window(
         self,
         definition: EndpointDefinition[ResponseModel],
         batches: Iterator[ProcessedBatch],
         context: WindowContext,
-        advance: _WatermarkAdvance | None,
+        prior: IncrementalCursor | None,
     ) -> Executed:
-        """Run one window: open, consume/write/finalize, optionally advance, complete.
+        """Run one window: open, consume/write/finalize, advance, complete.
 
-        The spine the watermark arm and a backfill chunk share. It consumes an
-        already-built processed-batch stream (the arms construct it, wrapping
-        in the batch observer where one applies), so the spine is blind to
-        fetch mechanics. Opens a window run, writes each batch's in-window
-        frame, folds the observed maximum, finalizes, and -- in the parquet ->
-        cursor -> ledger crash order -- advances the cursor (when ``advance``
-        is given and the fold is a strictly-forward step past its prior) before
-        completing the run. ``advance`` is the watermark arm's intent; ``None``
-        is a backfill chunk, which records the run and the coverage frontier
-        but advances no global watermark.
+        The per-unit commit spine. It consumes an already-built
+        processed-batch stream (the caller constructs it, wrapping in the
+        batch observer where one applies), so the spine is blind to fetch
+        mechanics. Opens a window run, writes each batch's in-window frame,
+        folds the observed maximum, finalizes, and -- in the parquet ->
+        cursor -> ledger crash order -- advances the cursor when the fold is
+        a strictly-forward step past ``prior`` before completing the run.
 
         Args:
             definition: The endpoint being run.
-            batches: The run's processed-batch stream, ready to consume.
+            batches: The unit's processed-batch stream, ready to consume.
             context: The window, run instant, and event-time column for the
                 per-batch transform.
-            advance: The cursor-advance intent, or ``None`` to advance nothing.
+            prior: The cursor read at the unit's start -- the value a
+                strictly-forward observation must out-step to advance.
 
         Returns:
             ``Executed`` with the fetched-row count and the write report.
@@ -452,7 +524,7 @@ class EndpointRunner:
                 run is recorded failed and the original error re-raised.
         """
         window = context.window
-        run_id = self._run_recorder.start_window_run(
+        run_id = self._state.recorder.start_window_run(
             definition.provider, definition.name, window=(window.start, window.end)
         )
         try:
@@ -471,17 +543,15 @@ class EndpointRunner:
                     latest_observed, processed.latest_event_time
                 )
             write = writer.finalize()
-            if (
-                advance is not None
-                and latest_observed is not None
-                and should_advance_watermark(advance.prior, latest_observed)
+            if latest_observed is not None and should_advance_watermark(
+                prior, latest_observed
             ):
-                self._cursor_access.set_cursor(
+                self._state.cursors.set_cursor(
                     definition.provider,
                     definition.name,
                     DateWatermark(watermark=latest_observed),
                 )
-            self._run_recorder.complete_run(run_id, row_count=records_fetched)
+            self._state.recorder.complete_run(run_id, row_count=records_fetched)
             return Executed(records_fetched=records_fetched, write=write)
         except Exception as error:
             self._fail_run_safely(run_id, error)
@@ -502,8 +572,38 @@ class EndpointRunner:
             Records the run failed; on a recording failure, logs and swallows it.
         """
         try:
-            self._run_recorder.fail_run(run_id, error_detail=str(error))
+            self._state.recorder.fail_run(run_id, error_detail=str(error))
         except Exception:
             logger.exception(
                 'failed to record run %s as failed after an earlier error', run_id
             )
+
+
+def _merge_executed(outcomes: Sequence[Executed]) -> Executed:
+    """Fold the driven units' outcomes into the invocation's one ``Executed``.
+
+    Counts sum; the pruned partitions concatenate in drive order (a residual
+    unit re-covering a leftover unit's dates may repeat one -- the report is
+    informational, never consumed as a set).
+
+    Args:
+        outcomes: The per-unit outcomes, in drive order; at least one.
+
+    Returns:
+        The aggregated ``Executed``.
+    """
+    return Executed(
+        records_fetched=sum(outcome.records_fetched for outcome in outcomes),
+        write=WriteResult(
+            rows_written=sum(outcome.write.rows_written for outcome in outcomes),
+            duplicates_dropped=sum(
+                outcome.write.duplicates_dropped for outcome in outcomes
+            ),
+            files_written=sum(outcome.write.files_written for outcome in outcomes),
+            deleted_partitions=[
+                deleted_date
+                for outcome in outcomes
+                for deleted_date in outcome.write.deleted_partitions
+            ],
+        ),
+    )

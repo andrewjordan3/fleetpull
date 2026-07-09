@@ -39,6 +39,18 @@ class TestSyncConfig:
         assert config.lookback_days is None
         assert config.cutoff_days is None
 
+    def test_backfill_chunk_days_defaults_to_a_week(self) -> None:
+        config = SyncConfig(default_start_date=date(2024, 1, 1))
+        assert config.backfill_chunk_days == 7
+
+    def test_accepts_a_backfill_chunk_override(self) -> None:
+        config = SyncConfig(default_start_date=date(2024, 1, 1), backfill_chunk_days=1)
+        assert config.backfill_chunk_days == 1
+
+    def test_rejects_a_zero_backfill_chunk(self) -> None:
+        with pytest.raises(ValidationError, match='backfill_chunk_days'):
+            SyncConfig(default_start_date=date(2024, 1, 1), backfill_chunk_days=0)
+
     def test_accepts_window_knobs(self) -> None:
         config = SyncConfig(
             default_start_date=date(2024, 1, 1), lookback_days=3, cutoff_days=1

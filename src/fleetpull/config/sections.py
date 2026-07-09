@@ -50,11 +50,22 @@ class SyncConfig(ConfigModel):
         cutoff_days: Package-wide trailing-edge holdback in whole days, the
             complement of ``lookback_days``; same precedence and ``None``
             semantics.
+        backfill_chunk_days: The width, in whole days, of the work units a
+            windowed run's plan tiles its window into (DESIGN sections 4/5).
+            Every windowed pull is planned as units and each unit commits
+            independently, so smaller chunks mean finer crash-resume
+            granularity at the cost of more per-unit commits; a window
+            smaller than one chunk degenerates to a single unit (the daily
+            run). Sync-level only, deliberately without a per-provider
+            override: chunk size is fleetpull's transactional knob, not a
+            provider-latency fact. Applies to newly planned units only --
+            already-persisted unit boundaries are honored on resume.
     """
 
     default_start_date: date
     lookback_days: int | None = Field(default=None, ge=0)
     cutoff_days: int | None = Field(default=None, ge=0)
+    backfill_chunk_days: int = Field(default=7, ge=1)
 
     @property
     def default_start_datetime(self) -> datetime:
