@@ -32,10 +32,18 @@ from pathlib import Path
 
 from pydantic import SecretStr
 
-from fleetpull.api.auth_ingress import build_provider_profile
+from fleetpull.api.auth_ingress import (
+    ProviderProfileContext,
+    build_provider_profile,
+)
 from fleetpull.api.catalog import available_endpoints
 from fleetpull.api.identity import EndpointIdentity
-from fleetpull.config import FleetpullConfig, MotiveConfig
+from fleetpull.config import (
+    FleetpullConfig,
+    GeotabAuthConfig,
+    GeotabConfig,
+    MotiveConfig,
+)
 from fleetpull.endpoints import (
     build_endpoint_registry,
     build_roster_registry,
@@ -76,6 +84,9 @@ from fleetpull.vocabulary import Provider
 __all__: list[str] = ['Sync']
 
 logger = logging.getLogger(__name__)
+
+# The concrete provider-section union: Samsara widens it as it ports.
+type _ProviderSection = MotiveConfig | GeotabConfig
 
 # The catalog as a lookup table: every public identity by registry key.
 _CATALOG: dict[tuple[Provider, str], EndpointIdentity] = {
@@ -160,7 +171,7 @@ class Sync:
         schema, no assumed end use (DESIGN section 10).
         """
         setup_logger(self._config.logging)
-        provider_configs = [config for _, config in self._enabled_providers()]
+        provider_configs = self._discovery_provider_configs()
         endpoint_registry = build_endpoint_registry(provider_configs)
         roster_registry = build_roster_registry()
         ordered = _feeders_first(self._selection, roster_registry)
@@ -172,12 +183,18 @@ class Sync:
         run_ledger = RunLedger(database, clock)
         roster_store = RosterStore(database)
         unit_store = WorkUnitStore(database, clock)
+        limiter_registry = RateLimiterRegistry(
+            rate_limits_from_configs(provider_configs)
+        )
         runtime = ClientRuntime(
             http_config=self._config.http,
             retry_config=self._config.retry,
-            limiter_registry=RateLimiterRegistry(
-                rate_limits_from_configs(provider_configs)
-            ),
+            limiter_registry=limiter_registry,
+        )
+        profile_context = ProviderProfileContext(
+            http_config=self._config.http,
+            limiter_registry=limiter_registry,
+            clock=clock,
         )
         fetch_workers = {
             provider: config.rate_limit.max_concurrency
@@ -185,7 +202,9 @@ class Sync:
         }
         failures: list[EndpointFailure] = []
         with (
-            ProviderClientRegistry(self._provider_profiles(), runtime) as clients,
+            ProviderClientRegistry(
+                self._provider_profiles(profile_context), runtime
+            ) as clients,
             FetchPoolRegistry(fetch_workers) as fetch_pools,
         ):
             coordinator = RosterRefreshCoordinator(
@@ -216,26 +235,59 @@ class Sync:
         if failures:
             raise SyncFailuresError(tuple(failures))
 
-    def _enabled_providers(self) -> list[tuple[Provider, MotiveConfig]]:
+    def _enabled_providers(self) -> list[tuple[Provider, _ProviderSection]]:
         """The enabled providers, leaning on the validated enablement invariant.
 
         A validated config guarantees a provider with endpoints has a
         credential (``require_provider_credentials``), so enabled reduces to
-        "endpoints non-empty". Typed concretely (``MotiveConfig`` is the one
-        provider today); Samsara/GeoTab widen this as they port.
+        "endpoints non-empty". Typed as the concrete section union in a fixed
+        provider order (Motive, then GeoTab -- ``ProvidersConfig`` field
+        order); Samsara widens the union as it ports.
         """
-        motive = self._config.providers.motive
-        if motive is not None and motive.endpoints:
-            return [(Provider.MOTIVE, motive)]
-        return []
+        return [
+            (provider, section)
+            for provider, section in self._provider_sections()
+            if section is not None and section.endpoints
+        ]
 
-    def _provider_profiles(self) -> dict[Provider, ProviderProfile]:
+    def _provider_sections(
+        self,
+    ) -> list[tuple[Provider, _ProviderSection | None]]:
+        """Every provider section, present or not, in the fixed provider order."""
+        return [
+            (Provider.MOTIVE, self._config.providers.motive),
+            (Provider.GEOTAB, self._config.providers.geotab),
+        ]
+
+    def _discovery_provider_configs(self) -> list[_ProviderSection]:
+        """One config per provider package: the YAML section, or pure defaults.
+
+        The discovery walk builds every leaf it finds and requires a config
+        per provider package regardless of enablement, so a provider absent
+        from the YAML is represented by its default-constructed config (the
+        ``fetch`` precedent). Enabled providers contribute their YAML
+        instances, so the limiter budgets derived from this list are the
+        user's; a disabled provider's default config merely registers inert
+        scopes nothing spends from.
+        """
+        defaults: dict[Provider, _ProviderSection] = {
+            Provider.MOTIVE: MotiveConfig(),
+            Provider.GEOTAB: GeotabConfig(),
+        }
+        return [
+            section if section is not None else defaults[provider]
+            for provider, section in self._provider_sections()
+        ]
+
+    def _provider_profiles(
+        self, context: ProviderProfileContext
+    ) -> dict[Provider, ProviderProfile]:
         """One client profile per enabled provider, through the auth ingress."""
         profiles: dict[Provider, ProviderProfile] = {}
         for provider, provider_config in self._enabled_providers():
             identity = _CATALOG[(provider, provider_config.endpoints[0])]
             credential = _required_credential(provider, provider_config)
-            profiles[provider] = build_provider_profile(identity, credential)
+            profiles[provider] = build_provider_profile(identity, credential, context)
         return profiles
 
 
@@ -253,25 +305,30 @@ def _validated_selection(config: FleetpullConfig) -> list[tuple[Provider, str]]:
         ConfigurationError: A selected name is not in the public catalog, or
             zero providers are enabled.
     """
-    motive = config.providers.motive
+    sections: list[tuple[Provider, MotiveConfig | GeotabConfig | None]] = [
+        (Provider.MOTIVE, config.providers.motive),
+        (Provider.GEOTAB, config.providers.geotab),
+    ]
     selection: list[tuple[Provider, str]] = []
-    if motive is not None and motive.endpoints:
-        for name in motive.endpoints:
-            if (Provider.MOTIVE, name) not in _CATALOG:
+    for provider, section in sections:
+        if section is None or not section.endpoints:
+            continue
+        for name in section.endpoints:
+            if (provider, name) not in _CATALOG:
                 valid_names = ', '.join(
                     sorted(
                         identity_name
-                        for provider, identity_name in _CATALOG
-                        if provider is Provider.MOTIVE
+                        for identity_provider, identity_name in _CATALOG
+                        if identity_provider is provider
                     )
                 )
                 raise ConfigurationError(
                     'unknown endpoint name',
-                    provider=Provider.MOTIVE.value,
+                    provider=provider.value,
                     endpoint=name,
-                    detail=f'valid motive endpoints: {valid_names}',
+                    detail=f'valid {provider.value} endpoints: {valid_names}',
                 )
-            selection.append((Provider.MOTIVE, name))
+            selection.append((provider, name))
     if not selection:
         raise ConfigurationError(
             'nothing to sync',
@@ -326,16 +383,26 @@ def _required_database_path(config: FleetpullConfig) -> Path:
     return database_path
 
 
-def _required_credential(provider: Provider, config: MotiveConfig) -> SecretStr:
+def _required_credential(
+    provider: Provider, config: _ProviderSection
+) -> SecretStr | GeotabAuthConfig:
     """Narrow an enabled provider's credential; absence is a wiring bug.
 
     The enablement validator guarantees it for any validated config; this
     trips loudly if that invariant is ever bypassed by direct construction.
+    The return is the ingress ``AuthInput`` shape for the section's provider:
+    Motive's ``SecretStr`` key, GeoTab's four-field credential whole (its
+    password's ``SecretStr`` passes straight through -- no unwrap/rewrap).
     """
-    if config.api_key is None:
+    match config:
+        case MotiveConfig():
+            credential: SecretStr | GeotabAuthConfig | None = config.api_key
+        case GeotabConfig():
+            credential = config.auth
+    if credential is None:
         raise ConfigurationError(
             'provider credential missing',
             provider=provider.value,
             detail='an enabled provider must carry a credential (validated at load)',
         )
-    return config.api_key
+    return credential

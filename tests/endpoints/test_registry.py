@@ -5,7 +5,7 @@ from types import ModuleType
 
 import pytest
 
-from fleetpull.config import MotiveConfig
+from fleetpull.config import GeotabConfig, MotiveConfig
 from fleetpull.endpoints.motive.vehicles import build_endpoint
 from fleetpull.endpoints.registry import (
     EndpointRegistry,
@@ -37,7 +37,7 @@ class TestEndpointRegistry:
 
 class TestBuildEndpointRegistry:
     def test_discovers_the_motive_endpoints(self) -> None:
-        registry = build_endpoint_registry([MotiveConfig()])
+        registry = build_endpoint_registry([MotiveConfig(), GeotabConfig()])
         assert registry.get(Provider.MOTIVE, 'vehicles').name == 'vehicles'
         assert (
             registry.get(Provider.MOTIVE, 'vehicle_locations').name

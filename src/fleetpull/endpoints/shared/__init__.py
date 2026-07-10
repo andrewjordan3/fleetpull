@@ -5,6 +5,7 @@ URL-fan-out path renderer, and the sync-mode / storage / resume declaration
 types."""
 
 from fleetpull.endpoints.shared.base import (
+    CompletenessCheck,
     EndpointDefinition,
     FeedMode,
     ResumeValue,
@@ -22,6 +23,7 @@ from fleetpull.endpoints.shared.url_paths import (
 )
 
 __all__: list[str] = [
+    'CompletenessCheck',
     'EndpointDefinition',
     'FanOutBinding',
     'FeedMode',

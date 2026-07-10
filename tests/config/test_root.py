@@ -30,8 +30,9 @@ _EXAMPLE_FILE = Path(__file__).parents[2] / 'config.example.yaml'
 
 @pytest.fixture(autouse=True)
 def _no_ambient_credential(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Strip MOTIVE_API_KEY so a developer's shell never leaks into tests."""
+    """Strip credential variables so a developer's shell never leaks into tests."""
     monkeypatch.delenv('MOTIVE_API_KEY', raising=False)
+    monkeypatch.delenv('GEOTAB_PASSWORD', raising=False)
 
 
 def _write(tmp_path: Path, text: str) -> Path:
@@ -229,6 +230,23 @@ class TestEnablement:
         assert not caplog.records
 
 
+def _geotab_yaml(tmp_path: Path, *, password_line: str) -> str:
+    """A geotab-only document; the password line is the test's variable."""
+    return (
+        f'sync:\n'
+        f'  default_start_date: 2026-06-01\n'
+        f'storage:\n'
+        f'  dataset_root: {tmp_path / "data"}\n'
+        f'providers:\n'
+        f'  geotab:\n'
+        f'    auth:\n'
+        f'      username: user@example.com\n'
+        f'      database: exampledb\n'
+        f'{password_line}'
+        f'    endpoints: [devices]\n'
+    )
+
+
 class TestEnvironmentFallback:
     def test_absent_key_with_env_set_resolves(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -257,6 +275,45 @@ class TestEnvironmentFallback:
         monkeypatch.setenv('MOTIVE_API_KEY', '')
         text = _minimal_yaml(tmp_path).replace(f"    api_key: '{_SYNTHETIC_KEY}'\n", '')
         with pytest.raises(ConfigurationError, match='MOTIVE_API_KEY'):
+            FleetpullConfig.from_yaml(_write(tmp_path, text))
+
+    def test_geotab_env_fills_only_the_absent_password(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv('GEOTAB_PASSWORD', 'env-synthetic-pass')
+        config = FleetpullConfig.from_yaml(
+            _write(tmp_path, _geotab_yaml(tmp_path, password_line=''))
+        )
+        geotab = config.providers.geotab
+        assert geotab is not None
+        assert geotab.auth is not None
+        assert geotab.auth.password.get_secret_value() == 'env-synthetic-pass'
+        # The non-secret fields came from the YAML, never the environment.
+        assert geotab.auth.username == 'user@example.com'
+        assert geotab.auth.database == 'exampledb'
+
+    def test_geotab_yaml_password_wins_over_the_environment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv('GEOTAB_PASSWORD', 'env-synthetic-pass')
+        yaml_password = "      password: 'yaml-synthetic-pass'\n"
+        config = FleetpullConfig.from_yaml(
+            _write(tmp_path, _geotab_yaml(tmp_path, password_line=yaml_password))
+        )
+        geotab = config.providers.geotab
+        assert geotab is not None
+        assert geotab.auth is not None
+        assert geotab.auth.password.get_secret_value() == 'yaml-synthetic-pass'
+
+    def test_geotab_endpoints_without_any_credential_raise(
+        self, tmp_path: Path
+    ) -> None:
+        text = (
+            f'sync:\n  default_start_date: 2026-06-01\n'
+            f'storage:\n  dataset_root: {tmp_path / "data"}\n'
+            f'providers:\n  geotab:\n    endpoints: [devices]\n'
+        )
+        with pytest.raises(ConfigurationError, match='GEOTAB_PASSWORD'):
             FleetpullConfig.from_yaml(_write(tmp_path, text))
 
 
@@ -333,11 +390,16 @@ class TestExampleFile:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv('MOTIVE_API_KEY', 'env-synthetic-key')
+        monkeypatch.setenv('GEOTAB_PASSWORD', 'env-synthetic-pass')
         example_text = _EXAMPLE_FILE.read_text(encoding='utf-8')
         pointed = example_text.replace('/data/fleetpull', str(tmp_path))
         config = FleetpullConfig.from_yaml(_write(tmp_path, pointed))
         motive = config.providers.motive
         assert motive is not None
         assert motive.endpoints == ('vehicles', 'vehicle_locations')
+        geotab = config.providers.geotab
+        assert geotab is not None
+        assert geotab.auth is not None
+        assert geotab.endpoints == ()  # devices ships commented out
         expected = resolve_path(tmp_path) / '.fleetpull' / 'state.sqlite3'
         assert config.state.database_path == expected

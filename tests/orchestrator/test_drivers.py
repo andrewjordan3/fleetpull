@@ -3,7 +3,10 @@
 from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime
 
+import pytest
+
 from fleetpull.endpoints.shared import (
+    CompletenessCheck,
     EndpointDefinition,
     ResumeValue,
     SnapshotMode,
@@ -11,6 +14,7 @@ from fleetpull.endpoints.shared import (
     StaticGetSpecBuilder,
     StorageKind,
 )
+from fleetpull.exceptions import ProviderResponseError
 from fleetpull.incremental import DateWindow
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import FetchedPage, TransportClient
@@ -105,7 +109,10 @@ def _page(records: list[JsonObject]) -> FetchedPage:
     return FetchedPage(records=records, durable_progress=None)
 
 
-def _definition(spec_builder: SpecBuilder) -> EndpointDefinition[_StubModel]:
+def _definition(
+    spec_builder: SpecBuilder,
+    completeness_check: CompletenessCheck | None = None,
+) -> EndpointDefinition[_StubModel]:
     return EndpointDefinition(
         provider=Provider.MOTIVE,
         name='items',
@@ -115,6 +122,7 @@ def _definition(spec_builder: SpecBuilder) -> EndpointDefinition[_StubModel]:
         quota_scope=QuotaScope.MOTIVE,
         storage_kind=StorageKind.SINGLE,
         sync_mode=SnapshotMode(),
+        completeness_check=completeness_check,
     )
 
 
@@ -225,3 +233,73 @@ def test_fan_out_preserves_member_order() -> None:
         [{'id': 2, 'name': 'm2'}],
         [{'id': 3, 'name': 'm3'}],
     ]
+
+
+class _ScriptedCheck:
+    """A CompletenessCheck double serving one scripted count per call."""
+
+    def __init__(self, counts: list[int]) -> None:
+        self._counts = iter(counts)
+        self.scopes_seen: list[str] = []
+
+    def expected_count(self, client: TransportClient, quota_scope: str) -> int:
+        self.scopes_seen.append(quota_scope)
+        return next(self._counts)
+
+
+class TestVerifiedHarvest:
+    """The single-fetch driver's completeness guard (plant-and-fire)."""
+
+    def test_match_on_first_try_passes_records_through_untouched(self) -> None:
+        page_a: list[JsonObject] = [{'id': 1, 'name': 'a'}, {'id': 2, 'name': 'b'}]
+        page_b: list[JsonObject] = [{'id': 3, 'name': 'c'}]
+        check = _ScriptedCheck([3])
+        definition = _definition(_static_builder(), completeness_check=check)
+        client = _SequencedClient([[_page(page_a), _page(page_b)]])
+        batches = list(SingleRequestDriver().record_batches(definition, client, None))
+        # One check call, on the endpoint's own scope; order preserved.
+        assert check.scopes_seen == [QuotaScope.MOTIVE.value]
+        assert [page.records for page in batches] == [page_a, page_b]
+
+    def test_mismatch_then_match_yields_the_second_harvest(self) -> None:
+        first_harvest = [_page([{'id': 1, 'name': 'a'}])]
+        second_harvest = [
+            _page([{'id': 1, 'name': 'a'}]),
+            _page([{'id': 2, 'name': 'b'}]),
+        ]
+        check = _ScriptedCheck([2, 2])
+        definition = _definition(_static_builder(), completeness_check=check)
+        client = _SequencedClient([first_harvest, second_harvest])
+        batches = list(SingleRequestDriver().record_batches(definition, client, None))
+        # Exactly one refetch (two checks fired), and the SECOND harvest's
+        # records are what flow downstream.
+        assert len(check.scopes_seen) == 2
+        assert [page.records for page in batches] == [
+            [{'id': 1, 'name': 'a'}],
+            [{'id': 2, 'name': 'b'}],
+        ]
+
+    def test_mismatch_twice_raises_naming_both_counts(self) -> None:
+        harvests = [
+            [_page([{'id': 1, 'name': 'a'}])],
+            [_page([{'id': 2, 'name': 'b'}])],
+            [_page([{'id': 3, 'name': 'c'}])],  # must never be requested
+        ]
+        check = _ScriptedCheck([5, 5, 5])
+        definition = _definition(_static_builder(), completeness_check=check)
+        client = _SequencedClient(harvests)
+        with pytest.raises(ProviderResponseError) as raised:
+            list(SingleRequestDriver().record_batches(definition, client, None))
+        message = str(raised.value)
+        assert '5' in message  # the expected count
+        assert '1' in message  # the harvested count
+        # No third harvest, no third check: two rounds is the whole budget.
+        assert len(check.scopes_seen) == 2
+
+    def test_no_check_declared_means_no_buffering_and_no_check_calls(self) -> None:
+        # The undeclared path is the pre-guard streaming behavior, untouched.
+        page_a: list[JsonObject] = [{'id': 1, 'name': 'a'}]
+        definition = _definition(_static_builder())
+        client = _StubClient([_page(page_a)])
+        batches = list(SingleRequestDriver().record_batches(definition, client, None))
+        assert [page.records for page in batches] == [[{'id': 1, 'name': 'a'}]]
