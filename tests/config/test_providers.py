@@ -1,14 +1,20 @@
 """Tests for fleetpull.config.providers (the provider config family)."""
 
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
-from fleetpull.config import MotiveConfig, ProvidersConfig
+from fleetpull.config import (
+    GeotabAuthConfig,
+    GeotabConfig,
+    MotiveConfig,
+    ProvidersConfig,
+)
 from fleetpull.config.providers import (
     PROVIDER_CREDENTIAL_ENV_VARS,
     require_provider_credentials,
 )
 from fleetpull.exceptions import ConfigurationError
+from fleetpull.vocabulary import QuotaScope
 
 _SYNTHETIC_KEY = 'synthetic-motive-key-000'
 
@@ -105,3 +111,66 @@ class TestCredentialContract:
                 motive=MotiveConfig(api_key=_SYNTHETIC_KEY, endpoints=('vehicles',))
             )
         )
+
+
+def _geotab_auth() -> GeotabAuthConfig:
+    return GeotabAuthConfig(
+        username='user@example.com',
+        password=SecretStr('synthetic-geotab-pass'),
+        database='exampledb',
+    )
+
+
+class TestGeotabConfig:
+    def test_defaults(self) -> None:
+        config = GeotabConfig()
+        assert config.auth is None
+        assert config.endpoints == ()
+        # The Get method-class budget cites the captured 2026-07-09 header
+        # (~650/min, single datum); Authenticate is 10/min (June capture).
+        assert config.rate_limit.requests_per_period == 650
+        assert config.authenticate_rate_limit.requests_per_period == 10
+
+    def test_quota_scope_binds_the_get_class(self) -> None:
+        assert GeotabConfig.quota_scope is QuotaScope.GEOTAB_GET
+
+    def test_password_is_masked_in_reprs(self) -> None:
+        config = GeotabConfig(auth=_geotab_auth())
+        for rendering in (repr(config), str(config)):
+            assert 'synthetic-geotab-pass' not in rendering
+
+    def test_rejects_unknown_fields(self) -> None:
+        with pytest.raises(ValidationError):
+            GeotabConfig(base_url='https://x.example')  # type: ignore[call-arg]
+
+    def test_rejects_watermark_knobs(self) -> None:
+        # lookback/cutoff are watermark-arm knobs; GeoTab's incremental
+        # story is token-based feeds, so the section rejects them.
+        with pytest.raises(ValidationError):
+            GeotabConfig(lookback_days=1)  # type: ignore[call-arg]
+
+    def test_is_frozen(self) -> None:
+        config = GeotabConfig()
+        with pytest.raises(ValidationError):
+            config.endpoints = ('devices',)  # type: ignore[misc]
+
+
+class TestGeotabCredentialContract:
+    def test_env_var_convention_names_geotab_password(self) -> None:
+        assert PROVIDER_CREDENTIAL_ENV_VARS['geotab'] == 'GEOTAB_PASSWORD'
+
+    def test_endpoints_without_auth_raise_naming_field_and_env_var(self) -> None:
+        providers = ProvidersConfig(geotab=GeotabConfig(endpoints=('devices',)))
+        with pytest.raises(ConfigurationError) as raised:
+            require_provider_credentials(providers)
+        message = str(raised.value)
+        assert 'providers.geotab.auth' in message
+        assert 'GEOTAB_PASSWORD' in message
+
+    def test_authed_or_endpointless_geotab_passes(self) -> None:
+        require_provider_credentials(
+            ProvidersConfig(
+                geotab=GeotabConfig(auth=_geotab_auth(), endpoints=('devices',))
+            )
+        )
+        require_provider_credentials(ProvidersConfig(geotab=GeotabConfig()))

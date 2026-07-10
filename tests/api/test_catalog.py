@@ -14,7 +14,7 @@ from collections.abc import Iterable, Mapping
 
 from fleetpull.api import SnapshotEndpoint, WindowedEndpoint, available_endpoints
 from fleetpull.api.identity import EndpointIdentity
-from fleetpull.config import MotiveConfig
+from fleetpull.config import GeotabConfig, MotiveConfig
 from fleetpull.endpoints import build_endpoint_registry
 from fleetpull.endpoints.shared import FeedMode, SnapshotMode, SyncMode, WatermarkMode
 from fleetpull.vocabulary import Provider
@@ -77,7 +77,7 @@ def _registry_modes() -> dict[_RegistryKey, SyncMode]:
     this reaches the private map -- sanctioned for tests, and better than
     growing the production surface an enumeration method nobody else uses.
     """
-    registry = build_endpoint_registry([MotiveConfig()])
+    registry = build_endpoint_registry([MotiveConfig(), GeotabConfig()])
     return {key: definition.sync_mode for key, definition in registry._by_key.items()}
 
 

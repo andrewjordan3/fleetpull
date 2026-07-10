@@ -4,10 +4,14 @@ import threading
 
 import pytest
 
-from fleetpull.config import RateLimitConfig
+from fleetpull.config import GeotabConfig, MotiveConfig, RateLimitConfig
 from fleetpull.exceptions import UnknownQuotaScopeError
 from fleetpull.network.limits.limiter import QuotaScopeLimiter
-from fleetpull.network.limits.registry import RateLimiterRegistry
+from fleetpull.network.limits.registry import (
+    RateLimiterRegistry,
+    rate_limits_from_configs,
+)
+from fleetpull.vocabulary import QuotaScope
 
 
 def build_config() -> RateLimitConfig:
@@ -72,3 +76,21 @@ class TestRateLimiterRegistry:
         assert len(fetched_limiters) == thread_count
         distinct_instance_ids: set[int] = {id(limiter) for limiter in fetched_limiters}
         assert len(distinct_instance_ids) == 1
+
+
+class TestRateLimitsFromConfigs:
+    def test_geotab_config_emits_both_method_class_scopes(self) -> None:
+        geotab = GeotabConfig()
+        rate_limits = rate_limits_from_configs([MotiveConfig(), geotab])
+        assert rate_limits[QuotaScope.GEOTAB_GET.value] is geotab.rate_limit
+        assert (
+            rate_limits[QuotaScope.GEOTAB_AUTHENTICATE.value]
+            is geotab.authenticate_rate_limit
+        )
+        # The generic provider emission is untouched.
+        assert QuotaScope.MOTIVE.value in rate_limits
+
+    def test_no_geotab_config_emits_neither_geotab_scope(self) -> None:
+        rate_limits = rate_limits_from_configs([MotiveConfig()])
+        assert QuotaScope.GEOTAB_GET.value not in rate_limits
+        assert QuotaScope.GEOTAB_AUTHENTICATE.value not in rate_limits

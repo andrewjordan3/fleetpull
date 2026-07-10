@@ -21,12 +21,14 @@ from typing import ClassVar
 from pydantic import Field, SecretStr, field_validator
 
 from fleetpull.config.base import ConfigModel
+from fleetpull.config.geotab import GeotabAuthConfig
 from fleetpull.config.rate_limit import RateLimitConfig
 from fleetpull.exceptions import ConfigurationError
 from fleetpull.vocabulary import QuotaScope
 
 __all__: list[str] = [
     'PROVIDER_CREDENTIAL_ENV_VARS',
+    'GeotabConfig',
     'MotiveConfig',
     'ProviderConfig',
     'ProvidersConfig',
@@ -37,9 +39,15 @@ logger = logging.getLogger(__name__)
 
 # The conventional credential environment variable per provider -- the
 # fallback the loading step merges when the YAML key is absent (a YAML
-# literal wins). Motive's is the name the snapshot script has always
-# read; new providers add their entry as they port.
-PROVIDER_CREDENTIAL_ENV_VARS: Mapping[str, str] = {'motive': 'MOTIVE_API_KEY'}
+# literal wins). The mapping is asymmetric by credential shape: Motive's
+# variable supplies the WHOLE credential (`api_key`); GeoTab's supplies
+# the PASSWORD FIELD only (username, database, and server always come
+# from the YAML `auth` section -- they are not secrets). New providers
+# add their entry as they port.
+PROVIDER_CREDENTIAL_ENV_VARS: Mapping[str, str] = {
+    'motive': 'MOTIVE_API_KEY',
+    'geotab': 'GEOTAB_PASSWORD',
+}
 
 _MOTIVE_DEFAULT_BASE_URL: str = 'https://api.gomotive.com'
 _MOTIVE_MAX_RECORDS_PER_PAGE: int = 100
@@ -156,6 +164,68 @@ class MotiveConfig(ProviderConfig):
         return value.rstrip('/')
 
 
+# The Get method-class budget, from the captured rate headers
+# (2026-07-09): `X-Rate-Limit-Remaining: 649` after one call implies
+# ~650/min -- a SINGLE datum, so this default errs conservative on burst
+# and is revisited if live runs contradict it. The docs caveat that the
+# headers may precede enforcement; fleetpull self-limits at the
+# advertised budget regardless (DESIGN §8 probe-settled decision 3).
+# max_concurrency mirrors the Motive posture and is inert until a GeoTab
+# fan-out endpoint exists (no GeoTab endpoint declares a fan-out today).
+_GEOTAB_DEFAULT_GET_RATE_LIMIT: RateLimitConfig = RateLimitConfig(
+    requests_per_period=650, period_seconds=60.0, burst=100, max_concurrency=2
+)
+
+# The Authenticate method-class budget: 10/min, from the June 2026
+# `OverLimitException` capture ("API calls quota exceeded. Maximum
+# admitted 10 per 1m.", paired `retry-after: 56`) and the provider docs
+# row (Status: Active). Authenticate fires rarely behind the session
+# manager's single-flight lock, so burst stays small and max_concurrency
+# is 1 -- inert by construction (nothing fans out on Authenticate; the
+# call only ever takes limiter slots one at a time).
+_GEOTAB_DEFAULT_AUTHENTICATE_RATE_LIMIT: RateLimitConfig = RateLimitConfig(
+    requests_per_period=10, period_seconds=60.0, burst=2, max_concurrency=1
+)
+
+
+class GeotabConfig(ProviderConfig):
+    """
+    User-facing GeoTab provider settings, one instance per run.
+
+    Deliberately no ``lookback_days``/``cutoff_days`` overrides: those are
+    watermark-arm knobs, GeoTab's incremental story is token-based feeds,
+    and no GeoTab watermark-mode endpoint exists -- the omission is a
+    decision, not a gap. Deliberately no ``base_url`` either: the API host
+    is ``auth.server``, and the session strategy retargets every call to
+    the host ``Authenticate`` resolves (DESIGN §8).
+
+    Attributes:
+        auth: The four-field GeoTab credential (username, password,
+            database, server), nested -- it never flattens into the
+            provider section. Optional in YAML for a disabled provider;
+            enablement requires it (``require_provider_credentials``).
+            ``from_yaml`` merges the ``GEOTAB_PASSWORD`` environment
+            variable into an ``auth`` section missing its password.
+        endpoints: The endpoint names this provider syncs (catalog
+            validation happens at ``Sync`` construction, above this tier).
+        rate_limit: The Get method-class budget (the scope ``devices``
+            declares); default from the captured 2026-07-09 headers --
+            see ``_GEOTAB_DEFAULT_GET_RATE_LIMIT`` for the single-datum
+            caveat.
+        authenticate_rate_limit: The Authenticate method-class budget;
+            default 10/min from the June 2026 capture -- see
+            ``_GEOTAB_DEFAULT_AUTHENTICATE_RATE_LIMIT``.
+    """
+
+    quota_scope: ClassVar[QuotaScope] = QuotaScope.GEOTAB_GET
+
+    auth: GeotabAuthConfig | None = None
+    rate_limit: RateLimitConfig = Field(default=_GEOTAB_DEFAULT_GET_RATE_LIMIT)
+    authenticate_rate_limit: RateLimitConfig = Field(
+        default=_GEOTAB_DEFAULT_AUTHENTICATE_RATE_LIMIT
+    )
+
+
 class ProvidersConfig(ConfigModel):
     """
     The per-provider configuration entries, one instance per run.
@@ -167,9 +237,12 @@ class ProvidersConfig(ConfigModel):
     Attributes:
         motive: The Motive provider section, or ``None`` when the YAML
             does not configure Motive.
+        geotab: The GeoTab provider section, or ``None`` when the YAML
+            does not configure GeoTab.
     """
 
     motive: MotiveConfig | None = None
+    geotab: GeotabConfig | None = None
 
 
 def require_provider_credentials(providers: ProvidersConfig) -> None:
@@ -199,5 +272,23 @@ def require_provider_credentials(providers: ProvidersConfig) -> None:
                 'endpoints are configured but no credential resolves; set '
                 f"'providers.motive.api_key' in the YAML or the "
                 f'{environment_variable} environment variable'
+            ),
+        )
+    geotab = providers.geotab
+    if geotab is not None and geotab.endpoints and geotab.auth is None:
+        # The resolvable-password half of GeoTab enablement is structural:
+        # GeotabAuthConfig requires its password, so a present `auth` that
+        # reached validation carries one (YAML literal or the merged
+        # GEOTAB_PASSWORD environment variable). This guard covers the
+        # wholly absent credential section.
+        environment_variable = PROVIDER_CREDENTIAL_ENV_VARS['geotab']
+        raise ConfigurationError(
+            'provider credential missing',
+            provider='geotab',
+            detail=(
+                'endpoints are configured but no credential resolves; set '
+                f"'providers.geotab.auth' (username, database, and optional "
+                f'server in the YAML; the password from the YAML or the '
+                f'{environment_variable} environment variable)'
             ),
         )

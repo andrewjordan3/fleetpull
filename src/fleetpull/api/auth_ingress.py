@@ -13,35 +13,53 @@ message, or a log line.
 
 Dispatch keys off the endpoint identity's provider, never off the auth
 value's shape: a shape that happens to fit another provider is still a
-``ConfigurationError`` here. The provider → (header, classifier)
+``ConfigurationError`` here. The provider → (auth strategy, classifier)
 knowledge lives in this module because it can live nowhere lower: the
 ingress sits in the top tier and may import both ``config`` and
 ``network``, while ``config`` cannot import ``network``, so the mapping
 cannot ride on provider configs.
+
+Profile construction takes a ``ProviderProfileContext`` alongside the
+identity and the credential: the composition-root collaborators a
+provider's auth machinery draws on. Motive's static header needs none of
+them and ignores the context; GeoTab's session stack consumes all three
+(the authenticator's HTTP posture and limiter slot, the session
+manager's clock). The context grows only when a provider's auth
+machinery demands a new collaborator -- it is not a general-purpose bag.
 """
 
 import logging
 from collections.abc import Mapping
+from dataclasses import dataclass
 
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from fleetpull.api.identity import EndpointIdentity
-from fleetpull.config import GeotabAuthConfig
+from fleetpull.config import GeotabAuthConfig, HttpConfig
 from fleetpull.exceptions import ConfigurationError
-from fleetpull.network.auth import StaticHeaderAuth
-from fleetpull.network.classifiers import MotiveResponseClassifier
+from fleetpull.network.auth import (
+    GeotabSessionAuth,
+    GeotabSessionManager,
+    StaticHeaderAuth,
+    build_geotab_authenticator,
+)
+from fleetpull.network.classifiers import (
+    GeotabResponseClassifier,
+    MotiveResponseClassifier,
+)
 from fleetpull.network.client import ProviderProfile
-from fleetpull.vocabulary import Provider
+from fleetpull.network.limits import RateLimiterRegistry
+from fleetpull.timing import Clock
+from fleetpull.vocabulary import Provider, QuotaScope
 
-__all__: list[str] = ['AuthInput', 'build_provider_profile']
+__all__: list[str] = ['AuthInput', 'ProviderProfileContext', 'build_provider_profile']
 
 logger = logging.getLogger(__name__)
 
-# The §10 auth union. GeoTab's arms are accepted by the signature today
-# so its arrival (roadmap item 7) changes no public signature. SecretStr
-# is accepted alongside the bare string so the config path (Sync) hands
-# its already-wrapped credential straight through -- the raw value never
-# needs unwrapping just to be re-wrapped at the boundary.
+# The §10 auth union. SecretStr is accepted alongside the bare string so
+# the config path (Sync) hands its already-wrapped credential straight
+# through -- the raw value never needs unwrapping just to be re-wrapped
+# at the boundary. GeoTab's arms carry the four-field credential whole.
 type AuthInput = str | SecretStr | Mapping[str, str] | GeotabAuthConfig
 
 # Provider knowledge no consumer should type (AUDIT row 20): the header
@@ -49,8 +67,30 @@ type AuthInput = str | SecretStr | Mapping[str, str] | GeotabAuthConfig
 _MOTIVE_AUTH_HEADER: str = 'X-API-Key'
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderProfileContext:
+    """Composition-root collaborators provider profile construction draws on.
+
+    Grows only when a provider's auth machinery demands a new
+    collaborator; this is not a general-purpose bag.
+
+    Attributes:
+        http_config: Timeouts and TLS posture for auth-side HTTP calls.
+        limiter_registry: The shared registry; auth calls take limiter
+            slots like any other request (token-per-attempt).
+        clock: The run's shared clock (session-age timestamping). Required
+            -- no default -- because clock identity matters (the one-clock
+            rule): ``Sync`` passes its shared clock, ``fetch`` constructs
+            one at the profile-build site.
+    """
+
+    http_config: HttpConfig
+    limiter_registry: RateLimiterRegistry
+    clock: Clock
+
+
 def build_provider_profile(
-    endpoint: EndpointIdentity, auth: AuthInput
+    endpoint: EndpointIdentity, auth: AuthInput, context: ProviderProfileContext
 ) -> ProviderProfile:
     """Coerce the public ``auth=`` value into the provider's client profile.
 
@@ -59,7 +99,11 @@ def build_provider_profile(
             shape and classifier; the auth value's own shape never
             drives dispatch.
         auth: The public credential value. Motive requires a bare
-            API-key string.
+            API-key string; GeoTab requires a ``GeotabAuthConfig`` or a
+            mapping with its named fields.
+        context: The composition-root collaborators (HTTP posture,
+            limiter registry, clock) a provider's auth machinery draws
+            on; Motive ignores it, GeoTab consumes it.
 
     Returns:
         The ``ProviderProfile`` (``SecretStr``-carrying auth strategy
@@ -87,13 +131,74 @@ def build_provider_profile(
                 auth=StaticHeaderAuth(_MOTIVE_AUTH_HEADER, secret),
                 classifier=MotiveResponseClassifier(),
             )
-        case Provider.SAMSARA | Provider.GEOTAB:
+        case Provider.GEOTAB:
+            credential = _coerced_geotab_credential(endpoint, auth)
+            authenticate_fn = build_geotab_authenticator(
+                context.http_config,
+                context.limiter_registry,
+                QuotaScope.GEOTAB_AUTHENTICATE.value,
+            )
+            manager = GeotabSessionManager(credential, authenticate_fn, context.clock)
+            return ProviderProfile(
+                auth=GeotabSessionAuth(manager),
+                classifier=GeotabResponseClassifier(),
+            )
+        case Provider.SAMSARA:
             # Signature-ready, unreachable through the catalog today: no
-            # Samsara/GeoTab identity exists, so construction code here
-            # would be dead. Arms fill in as their endpoints port.
+            # Samsara identity exists, so construction code here would be
+            # dead. The arm fills in as its endpoints port.
             raise ConfigurationError(
                 'provider has no exposed endpoints',
                 provider=endpoint.provider.value,
                 endpoint=endpoint.name,
                 detail='no catalog identity exists for this provider yet',
             )
+
+
+def _coerced_geotab_credential(
+    endpoint: EndpointIdentity, auth: AuthInput
+) -> GeotabAuthConfig:
+    """Coerce the GeoTab ``auth=`` shapes into the internal credential.
+
+    A ``GeotabAuthConfig`` passes through as-is; a plain mapping is
+    validated into one (Pydantic wraps the password into ``SecretStr``).
+    Every rejection names the provider and the expected shapes and the
+    received type -- never the value.
+
+    Args:
+        endpoint: The GeoTab identity being fetched (error context).
+        auth: The public credential value.
+
+    Returns:
+        The ``SecretStr``-carrying credential.
+
+    Raises:
+        ConfigurationError: The shape is neither accepted form, or the
+            mapping's fields fail credential validation.
+    """
+    if isinstance(auth, GeotabAuthConfig):
+        return auth
+    shape_detail = (
+        'GeoTab auth is a GeotabAuthConfig or a mapping with '
+        'username/password/database and optional server; '
+        f'got {type(auth).__name__}'
+    )
+    if not isinstance(auth, Mapping):
+        raise ConfigurationError(
+            'auth shape mismatch',
+            provider=endpoint.provider.value,
+            endpoint=endpoint.name,
+            detail=shape_detail,
+        )
+    try:
+        return GeotabAuthConfig.model_validate(dict(auth))
+    except ValidationError as error:
+        field_names = ', '.join(
+            '.'.join(str(item) for item in entry['loc']) for entry in error.errors()
+        )
+        raise ConfigurationError(
+            'auth shape mismatch',
+            provider=endpoint.provider.value,
+            endpoint=endpoint.name,
+            detail=f'{shape_detail} (invalid fields: {field_names})',
+        ) from None

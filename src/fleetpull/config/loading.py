@@ -87,10 +87,15 @@ def with_environment_credentials(document: dict[str, object]) -> dict[str, objec
     """Merge conventional credential environment variables into the document.
 
     Applied per provider from ``PROVIDER_CREDENTIAL_ENV_VARS``, only when
-    the provider's ``api_key`` is absent from the YAML (a YAML literal
-    wins) and the variable carries a non-empty value (empty counts as
-    unset). The value is wrapped in ``SecretStr`` here, so the raw string
-    never travels in the document.
+    the credential is absent from the YAML (a YAML literal wins) and the
+    variable carries a non-empty value (empty counts as unset). The shape
+    is per-provider (the mapping's documented asymmetry): Motive's
+    variable supplies the whole credential (``api_key``); GeoTab's fills
+    only the ``password`` field of a YAML-present ``auth`` section --
+    username, database, and server are not secrets and always come from
+    the YAML, so an absent ``auth`` section is left for the enablement
+    guard to reject. The value is wrapped in ``SecretStr`` here, so the
+    raw string never travels in the document.
 
     Args:
         document: The raw document mapping.
@@ -107,16 +112,24 @@ def with_environment_credentials(document: dict[str, object]) -> dict[str, objec
     if not isinstance(providers_section, dict):
         return document
     merged_providers = dict(providers_section)
-    for provider_name, environment_variable in PROVIDER_CREDENTIAL_ENV_VARS.items():
-        provider_section = merged_providers.get(provider_name)
-        if not isinstance(provider_section, dict) or 'api_key' in provider_section:
-            continue
-        environment_value = os.environ.get(environment_variable)
-        if environment_value:
-            merged_providers[provider_name] = {
-                **provider_section,
-                'api_key': SecretStr(environment_value),
+    motive_section = merged_providers.get('motive')
+    if isinstance(motive_section, dict) and 'api_key' not in motive_section:
+        motive_value = os.environ.get(PROVIDER_CREDENTIAL_ENV_VARS['motive'])
+        if motive_value:
+            merged_providers['motive'] = {
+                **motive_section,
+                'api_key': SecretStr(motive_value),
             }
+    geotab_section = merged_providers.get('geotab')
+    if isinstance(geotab_section, dict):
+        auth_section = geotab_section.get('auth')
+        if isinstance(auth_section, dict) and 'password' not in auth_section:
+            geotab_value = os.environ.get(PROVIDER_CREDENTIAL_ENV_VARS['geotab'])
+            if geotab_value:
+                merged_providers['geotab'] = {
+                    **geotab_section,
+                    'auth': {**auth_section, 'password': SecretStr(geotab_value)},
+                }
     return {**document, 'providers': merged_providers}
 
 
@@ -148,5 +161,11 @@ def warn_disabled_providers(providers: ProvidersConfig) -> None:
     if motive is not None and motive.api_key is not None and not motive.endpoints:
         logger.warning(
             "providers.motive: a credential resolves but 'endpoints' is empty; "
+            'the provider is disabled for this run.'
+        )
+    geotab = providers.geotab
+    if geotab is not None and geotab.auth is not None and not geotab.endpoints:
+        logger.warning(
+            "providers.geotab: a credential resolves but 'endpoints' is empty; "
             'the provider is disabled for this run.'
         )

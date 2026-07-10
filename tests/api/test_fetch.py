@@ -4,11 +4,13 @@
 (the transport-test seam) so the entire real composition -- registry
 discovery, auth ingress, limiter, retry, page decoding, validation,
 frame construction -- runs under every test with no live network
-anywhere. Responses use Motive's real wire shape
-(``{"vehicles": [{"vehicle": {...}}], "pagination": {...}}``); all
-identifiers are synthetic.
+anywhere. Responses use each provider's real wire shape: Motive's
+``{"vehicles": [{"vehicle": {...}}], "pagination": {...}}`` envelopes
+(synthetic identifiers) and GeoTab's committed 2026-07-09 capture set
+(``tests/geotab_devices_capture.py``).
 """
 
+import json
 import ssl
 from collections.abc import Callable
 
@@ -23,9 +25,16 @@ from fleetpull import (
     ProviderResponseError,
     fetch,
 )
-from fleetpull.vocabulary import JsonValue
+from fleetpull.vocabulary import JsonObject, JsonValue
+from tests.geotab_devices_capture import (
+    AUTHENTICATE_SUCCESS_JSON,
+    SEEK_PAGE_1_RESPONSE,
+    SEEK_PAGE_2_RESPONSE,
+    SEEK_TERMINAL_RESPONSE,
+)
 
 _SYNTHETIC_KEY = 'synthetic-motive-key-000'
+_SYNTHETIC_GEOTAB_PASS = 'synthetic-geotab-pass-000'
 
 # The genuine class, captured before any test monkeypatches httpx.Client,
 # so every factory wraps the real client rather than a prior shim (the
@@ -163,3 +172,84 @@ def test_no_raise_path_ever_carries_the_secret(
         fetch(Endpoints.Motive.vehicles, auth=_SYNTHETIC_KEY)
     assert _SYNTHETIC_KEY not in str(raised.value)
     assert _SYNTHETIC_KEY not in repr(raised.value)
+
+
+class _GeotabHandler:
+    """One JSON-RPC route: Authenticate, seek Get pages in order, GetCountOf.
+
+    Records every Authenticate body and every data call's injected
+    ``params.credentials`` so the e2e test can prove the session stack
+    composed: one Authenticate, session credentials on every data call.
+    """
+
+    def __init__(self) -> None:
+        self.authenticate_bodies: list[JsonObject] = []
+        self.data_credentials: list[JsonObject] = []
+        self._pages = iter(
+            [SEEK_PAGE_1_RESPONSE, SEEK_PAGE_2_RESPONSE, SEEK_TERMINAL_RESPONSE]
+        )
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body['method'] == 'Authenticate':
+            self.authenticate_bodies.append(body)
+            return httpx.Response(200, text=AUTHENTICATE_SUCCESS_JSON)
+        self.data_credentials.append(body['params']['credentials'])
+        if body['method'] == 'GetCountOf':
+            # CONSTRUCTED: the count matching the two committed pages (the
+            # captured envelope carries the live fleet's 5,666).
+            return httpx.Response(200, json={'result': 6, 'jsonrpc': '2.0'})
+        assert body['method'] == 'Get'
+        return httpx.Response(200, json=next(self._pages))
+
+
+def test_geotab_devices_end_to_end_through_the_session_stack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The first live-shaped proof of auth stack + transport POST +
+    # classifier + seek decoder + completeness guard, end to end
+    # (GEOTAB-AUDIT GTA-01's composition gap): Authenticate success, two
+    # captured Get pages, the empty terminal page, a matching GetCountOf.
+    handler = _GeotabHandler()
+    _install_transport(monkeypatch, handler)
+    frame = fetch(
+        Endpoints.Geotab.devices,
+        auth={
+            'username': 'user@example.com',
+            'password': _SYNTHETIC_GEOTAB_PASS,
+            'database': 'exampledb',
+        },
+    )
+    assert frame.height == 6
+    assert frame['id'].to_list() == ['b101', 'b102', 'b105', 'b106', 'b107', 'b10A']
+    assert frame.schema['active_to'] == pl.Datetime(time_unit='us', time_zone='UTC')
+    # Exactly one Authenticate fired for the whole walk.
+    assert len(handler.authenticate_bodies) == 1
+    # Every data call -- three Get pages and the GetCountOf -- carried the
+    # session credentials the strategy injected.
+    assert len(handler.data_credentials) == 4
+    assert all(
+        credentials['sessionId'] == 'SyntheticSessionId000001'
+        and credentials['database'] == 'exampledb'
+        for credentials in handler.data_credentials
+    )
+
+
+def test_geotab_fetch_failure_never_carries_the_password(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def rejects_everything(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text='no route')
+
+    _install_transport(monkeypatch, rejects_everything)
+    with pytest.raises(ProviderResponseError) as raised:
+        fetch(
+            Endpoints.Geotab.devices,
+            auth={
+                'username': 'user@example.com',
+                'password': _SYNTHETIC_GEOTAB_PASS,
+                'database': 'exampledb',
+            },
+        )
+    assert _SYNTHETIC_GEOTAB_PASS not in str(raised.value)
+    assert _SYNTHETIC_GEOTAB_PASS not in repr(raised.value)

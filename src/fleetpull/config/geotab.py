@@ -2,10 +2,12 @@
 """GeoTab authentication configuration model.
 
 GeotabAuthConfig is the GeoTab authentication section of fleetpull's
-user-provided YAML configuration. The password is a ``SecretStr``: its
-value is extracted with ``.get_secret_value()`` only at the moment of
-use (inside the real authenticate function), and is never logged or
-included in ``repr()``/``str()`` output.
+user-provided YAML configuration (nested under ``providers.geotab.auth``;
+the provider section itself lives with its family in
+``config/providers.py``). The password is a ``SecretStr``: its value is
+extracted with ``.get_secret_value()`` only at the moment of use (inside
+the real authenticate function), and is never logged or included in
+``repr()``/``str()`` output.
 """
 
 from pydantic import Field, SecretStr, field_validator

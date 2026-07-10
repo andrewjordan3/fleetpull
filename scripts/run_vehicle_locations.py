@@ -292,10 +292,13 @@ def main() -> None:
         )
     else:
         print(
-            '\nRun 2 added no net rows -- the runs happened back-to-back, so the '
-            'resume window resolved to the same date(s) Run 1 already covered '
-            '(each replaced wholesale, not appended). This is expected: the dedup '
-            'proof below rests on that boundary overlap, not on new data.'
+            '\nRun 2 added no net rows -- back-to-back runs plan the same work '
+            'units, and a unit already completed is a CaughtUp no-op: nothing '
+            'is refetched and no partition is touched. Late arrivals are '
+            "covered by the lookback margin when a later run's window shifts "
+            'to new days (those units re-run and replace their partitions '
+            'wholesale). The dedup check below proves the invariant over what '
+            'the runs actually wrote.'
         )
 
     print('\n--- Dedup check across the combined output ---')

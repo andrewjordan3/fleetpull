@@ -166,6 +166,33 @@ class TransportClient:
             )
             sent = decoded.advance.next_spec
 
+    def fetch_envelope(self, spec: RequestSpec, quota_scope: str) -> JsonValue:
+        """
+        Execute one request outside any page loop; return its envelope.
+
+        The single-request surface for non-paging calls that must still
+        ride the whole per-attempt pipeline -- auth prepare, one limiter
+        token per attempt, retry, classification (the completeness
+        guard's ``GetCountOf`` is the first consumer). Interpretation of
+        the envelope is the caller's; the client stays shape-blind.
+
+        Args:
+            spec: The credential-less request to execute.
+            quota_scope: The rate-limit scope key the attempt spends from.
+
+        Returns:
+            The parsed success envelope.
+
+        Raises:
+            RetriesExhaustedError: A retryable category exhausted its
+                budget.
+            AuthenticationError: Credentials are unfixable, or a second
+                consecutive auth failure.
+            ProviderResponseError: A FATAL response, or a
+                SUCCESS-classified response whose body is not JSON.
+        """
+        return self._fetch_single_page(spec, quota_scope)
+
     def _fetch_single_page(self, sent: RequestSpec, quota_scope: str) -> JsonValue:
         """
         Drive the retry loop for ONE page; return its success envelope.

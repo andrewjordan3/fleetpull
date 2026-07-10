@@ -38,6 +38,11 @@ class Endpoints:
             Provider.MOTIVE, 'vehicle_locations'
         )
 
+    class Geotab:
+        """GeoTab endpoint identities."""
+
+        devices: SnapshotEndpoint = SnapshotEndpoint(Provider.GEOTAB, 'devices')
+
 
 def available_endpoints() -> tuple[EndpointIdentity, ...]:
     """Enumerate the whole catalog -- its manifest, in declaration order.
@@ -48,4 +53,5 @@ def available_endpoints() -> tuple[EndpointIdentity, ...]:
     return (
         Endpoints.Motive.vehicles,
         Endpoints.Motive.vehicle_locations,
+        Endpoints.Geotab.devices,
     )

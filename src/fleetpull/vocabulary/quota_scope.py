@@ -11,8 +11,12 @@ meters one endpoint apart from the rest (the §13 Samsara ``vehicle_locations``
 case adds a new ``QuotaScope`` member while the ``Provider`` stays ``SAMSARA``),
 and folding both into one type would be exactly the conflation this avoids.
 
-The dedicated GeoTab Authenticate scope (§8) is deliberately not a member: it is
-auth-internal, named at the composition root, and not an endpoint declaration.
+GeoTab meters per method class, not per provider (§8, captured 2026-07-09),
+so its scopes are method-class members: ``GEOTAB_GET`` is the Get-class data
+scope endpoint definitions declare, and ``GEOTAB_AUTHENTICATE`` is the
+dedicated Authenticate scope — auth-internal, never an endpoint declaration;
+the composition root passes it to the authenticator factory by name. The
+GetFeed-class scope joins with the feed vertical.
 """
 
 from enum import StrEnum
@@ -35,5 +39,7 @@ class QuotaScope(StrEnum):
     """
 
     GEOTAB = 'geotab'
+    GEOTAB_AUTHENTICATE = 'geotab_authenticate'
+    GEOTAB_GET = 'geotab_get'
     MOTIVE = 'motive'
     SAMSARA = 'samsara'
