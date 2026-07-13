@@ -42,6 +42,7 @@ class Endpoints:
         """GeoTab endpoint identities."""
 
         devices: SnapshotEndpoint = SnapshotEndpoint(Provider.GEOTAB, 'devices')
+        trips: WindowedEndpoint = WindowedEndpoint(Provider.GEOTAB, 'trips')
 
 
 def available_endpoints() -> tuple[EndpointIdentity, ...]:
@@ -54,4 +55,5 @@ def available_endpoints() -> tuple[EndpointIdentity, ...]:
         Endpoints.Motive.vehicles,
         Endpoints.Motive.vehicle_locations,
         Endpoints.Geotab.devices,
+        Endpoints.Geotab.trips,
     )

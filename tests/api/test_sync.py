@@ -494,3 +494,12 @@ class TestGeotabRun:
             repr(failures[0].error),
         ):
             assert _SYNTHETIC_GEOTAB_PASS not in rendering  # ...the secret never
+
+
+class TestGeotabTripsEnablement:
+    def test_trips_selection_validates_with_no_widening(self, tmp_path: Path) -> None:
+        # The windowed GeoTab endpoint rides the composition the devices
+        # vertical already widened; construction validates the selection
+        # against the catalog (the run itself is the live script's proof).
+        config_path = _write_geotab_config(tmp_path, endpoints='[devices, trips]')
+        Sync(config_path)

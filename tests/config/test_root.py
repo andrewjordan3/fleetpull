@@ -243,7 +243,7 @@ def _geotab_yaml(tmp_path: Path, *, password_line: str) -> str:
         f'      username: user@example.com\n'
         f'      database: exampledb\n'
         f'{password_line}'
-        f'    endpoints: [devices]\n'
+        f'    endpoints: [devices, trips]\n'
     )
 
 
