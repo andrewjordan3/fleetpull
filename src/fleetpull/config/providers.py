@@ -187,17 +187,21 @@ _GEOTAB_DEFAULT_AUTHENTICATE_RATE_LIMIT: RateLimitConfig = RateLimitConfig(
     requests_per_period=10, period_seconds=60.0, burst=2, max_concurrency=1
 )
 
+_GEOTAB_DEFAULT_LOOKBACK_DAYS: int = 7
+_GEOTAB_DEFAULT_CUTOFF_DAYS: int = 0
+
 
 class GeotabConfig(ProviderConfig):
     """
     User-facing GeoTab provider settings, one instance per run.
 
-    Deliberately no ``lookback_days``/``cutoff_days`` overrides: those are
-    watermark-arm knobs, GeoTab's incremental story is token-based feeds,
-    and no GeoTab watermark-mode endpoint exists -- the omission is a
-    decision, not a gap. Deliberately no ``base_url`` either: the API host
-    is ``auth.server``, and the session strategy retargets every call to
-    the host ``Authenticate`` resolves (DESIGN §8).
+    Carries the watermark window knobs since the ``trips`` vertical
+    (amended 2026-07-13; the earlier omission encoded a superseded
+    feeds-only view of GeoTab incrementality -- windowed ``Get`` is
+    GeoTab's history path today, and feeds remain the future incremental
+    mechanism; DESIGN §4's amendment). Deliberately no ``base_url``: the
+    API host is ``auth.server``, and the session strategy retargets
+    every call to the host ``Authenticate`` resolves (DESIGN §8).
 
     Attributes:
         auth: The four-field GeoTab credential (username, password,
@@ -209,12 +213,29 @@ class GeotabConfig(ProviderConfig):
         endpoints: The endpoint names this provider syncs (catalog
             validation happens at ``Sync`` construction, above this tier).
         rate_limit: The Get method-class budget (the scope ``devices``
-            declares); default from the captured 2026-07-09 headers --
-            see ``_GEOTAB_DEFAULT_GET_RATE_LIMIT`` for the single-datum
-            caveat.
+            and ``trips`` declare); default from the captured 2026-07-09
+            headers -- see ``_GEOTAB_DEFAULT_GET_RATE_LIMIT`` for the
+            single-datum caveat.
         authenticate_rate_limit: The Authenticate method-class budget;
             default 10/min from the June 2026 capture -- see
             ``_GEOTAB_DEFAULT_AUTHENTICATE_RATE_LIMIT``.
+        lookback_days: Late-arrival re-fetch margin in whole days for
+            watermark endpoints -- how far before the stored watermark
+            each resume re-fetches, so a record that landed after its
+            event-time day is recovered and its partitions replaced
+            (for ``trips``, this margin is also what absorbs GeoTab's
+            Trip recalculation). Optional per-provider YAML key; when
+            absent, root-level resolution fans in a declared
+            ``sync.lookback_days``, else this documented default stands
+            (provider key > sync key > default). Non-negative; zero
+            means no margin beyond the watermark's own date.
+        cutoff_days: Trailing-edge holdback in whole days for watermark
+            endpoints -- how far the resume window's end is held back from
+            the clock, so a still-arriving day is never frozen as a complete
+            partition. The complement of ``lookback_days``: both express the
+            same provider data-latency concern from opposite ends, and both
+            carry the same per-provider-key > ``sync``-key > default
+            precedence. Optional; defaults to 0.
     """
 
     quota_scope: ClassVar[QuotaScope] = QuotaScope.GEOTAB_GET
@@ -224,6 +245,8 @@ class GeotabConfig(ProviderConfig):
     authenticate_rate_limit: RateLimitConfig = Field(
         default=_GEOTAB_DEFAULT_AUTHENTICATE_RATE_LIMIT
     )
+    lookback_days: int = Field(default=_GEOTAB_DEFAULT_LOOKBACK_DAYS, ge=0)
+    cutoff_days: int = Field(default=_GEOTAB_DEFAULT_CUTOFF_DAYS, ge=0)
 
 
 class ProvidersConfig(ConfigModel):

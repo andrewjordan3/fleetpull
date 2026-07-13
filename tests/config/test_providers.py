@@ -130,6 +130,8 @@ class TestGeotabConfig:
         # (~650/min, single datum); Authenticate is 10/min (June capture).
         assert config.rate_limit.requests_per_period == 650
         assert config.authenticate_rate_limit.requests_per_period == 10
+        assert config.lookback_days == 7
+        assert config.cutoff_days == 0
 
     def test_quota_scope_binds_the_get_class(self) -> None:
         assert GeotabConfig.quota_scope is QuotaScope.GEOTAB_GET
@@ -143,16 +145,22 @@ class TestGeotabConfig:
         with pytest.raises(ValidationError):
             GeotabConfig(base_url='https://x.example')  # type: ignore[call-arg]
 
-    def test_rejects_watermark_knobs(self) -> None:
-        # lookback/cutoff are watermark-arm knobs; GeoTab's incremental
-        # story is token-based feeds, so the section rejects them.
+    def test_knobs_are_plain_ints_with_overrides(self) -> None:
+        # Watermark knobs since the trips vertical (the earlier rejection
+        # encoded feeds-only incrementality, superseded 2026-07-13).
+        config = GeotabConfig(lookback_days=2, cutoff_days=3)
+        assert config.lookback_days == 2
+        assert config.cutoff_days == 3
+
+    @pytest.mark.parametrize('knob', ['lookback_days', 'cutoff_days'])
+    def test_rejects_negative_knobs(self, knob: str) -> None:
         with pytest.raises(ValidationError):
-            GeotabConfig(lookback_days=1)  # type: ignore[call-arg]
+            GeotabConfig(**{knob: -1})
 
     def test_is_frozen(self) -> None:
         config = GeotabConfig()
         with pytest.raises(ValidationError):
-            config.endpoints = ('devices',)  # type: ignore[misc]
+            config.endpoints = ('devices', 'trips')  # type: ignore[misc]
 
 
 class TestGeotabCredentialContract:
@@ -160,7 +168,7 @@ class TestGeotabCredentialContract:
         assert PROVIDER_CREDENTIAL_ENV_VARS['geotab'] == 'GEOTAB_PASSWORD'
 
     def test_endpoints_without_auth_raise_naming_field_and_env_var(self) -> None:
-        providers = ProvidersConfig(geotab=GeotabConfig(endpoints=('devices',)))
+        providers = ProvidersConfig(geotab=GeotabConfig(endpoints=('devices', 'trips')))
         with pytest.raises(ConfigurationError) as raised:
             require_provider_credentials(providers)
         message = str(raised.value)
@@ -170,7 +178,7 @@ class TestGeotabCredentialContract:
     def test_authed_or_endpointless_geotab_passes(self) -> None:
         require_provider_credentials(
             ProvidersConfig(
-                geotab=GeotabConfig(auth=_geotab_auth(), endpoints=('devices',))
+                geotab=GeotabConfig(auth=_geotab_auth(), endpoints=('devices', 'trips'))
             )
         )
         require_provider_credentials(ProvidersConfig(geotab=GeotabConfig()))
