@@ -13,7 +13,7 @@ import enum
 import types
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Union, get_args, get_origin
 
 from pydantic import BaseModel
@@ -32,8 +32,9 @@ __all__: list[str] = [
 _NESTING_JOIN: str = '__'
 
 # The closed scalar set. datetime resolves to a tz-aware microsecond
-# dtype downstream; the others to their obvious Polars scalars.
-_SCALAR_TYPES: frozenset[type] = frozenset({int, float, str, bool, datetime})
+# dtype downstream and timedelta to a microsecond duration; the others
+# to their obvious Polars scalars.
+_SCALAR_TYPES: frozenset[type] = frozenset({int, float, str, bool, datetime, timedelta})
 
 
 class FieldKind(enum.Enum):

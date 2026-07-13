@@ -1,6 +1,9 @@
 """Tests for fleetpull.records.convert."""
 
+from datetime import timedelta
 from enum import StrEnum
+
+import polars as pl
 
 from fleetpull.model_contract import ResponseModel
 from fleetpull.models.motive import Vehicle
@@ -54,3 +57,22 @@ def test_vehicle_schema_derives_without_override() -> None:
     frame = models_to_dataframe([], Vehicle)
     assert frame.height == 0
     assert len(frame.columns) > 0
+
+
+class _Timed(ResponseModel):
+    duration: timedelta | None = None
+
+
+def test_timedelta_flattens_with_value_and_null() -> None:
+    frame = models_to_dataframe(
+        [_Timed(duration=timedelta(minutes=5, seconds=1)), _Timed(duration=None)],
+        _Timed,
+    )
+    assert frame.schema['duration'] == pl.Duration(time_unit='us')
+    assert frame['duration'].to_list() == [timedelta(minutes=5, seconds=1), None]
+
+
+def test_empty_input_carries_the_duration_dtype() -> None:
+    empty = models_to_dataframe([], _Timed)
+    assert empty.height == 0
+    assert empty.schema['duration'] == pl.Duration(time_unit='us')

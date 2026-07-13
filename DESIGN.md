@@ -273,6 +273,23 @@ tagged union:
 - `DateWatermark` — Motive/Samsara style: resume from `watermark - lookback`.
 - `FeedToken` — GeoTab `GetFeed` style: resume from `fromVersion`/`toVersion` token. No date windows exist for these endpoints.
 
+*Amendment (2026-07-13, the trips vertical): the provider↔strategy pairing
+above is per-endpoint, not per-provider — the earlier working rationale
+"GeoTab's incremental story is feeds only" is superseded. Windowed `Get`
+(`TripSearch` date bounds riding the seek walk) is GeoTab's history/backfill
+and utilization-delivery path today, because the watermark arm is built,
+live-proven, and its window-refetch semantics absorb Trip recalculation
+within the lookback horizon — while the feed arm (the runner arm, the append
+writer cells, token-commit crash ordering, and the calculated-feed
+reconcile/tombstone design) is unbuilt with open design questions. Feeds
+remain the future incremental mechanism, and they CAN be seeded historically
+via `search.fromDate` (June-verified bootstrap; §8's own recorded finding) —
+only the bare, unseeded `GetFeed` positions its cursor at now. Accepted
+residual: a Trip recalculation arriving beyond the lookback horizon is
+missed by the windowed path and will be caught when the feed arm lands.
+`GeotabConfig` now carries the watermark knobs (`lookback_days` /
+`cutoff_days`).*
+
 These two carriers live in `incremental/` — a pure, dependency-free leaf, so
 an endpoint can name a strategy without importing the SQLite layer.
 Serialization of a cursor to its SQLite form is owned by `state/`, not the
@@ -1080,6 +1097,13 @@ budgets → `RetriesExhaustedError`, failed auth paths →
 | GeoTab | LogRecord's shape is six fields: `latitude`, `longitude`, `speed`, `dateTime`, `device` (a nested id ref), `id` (captured 2026-07-09). |
 | GeoTab | Every response carries `X-Rate-Limit-Limit` (a period), `X-Rate-Limit-Remaining`, and `X-Rate-Limit-Reset`; budgets are per method class — the GetFeed class showed remaining 59 after one call in multiple independent windows (implied 60/min); the Get class showed 649 after one call (implied ~650/min, single datum). The docs state the headers may precede enforcement ("Coming Soon" — docs, not captured). June's captured "Maximum admitted 10 per 1m" OverLimit is consistent with an Authenticate-class budget (captured 2026-07-09). |
 | GeoTab | The read-the-type-never-the-message rule's strongest exhibit: an unknown `typeName` returns `MissingMethodException` whose *message* falsely claims the method itself doesn't exist while `error.data.type` stays truthful; a malformed JSON body returns `JsonSerializerException` (code `-32700`) in the same envelope shape (both captured 2026-07-09). |
+| GeoTab | Durations are .NET TimeSpan strings, grammar `[d.]hh:mm:ss[.f{1,7}]` — 1–7 fractional digits are 100 ns ticks (every captured seventh digit is zero, so microsecond truncation loses nothing); day-prefixed spans (`"4.16:41:16"`) occur whenever a stop window crosses days (captured 2026-07-13). |
+| GeoTab | Trip units, delta-arithmetic confirmed: `engineHours` is SECONDS despite the name (a captured 26.1M "hours" is 7,251 real engine-hours); `odometer` is meters (confirmed against a trip's own km `distance` delta); `distance` fields are km; speeds are km/h (captured 2026-07-13). |
+| GeoTab | Trip interval semantics, 12-of-12 captured records: `drivingDuration = stop − start`; `stopDuration = nextTripStart − stop`; `idlingDuration` measures engine-on time WITHIN the post-trip stop window, never within the drive. The zero-distance degenerate shape has `start == stop` and no `averageSpeed` key at all (captured 2026-07-13). |
+| GeoTab | Reference fields may arrive as either a bare known-id sentinel string (`driver: "UnknownDriverId"`) or an object (`{"id": ..., "isDriver": true}`) — one field, two wire shapes; modeled by structural flattening (the bare string becomes the reference's `id`, verbatim) (captured 2026-07-13). |
+| GeoTab | `sort` and `search` compose on `Get`/`TripSearch`: a windowed, sorted, seeked page pair returned strictly-ascending ids across the boundary with every record inside the window — windowed seek paging works (captured 2026-07-13). |
+| GeoTab | An unmatched `search` referent returns an EMPTY result, never an error — the silent-empty hazard: a typo'd search filter reads as "no data", not as a failure (captured 2026-07-13). |
+| GeoTab | `Get` `sort` composed with `ExceptionEventSearch.ruleSearch` returned `-32000 GenericException` — open, under discrimination probes; do not assume sort composes with every search type (captured 2026-07-13). |
 | Samsara | 429 with fractional `Retry-After` (e.g. `0.40235`); 401 body is `{"message": ...}`; 5xx bodies are plain strings, never JSON. |
 | Motive | 401 body is `{"error_message": ...}`; the documented /vehicle_locations limit was not observed to enforce — generic 429 posture. |
 | Motive | `/v3/vehicle_locations/{vehicle_id}` verified live: envelope `{"vehicle_locations": [{"vehicle_location": {...}}]}`, `located_at` is UTC ISO-8601 (`Z`-suffixed), one non-paginated page per fetch (so `SinglePageDecoder` fits), and a single per-vehicle fetch spans multiple calendar dates (the sample crossed two) — confirming `split_by_date`'s multi-partition output is load-bearing in production, not a theoretical edge: one fetch genuinely fans into several partitions. |
@@ -1417,6 +1441,8 @@ fleetpull/
       devices.py   # build_endpoint — the devices seek-paged snapshot factory, its
                    #   JSON-RPC spec-builder, and GetCountOfCheck (the completeness
                    #   guard's GeoTab implementation, §8 probe-settled decision 2)
+      trips.py     # build_endpoint — the trips windowed (watermark) factory; the
+                   #   TripSearch date bounds ride the seek walk (§4's amendment)
     registry.py  # EndpointRegistry + build_endpoint_registry — the (provider, name) catalog; discovers leaves by walking endpoints.<provider>
   polars_typing/   # quarantined re-export boundary for Polars type aliases with no public
                    #   equivalent (e.g. ParquetCompression) — the sole importer of polars._typing
@@ -1434,8 +1460,13 @@ fleetpull/
       vehicle_locations.py # VehicleLocation breadcrumb record (/v3/vehicle_locations)
     samsara/       # net-new when its endpoints land
     geotab/
+      shared.py    # GeotabTimeSpan (.NET TimeSpan ingress) + bare_id_to_reference
+                   #   (the sentinel-or-object reference coercion) — shared across entities
       device.py    # Device — the union-of-shapes snapshot record (GO7/GO9/trailer,
                    #   everything optional; year-one and non-derivable fields excluded)
+      trip.py      # Trip — the movement-interval record (Duration columns, the
+                   #   driver sentinel flattening, the seconds-despite-the-name
+                   #   engine_hours trap)
   records/         # the records stage: models -> typed Polars DataFrame
     fields.py      # the shared field walk: classify + enumerate flat leaf columns
     schema.py      # Pydantic model -> {column: Polars dtype}
@@ -1722,7 +1753,7 @@ tzinfo-construction rules mechanically.
 
 ## 13. Open Questions
 
-- GeoTab specifics pending API access: `GetFeed` semantics in practice, real rate limits, which entities map to which storage strategies (the auth model is settled — session-based, §8). *Update (2026-07-09): the live probe session closed the `GetFeed`-semantics and rate-limit halves — see §8's observed-behaviors table and probe-settled decisions. Still open: which remaining entities map to which storage strategies, and the calculated-feed questions (version re-emission shape, tombstones — the bullet below), deferred to Trip's port.*
+- GeoTab specifics pending API access: `GetFeed` semantics in practice, real rate limits, which entities map to which storage strategies (the auth model is settled — session-based, §8). *Update (2026-07-09): the live probe session closed the `GetFeed`-semantics and rate-limit halves — see §8's observed-behaviors table and probe-settled decisions. Still open: which remaining entities map to which storage strategies, and the calculated-feed questions (version re-emission shape, tombstones — the bullet below), deferred to Trip's port.* *Update (2026-07-13): Trip's mapping is settled — watermark / `DATE_PARTITIONED` on `start` (the trips vertical; §4's amendment carries the rationale and the accepted recalculation residual). Still open per entity: ExceptionEvent pends the sort-failure discrimination (§8's `GenericException` row), and User pends the driver-visibility question — a scope anomaly where trips reference driver ids invisible to the probing account, under investigation with the subsidiary.*
 
 - **Accepted residual (2026-07-09): the exactly-full-final-page feed edge.**
   When a feed's final page holds exactly `resultsLimit` records, the

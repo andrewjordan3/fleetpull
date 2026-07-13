@@ -2,12 +2,15 @@
 """Polars schema derivation: a model class to a ``{column: dtype}`` map.
 
 Walks the shared field enumeration (``records/fields.py``) and maps each
-leaf to a Polars dtype. Depends only on the model class, not on any data,
-so the schema is computable before a record is fetched. A leaf the map
-cannot place raises (fail fast); there is no override path yet.
+leaf to a Polars dtype: ``int``/``float``/``str``/``bool`` to their
+obvious scalars, ``datetime`` to tz-aware microsecond UTC, ``timedelta``
+to a microsecond ``Duration``, enums to ``String``, ``list[scalar]`` to
+``List`` of the inner dtype. Depends only on the model class, not on any
+data, so the schema is computable before a record is fetched. A leaf the
+map cannot place raises (fail fast); there is no override path yet.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import polars as pl
 from pydantic import BaseModel
@@ -17,13 +20,15 @@ from fleetpull.records.fields import FieldKind, FlatField, iter_flat_fields
 __all__: list[str] = ['derive_schema']
 
 # The closed scalar -> Polars dtype map. datetime is tz-aware microsecond
-# UTC, so every datetime column carries a uniform, parquet-friendly type.
+# UTC and timedelta a microsecond Duration, so every temporal column
+# carries a uniform, parquet-friendly type.
 _SCALAR_TO_POLARS: dict[type, pl.DataType] = {
     int: pl.Int64(),
     float: pl.Float64(),
     str: pl.String(),
     bool: pl.Boolean(),
     datetime: pl.Datetime(time_unit='us', time_zone='UTC'),
+    timedelta: pl.Duration(time_unit='us'),
 }
 
 
@@ -35,9 +40,9 @@ def derive_schema(model_class: type[BaseModel]) -> dict[str, pl.DataType]:
 
     Returns:
         An insertion-ordered ``{column: dtype}`` map in field declaration
-        order. Scalars and datetimes map directly; enums map to
-        ``pl.String``; ``list[scalar]`` maps to ``pl.List`` of the inner
-        scalar's dtype.
+        order. Scalars, datetimes, and timedeltas map directly; enums map
+        to ``pl.String``; ``list[scalar]`` maps to ``pl.List`` of the
+        inner scalar's dtype.
 
     Raises:
         TypeError: If a leaf annotation has no dtype mapping.

@@ -395,3 +395,61 @@ vertical:**
 | GTA-12 | The feed is version-ordered, not event-time-ordered: `dateTime` non-monotonic within a page and dipping before the requested `fromDate`; bootstrap semantics are *ingested-since*, not *occurred-since*. Date watermarks must never derive from feed `dateTime`s — the empirical justification for `FeedToken` opacity | DESIGN §8 observed table; decision 4 |
 | GTA-13 | Device schema polymorphism and the sentinel set: at least three record shapes (GO7-era, GO9-era, trailer with `deviceType: "None"` / `productId: -1` / `tmpTrailerId`); `activeTo: 2050-01-01` = active; VIN fields carry `""` and `"?"`; `ignoreDownloadsUntil` at `0001-01-01` overflows nanosecond timestamp columns (microsecond precision or exclusion required) | DESIGN §8 observed table |
 | GTA-14 | Rate budgets are per method class, advertised in `X-Rate-Limit-*` headers on every response (GetFeed class ~60/min, multiple windows; Get class ~650/min, single datum; June's 10/min OverLimit consistent with an Authenticate-class budget) — with the docs' caveat that headers may precede enforcement ("Coming Soon"). Config defaults cite the captured values; no ramp probe needed | DESIGN §8 observed table; decision 3 |
+
+---
+
+## 5. The Trip vertical (2026-07-13)
+
+**What shipped** (`Endpoints.Geotab.trips` — the first windowed GeoTab
+endpoint, riding the watermark machinery end to end): `timedelta` joined
+the records layer's closed scalar set (`pl.Duration('us')` columns); the
+.NET TimeSpan ingress (`GeotabTimeSpan`, grammar `[d.]hh:mm:ss[.f{1,7}]`,
+loud on anything else) and the sentinel-or-object reference coercion
+(`bare_id_to_reference`) landed in `models/geotab/shared.py`; the `Trip`
+union-of-observed-fields model; `GeotabConfig` gained the watermark knobs
+(`lookback_days`/`cutoff_days`, reversing the feeds-only rejection —
+DESIGN §4's dated amendment carries the rationale and the accepted
+recalculation residual); the `trips` leaf (windowed spec builder:
+`TripSearch` `fromDate`/`toDate` beside the id-ascending sort, half-open
+end passed verbatim, no completeness check — a `GetCountOf` compares
+only against a complete listing); and `scripts/run_geotab_trips.py` as
+the live-run driver.
+
+**Fixture provenance:** `tests/geotab_trips_capture.py` — Captured
+2026-07-13 live probe session, `resultsLimit: 3` (production 5000),
+scrubbed through the established mapping extended, never restarted
+(insert-1-after-`b` ids; version tokens ordinally remapped preserving
+order; synthetic distinct coordinates; timestamps, durations, distances,
+odometer, and engine-hours values verbatim — they carry the arithmetic
+properties under test). The committed set: the windowed seek page pair
+(six Trips, both driver variants, `b106` on both sides of the boundary),
+the day-prefixed-TimeSpan record, and the zero-distance degenerate
+record.
+
+**Findings (all Captured 2026-07-13; details in DESIGN §8's new rows):**
+
+- Durations are .NET TimeSpan strings; day-prefixed spans occur on
+  multi-day stop windows; 1–7 fractional digits are 100 ns ticks.
+- Unit traps, delta-arithmetic confirmed: `engineHours` is SECONDS
+  despite the name; `odometer` meters; `distance` km; speeds km/h.
+- Trip interval semantics (12-of-12): `drivingDuration = stop − start`,
+  `stopDuration = nextTripStart − stop`, `idlingDuration` is engine-on
+  time within the post-trip stop window.
+- `driver` is a bare known-id sentinel string or an object — structural
+  flattening models both (the sentinel lands verbatim as `driver__id`).
+- `sort` + `search` compose on `Get`/`TripSearch` (windowed seek paging
+  verified live across a page boundary); an unmatched search referent
+  returns an EMPTY result, never an error (the silent-empty hazard);
+  `sort` composed with `ExceptionEventSearch.ruleSearch` returned
+  `-32000 GenericException` (open — under discrimination probes).
+- Scale datum: `GetCountOf` `Trip` returned **456,822** — the windowed
+  walk and the 5,000-cap seek paging are load-bearing at this size, not
+  precautionary.
+- Observed unattributed-short-trip pattern: six of the twelve captured
+  trips carry the `UnknownDriverId` sentinel, and all six are sub-0.2 km
+  yard-scale moves — driver attribution appears to drop exactly on
+  short repositioning moves (an analysis observation for consumers, not
+  a fleetpull concern).
+- Scope anomaly, under investigation with the subsidiary: trips
+  reference driver ids invisible to the probing account (the User
+  entity's storage mapping pends this — DESIGN §13).
