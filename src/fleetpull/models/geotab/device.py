@@ -18,17 +18,15 @@ model it"):
 - ``ignoreDownloadsUntil`` -- observed live at ``0001-01-01``, which
   overflows nanosecond-precision timestamp columns (captured
   2026-07-09). No other captured field carries a year-one datetime.
-- ``autoGroups``, ``customParameters``, ``customProperties``,
-  ``mediaFiles``, ``wifiHotspotLimits`` -- observed only as empty
-  lists, so their element shape is uncaptured and cannot be honestly
-  typed.
-- ``groups``, ``devicePlanBillingInfo`` (lists of objects),
-  ``customFeatures``, ``deviceFlags`` (dynamic-keyed / deeply nested
-  objects) -- the records layer's schema derivation (DESIGN section 9)
-  supports scalars, enums, ``list[scalar]``, and nested models only;
-  its override hatch is still deferred, so these shapes have no honest
-  column today. Model them when that hatch lands or a consumer forces
-  typed access.
+- ``wifiHotspotLimits``, ``customProperties``, ``mediaFiles`` --
+  observed only as empty lists, so their element shape is uncaptured
+  and cannot be honestly typed.
+- ``groups``, ``devicePlanBillingInfo``, ``autoGroups``,
+  ``customParameters`` -- lists of objects; the records layer's schema
+  derivation (DESIGN section 9) supports scalars, enums,
+  ``list[scalar]``, and nested models only, so these shapes have no
+  honest column until the ``list[nested model]`` derivation vertical
+  lands. Model them there, or when a consumer forces typed access.
 
 Sentinels are stored as-is, never transformed (interpretation is the
 consumer's concern; the boundary model's job is shape): ``activeTo``
@@ -37,20 +35,68 @@ carry ``""`` and a literal ``"?"`` for unknown VINs; ``productId: -1``
 marks non-telematics (trailer) entries.
 
 Wire keys are camelCase; fields are snake_case via the ``to_camel``
-alias generator rather than 72 hand-written ``Field(alias=...)`` lines
+alias generator rather than 74 hand-written ``Field(alias=...)`` lines
 -- a typo'd hand alias would land silently as ``None`` under
 ``extra='ignore'``, while the generator is mechanically exact (the
-model tests validate every captured shape against it).
+model tests validate every captured shape against it). The three
+``DeviceFlags`` acronym keys the generator cannot produce
+(``isHOSAllowed`` / ``isUIAllowed`` / ``isVINAllowed``) carry explicit
+alias overrides, proven non-``None`` against a captured block.
 """
 
 from datetime import datetime
 
-from pydantic import ConfigDict
+from pydantic import ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 from fleetpull.model_contract import ResponseModel
 
-__all__: list[str] = ['Device']
+__all__: list[str] = ['CustomFeatures', 'Device', 'DeviceFlags']
+
+
+class DeviceFlags(ResponseModel):
+    """The ``deviceFlags`` block: account-level capability flags.
+
+    A pure mirror of the captured block -- one ``activeFeatures`` string
+    list plus ten capability booleans; absent from two tracked GO9
+    captures and every trailer entry, so the whole block is optional on
+    ``Device`` and its columns land as nulls there. ``ratePlans`` is
+    excluded from this model's interior: observed only as an empty
+    list, its element shape is uncapturable (the same rule as the
+    top-level empty lists).
+    """
+
+    model_config = ConfigDict(alias_generator=to_camel)
+
+    active_features: list[str] | None = None
+    is_active_tracking_allowed: bool | None = None
+    is_continuous_connect_allowed: bool | None = None
+    is_engine_allowed: bool | None = None
+    is_garmin_allowed: bool | None = None
+    # The acronym-alias trap: to_camel would emit isHosAllowed /
+    # isUiAllowed / isVinAllowed, silently landing these as None under
+    # extra='ignore'; the wire capitalizes the acronyms, so the three
+    # carry explicit aliases (an explicit alias beats the generator).
+    is_hos_allowed: bool | None = Field(default=None, alias='isHOSAllowed')
+    is_iridium_allowed: bool | None = None
+    is_odometer_allowed: bool | None = None
+    is_trip_detail_allowed: bool | None = None
+    is_ui_allowed: bool | None = Field(default=None, alias='isUIAllowed')
+    is_vin_allowed: bool | None = Field(default=None, alias='isVINAllowed')
+
+
+class CustomFeatures(ResponseModel):
+    """The ``customFeatures`` block: per-account feature toggles.
+
+    Capture-limited: ``autoHos`` is the one key every tracked capture
+    carries, and the name suggests the block holds per-account keys --
+    any unknown key is absorbed by ``extra='ignore'`` today and gets
+    modeled if a capture ever shows it.
+    """
+
+    model_config = ConfigDict(alias_generator=to_camel)
+
+    auto_hos: bool | None = None
 
 
 class Device(ResponseModel):
@@ -107,6 +153,8 @@ class Device(ResponseModel):
 
     # Fleet bookkeeping.
     device_plans: list[str] | None = None
+    device_flags: DeviceFlags | None = None
+    custom_features: CustomFeatures | None = None
     time_zone_id: str | None = None
     work_time: str | None = None
     auto_hos: str | None = None

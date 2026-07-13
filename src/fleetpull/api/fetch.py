@@ -192,9 +192,10 @@ def fetch(
             clock=SystemClock(),
         ),
     )
-    # The driver owns the chain (spec build, page loop) and the verified
-    # harvest when the definition declares a completeness check -- fetch
-    # must not offer a weaker read of a guarded endpoint than sync does.
+    # The driver owns the chain (spec build, page loop) and, when the
+    # definition declares a completeness check, the post-stream count
+    # verification -- fetch must not offer a weaker read of a guarded
+    # endpoint than sync does.
     with TransportClient(profile, runtime) as client:
         raw_records: list[JsonObject] = [
             record
