@@ -981,21 +981,25 @@ observed-behaviors table below); the build prompts implement them.
    uncursored `Get` unsound for any cappable entity, so `SinglePageDecoder`
    is ruled out for capped `Get` entities and a seek-paging Get decoder
    joins the PageDecoder family.
-2. **Completeness guard: `GetCountOf` beside every Device harvest.** A
-   count/harvest mismatch triggers exactly one refetch — absorbing
-   mid-harvest churn without inventing a tolerance number — and a persistent
-   mismatch raises `ProviderResponseError` naming both counts. Rationale:
+2. **Completeness guard: `GetCountOf` beside every Device harvest.** The
+   harvest streams unbuffered while a running record count accumulates;
+   after the terminal page one `GetCountOf` fires through the same client
+   and quota scope, and a mismatch raises `ProviderResponseError` naming
+   both counts — the run fails loudly, staging is discarded so the prior
+   parquet stands, and the next scheduled run is the retry. Rationale:
    silent truncation must be loud; the same doctrine family as the
    empty-listing reconcile guard (§13). Placement, settled at the build:
    the guard is driver-layer, declared on the definition
    (`EndpointDefinition.completeness_check`, an optional narrow Protocol
    whose GeoTab implementation is `GetCountOfCheck`) and honored by the
    single-fetch driver — the runner, the entry, and every orchestrator
-   module stay provider-agnostic. Snapshot-scoped by construction: the
-   verified harvest buffers the whole run before comparing, which is sound
-   exactly because a snapshot result is bounded by entity count (§10's
-   boundedness; the streaming law governs fan-out channels, which can never
-   declare a check — the pairing is rejected at definition construction).
+   module stay provider-agnostic. Snapshot-scoped by construction: an
+   expected-count comparison is meaningful only against a complete listing
+   — a windowed harvest is deliberately partial and a fan-out run is
+   per-member, so either pairing is rejected at definition construction.
+   (Amended 2026-07-13: the original refetch-once and its buffering were
+   dropped — a mismatch fails the run and the next scheduled run is the
+   retry; exact-match with no tolerance number is unchanged.)
 3. **Rate posture: self-limit at the header-advertised per-class budgets**,
    regardless of whether GeoTab is enforcing yet; GeoTab's rate-limit config
    defaults cite the captured headers, and no ramp probe is needed — the
