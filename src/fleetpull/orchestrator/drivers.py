@@ -112,12 +112,12 @@ class SingleRequestDriver:
     page as its own batch -- no per-chain collection, so the run executor writes
     (and the partitioned writer stages to disk) one page at a time.
 
-    The one exception to the no-collection rule is a declared
-    ``completeness_check``: that chain is a verified harvest -- buffered whole,
-    compared against the provider-reported count, refetched once on mismatch --
-    which is sound exactly because the declaration is construction-restricted to
-    snapshots, whose results are bounded by entity count (DESIGN section 10's
-    boundedness; the streaming law governs fan-out channels, not this).
+    A declared ``completeness_check`` changes none of that streaming: the pages
+    flow exactly as on the undeclared path while a running record count
+    accumulates, and after the terminal page the provider-reported expected
+    count is fetched once and compared -- a mismatch fails the run loudly (the
+    next scheduled run is the retry; probe-settled decision 2 as amended
+    2026-07-13).
     """
 
     def record_batches(
@@ -136,34 +136,37 @@ class SingleRequestDriver:
         Yields:
             One ``FetchedPage`` per page, in order. ``fetch_pages`` always drives
             at least one page, so at least one (possibly empty) batch yields.
-            With a declared ``completeness_check`` the pages are the verified
-            harvest's, yielded only after the count check passes.
+            A declared ``completeness_check`` leaves the stream untouched; the
+            count is proven after the terminal page.
 
         Raises:
             ProviderResponseError: A declared completeness check mismatched the
-                harvest twice (from the verified harvest).
+                harvest (raised after the final yield, before the consumer can
+                treat the run as complete).
         """
         check = definition.completeness_check
         if check is None:
             yield from _stream_chain_pages(definition, client, resume, {})
             return
-        yield from _verified_chain_pages(definition, client, resume, check)
+        yield from _stream_then_verify_pages(definition, client, resume, check)
 
 
-def _verified_chain_pages(
+def _stream_then_verify_pages(
     definition: EndpointDefinition[ResponseModel],
     client: TransportClient,
     resume: ResumeValue,
     check: CompletenessCheck,
 ) -> Iterator[FetchedPage]:
-    """Drive the chain buffered, prove the count, then yield the pages.
+    """Stream the chain unbuffered, then prove the count after the last page.
 
-    The verified harvest (probe-settled decision 2): buffer the full page
-    sequence, fire the declared count check through the same client and quota
-    scope, and compare. One refetch absorbs mid-harvest churn without inventing
-    a tolerance number; a second mismatch is a provider-contract failure raised
-    with both counts. Each round fires its own check, so the comparison is
-    always against a count taken beside that round's harvest.
+    The completeness guard (probe-settled decision 2, amended 2026-07-13):
+    pages yield exactly as the unguarded chain's do while a running record
+    count accumulates; after the terminal page the declared check fires once
+    through the same client and quota scope, and a mismatch raises with both
+    counts -- exact match, no tolerance number, no refetch. The raise happens
+    after the final yield, so it reaches the consuming runner before it can
+    treat the run as complete: staging is discarded, the ledger row fails, and
+    the prior parquet stands. The next scheduled run is the retry.
 
     Args:
         definition: The endpoint being run (its ``quota_scope`` prices the
@@ -175,37 +178,25 @@ def _verified_chain_pages(
         check: The endpoint's declared completeness check.
 
     Yields:
-        The verified rounds' pages, in order, only after its count matched.
+        Every fetched page, in order, unbuffered.
 
     Raises:
-        ProviderResponseError: Expected and harvested counts disagreed on both
-            rounds; the detail names both counts of the final round.
+        ProviderResponseError: Expected and harvested counts disagree; the
+            detail names both.
     """
-    expected_count = 0
     harvested_count = 0
-    for round_number in (1, 2):
-        pages = list(_stream_chain_pages(definition, client, resume, {}))
-        harvested_count = sum(len(page.records) for page in pages)
-        expected_count = check.expected_count(client, definition.quota_scope.value)
-        if harvested_count == expected_count:
-            yield from pages
-            return
-        logger.warning(
-            'completeness mismatch on %s.%s (round %d): provider expects %d '
-            'records, harvest returned %d.',
-            definition.provider.value,
-            definition.name,
-            round_number,
-            expected_count,
-            harvested_count,
+    for page in _stream_chain_pages(definition, client, resume, {}):
+        harvested_count += len(page.records)
+        yield page
+    expected_count = check.expected_count(client, definition.quota_scope.value)
+    if harvested_count != expected_count:
+        raise ProviderResponseError(
+            detail=(
+                f'{definition.provider.value}.{definition.name}: completeness '
+                f'check failed -- provider expects {expected_count} records, '
+                f'harvest returned {harvested_count}'
+            )
         )
-    raise ProviderResponseError(
-        detail=(
-            f'{definition.provider.value}.{definition.name}: completeness '
-            f'check failed after one refetch -- provider expects '
-            f'{expected_count} records, harvest returned {harvested_count}'
-        )
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,7 +219,8 @@ class FanOutRequestDriver:
 
     ``completeness_check`` is deliberately not consulted: a fan-out definition
     can never declare one (``EndpointDefinition`` rejects the pairing at
-    construction), so this driver never buffers a run to verify it.
+    construction) -- a per-member fan-out run is not the complete listing an
+    expected-count comparison would be meaningful against.
 
     Attributes:
         members: The fan-out keys to issue one chain each for, in order.

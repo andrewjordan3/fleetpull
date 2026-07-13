@@ -189,6 +189,11 @@ tested) and `GetCountOfCheck` behind the new
 single-fetch driver (both verbs). G11 held as stated: `SnapshotWriter`
 carried the writes with no gap.
 
+**Update (2026-07-13):** the guard's refetch-on-mismatch described above was
+dropped by DESIGN decision 2's amendment (stream-then-verify; a mismatch
+fails the run and the next scheduled run is the retry) — the mechanism and
+`GetCountOf` truth instrument are unchanged.
+
 ### 2.2 Feed path (`GetFeed`) — additional
 
 | # | Gap | Size | Notes |
