@@ -72,15 +72,21 @@ class _StubClient(TransportClient):
 
 
 class _SequencedClient(TransportClient):
-    """Serves a distinct page list per ``fetch_pages`` call, in order."""
+    """Serves a distinct page list per ``fetch_pages`` call, in order.
+
+    Counts calls at call time (not first iteration), so a test can assert
+    exactly how many chains were requested.
+    """
 
     def __init__(self, pages_per_call: list[list[FetchedPage]]) -> None:
         self._calls = iter(pages_per_call)
+        self.fetch_pages_calls = 0
 
     def fetch_pages(
         self, spec: RequestSpec, page_decoder: PageDecoder, quota_scope: str
     ) -> Iterator[FetchedPage]:
-        yield from next(self._calls)
+        self.fetch_pages_calls += 1
+        return iter(next(self._calls))
 
 
 class _RecordingSpecBuilder:
@@ -248,9 +254,10 @@ class _ScriptedCheck:
 
 
 class TestVerifiedHarvest:
-    """The single-fetch driver's completeness guard (plant-and-fire)."""
+    """The single-fetch driver's completeness guard (plant-and-fire):
+    stream-then-verify, one harvest, no refetch."""
 
-    def test_match_on_first_try_passes_records_through_untouched(self) -> None:
+    def test_match_passes_records_through_untouched(self) -> None:
         page_a: list[JsonObject] = [{'id': 1, 'name': 'a'}, {'id': 2, 'name': 'b'}]
         page_b: list[JsonObject] = [{'id': 3, 'name': 'c'}]
         check = _ScriptedCheck([3])
@@ -261,40 +268,29 @@ class TestVerifiedHarvest:
         assert check.scopes_seen == [QuotaScope.MOTIVE.value]
         assert [page.records for page in batches] == [page_a, page_b]
 
-    def test_mismatch_then_match_yields_the_second_harvest(self) -> None:
-        first_harvest = [_page([{'id': 1, 'name': 'a'}])]
-        second_harvest = [
-            _page([{'id': 1, 'name': 'a'}]),
-            _page([{'id': 2, 'name': 'b'}]),
-        ]
-        check = _ScriptedCheck([2, 2])
+    def test_mismatch_raises_after_streaming_naming_both_counts(self) -> None:
+        harvest = [_page([{'id': 1, 'name': 'a'}]), _page([{'id': 2, 'name': 'b'}])]
+        never_requested = [_page([{'id': 9, 'name': 'z'}])]
+        check = _ScriptedCheck([5])
         definition = _definition(_static_builder(), completeness_check=check)
-        client = _SequencedClient([first_harvest, second_harvest])
-        batches = list(SingleRequestDriver().record_batches(definition, client, None))
-        # Exactly one refetch (two checks fired), and the SECOND harvest's
-        # records are what flow downstream.
-        assert len(check.scopes_seen) == 2
-        assert [page.records for page in batches] == [
+        client = _SequencedClient([harvest, never_requested])
+        streamed: list[FetchedPage] = []
+        batches = SingleRequestDriver().record_batches(definition, client, None)
+        # extend() keeps the pages appended before the raise, proving the
+        # stream flowed; the raise lands only after the terminal page.
+        with pytest.raises(ProviderResponseError) as raised:
+            streamed.extend(batches)
+        message = str(raised.value)
+        assert '5' in message  # the expected count
+        assert '2' in message  # the harvested count
+        # Every page streamed before the raise -- nothing was buffered back.
+        assert [page.records for page in streamed] == [
             [{'id': 1, 'name': 'a'}],
             [{'id': 2, 'name': 'b'}],
         ]
-
-    def test_mismatch_twice_raises_naming_both_counts(self) -> None:
-        harvests = [
-            [_page([{'id': 1, 'name': 'a'}])],
-            [_page([{'id': 2, 'name': 'b'}])],
-            [_page([{'id': 3, 'name': 'c'}])],  # must never be requested
-        ]
-        check = _ScriptedCheck([5, 5, 5])
-        definition = _definition(_static_builder(), completeness_check=check)
-        client = _SequencedClient(harvests)
-        with pytest.raises(ProviderResponseError) as raised:
-            list(SingleRequestDriver().record_batches(definition, client, None))
-        message = str(raised.value)
-        assert '5' in message  # the expected count
-        assert '1' in message  # the harvested count
-        # No third harvest, no third check: two rounds is the whole budget.
-        assert len(check.scopes_seen) == 2
+        # Exactly one harvest and one check: a second request is the failure.
+        assert client.fetch_pages_calls == 1
+        assert check.scopes_seen == [QuotaScope.MOTIVE.value]
 
     def test_no_check_declared_means_no_buffering_and_no_check_calls(self) -> None:
         # The undeclared path is the pre-guard streaming behavior, untouched.

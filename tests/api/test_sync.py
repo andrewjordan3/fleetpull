@@ -129,8 +129,8 @@ class _GeotabRpcHandler:
     """The GeoTab JSON-RPC route for sync runs.
 
     Serves the captured Authenticate success, the committed seek pages
-    (cycling per three-page harvest, so the completeness guard's refetch
-    round is servable), and a ``GetCountOf`` count the test scripts.
+    (cycling every three ``Get`` calls, so any number of harvests is
+    servable), and a ``GetCountOf`` count the test scripts.
     """
 
     def __init__(self, count: int = 6) -> None:
@@ -477,10 +477,10 @@ class TestGeotabRun:
         assert 'devicez' in message
         assert 'devices' in message
 
-    def test_persistent_count_mismatch_fails_without_leaking_the_password(
+    def test_count_mismatch_fails_the_run_without_leaking_the_password(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # A count that never matches: one refetch, then the guard raises;
+        # A mismatched count fails the run loudly after the one harvest;
         # the failure aggregates and no repr anywhere carries the password.
         _install_transport(monkeypatch, _GeotabRpcHandler(count=999))
         with pytest.raises(SyncFailuresError) as raised:

@@ -234,8 +234,8 @@ class TestEndpointDefinitionValidation:
             _make_endpoint(FeedMode(), completeness_check=_StubCompletenessCheck())
 
     def test_fan_out_with_completeness_check_raises(self) -> None:
-        # The wiring-error rejection: the verified harvest buffers a whole
-        # run, which the fan-out driver's streaming law forbids.
+        # The wiring-error rejection: a fan-out run is per-member, never
+        # the complete listing an expected count describes.
         with pytest.raises(ValueError, match='requires fan_out=None'):
             _make_endpoint(
                 SnapshotMode(),

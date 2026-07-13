@@ -262,12 +262,13 @@ class EndpointDefinition[ModelT: ResponseModel]:
             a ``RosterKey`` -- the source lives in the registry. Read by the
             orchestrator; not validated here.
         completeness_check: The provider-reported-count truth check the
-            single-fetch driver fires beside the harvest (``None`` for
-            endpoints with no silent cap to guard against). Snapshot-mode,
-            ``fan_out=None`` endpoints only -- the verified harvest buffers
-            the run, which is sound exactly because a snapshot is bounded
-            by entity count; any other declaration is a wiring error
-            rejected at construction.
+            single-fetch driver fires after the harvest streams (``None``
+            for endpoints with no silent cap to guard against).
+            Snapshot-mode, ``fan_out=None`` endpoints only -- an
+            expected-count comparison is meaningful only against a complete
+            listing, which a windowed (partial) or fan-out (per-member) run
+            never is; any other declaration is a wiring error rejected at
+            construction.
     """
 
     provider: Provider
@@ -360,12 +361,14 @@ class EndpointDefinition[ModelT: ResponseModel]:
     def _validate_completeness_check(self) -> None:
         """Reject a completeness check declared outside snapshot single-fetch.
 
-        The verified harvest buffers the whole run before comparing, which is
-        sound only because a snapshot result is bounded by entity count
-        (DESIGN section 10's boundedness); a windowed run is not, and a
-        fan-out run streams O(pool size) by the streaming law. Either
-        declaration is a wiring bug, rejected here at the declaration seam so
-        the driver layer never needs to reason about it.
+        An expected-count comparison is meaningful only against a complete
+        listing: a snapshot's single chain fetches the entity's full current
+        state, so the provider's count and the harvest describe the same
+        population. A windowed harvest is deliberately partial (one window of
+        an unbounded history) and a fan-out run is per-member -- on either,
+        the comparison would be counting different things. Both declarations
+        are wiring bugs, rejected here at the declaration seam so the driver
+        layer never needs to reason about it.
 
         Raises:
             ValueError: The check is declared on a non-snapshot or fan-out
@@ -379,14 +382,15 @@ class EndpointDefinition[ModelT: ResponseModel]:
         if not isinstance(self.sync_mode, SnapshotMode):
             raise ValueError(
                 f'{self.provider.value}.{self.name}: a completeness_check '
-                f'requires SnapshotMode -- the verified harvest buffers the '
-                f'run, which only a snapshot bounds.'
+                f'requires SnapshotMode -- an expected-count comparison is '
+                f'meaningful only against a complete listing, and a windowed '
+                f'harvest is deliberately partial.'
             )
         if self.fan_out is not None:
             raise ValueError(
                 f'{self.provider.value}.{self.name}: a completeness_check '
-                f'requires fan_out=None -- the fan-out driver streams and '
-                f'never buffers a whole run to verify.'
+                f'requires fan_out=None -- a fan-out run is per-member, not '
+                f'the complete listing an expected count describes.'
             )
 
     def _require_date_like_field(self, column: str) -> None:
