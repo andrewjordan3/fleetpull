@@ -24,6 +24,11 @@ from tests.geotab_devices_capture import (
     SEEK_PAGE_2_RESPONSE,
     SEEK_TERMINAL_RESPONSE,
 )
+from tests.geotab_trips_capture import (
+    TRIP_SEEK_PAGE_1_REQUEST,
+    TRIP_SEEK_PAGE_1_RESPONSE,
+    TRIP_SEEK_PAGE_2_REQUEST,
+)
 
 BOOTSTRAP_SEARCH: dict[str, JsonValue] = {'fromDate': '2026-06-01T00:00:00Z'}
 
@@ -354,3 +359,32 @@ class TestGeotabGetPageDecoder:
         )
         with pytest.raises(ValueError, match='GeoTab Get request'):
             GeotabGetPageDecoder().decode_page(spec, SEEK_TERMINAL_RESPONSE)
+
+
+def test_windowed_search_survives_the_seek_advance() -> None:
+    # The load-bearing trips behavior, pinned against the captured pair
+    # (2026-07-13): the seek rewrite must never drop or mutate the window
+    # filter -- the advance spreads the sent params, so search rides
+    # every page while sort.offset seeks.
+    sent = RequestSpec(
+        method=HttpMethod.POST,
+        url='https://resolved.example.geotab.com/apiv1',
+        json_body=TRIP_SEEK_PAGE_1_REQUEST,
+    )
+    decoded = GeotabGetPageDecoder().decode_page(sent, TRIP_SEEK_PAGE_1_RESPONSE)
+    assert decoded.advance.next_spec is not None
+    assert decoded.advance.next_spec.json_body is not None
+    next_params = decoded.advance.next_spec.json_body['params']
+    assert isinstance(next_params, dict)
+    # The window filter is byte-identical to the sent one: both dates intact.
+    assert next_params['search'] == {
+        'fromDate': '2026-07-06T00:00:00Z',
+        'toDate': '2026-07-13T00:00:00Z',
+    }
+    next_sort = next_params['sort']
+    assert isinstance(next_sort, dict)
+    assert next_sort['offset'] == 'bF7C05'
+    # The advance reproduces the captured page-2 request's sort exactly.
+    captured_page_2_params = TRIP_SEEK_PAGE_2_REQUEST['params']
+    assert isinstance(captured_page_2_params, dict)
+    assert next_sort == captured_page_2_params['sort']
