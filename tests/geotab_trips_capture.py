@@ -1,33 +1,26 @@
-"""The committed GeoTab trips capture set (2026-07-13 probe session).
+"""Deterministic GeoTab Trip fixtures modeled on provider wire shapes.
 
-The windowed seek-walk boundary pair (six Trip records), the
-day-prefixed-TimeSpan record, and the zero-distance degenerate record --
-all Captured from live GeoTab and scrubbed through the established
-mapping, per the Data Hygiene convention (invented-``b`` ids -- the
-invented values, e.g. ``b6`` -> ``bF7C1C``; version tokens
-ordinally remapped preserving order; coordinates synthetic distinct
-pairs; timestamps, durations, distances, odometer, and engine-hours
-values kept VERBATIM -- they carry the arithmetic properties under
-test). The capture used ``resultsLimit: 3`` where production uses 5000.
-Load-bearing properties preserved: ids strictly ascending within and
-across the page pair, page 2's request offset equal to page 1's last
-record id, versions ascending in id order, every paging-record start
-inside ``[2026-07-06, 2026-07-13)``, both driver variants present, and
-``bF7C1C`` as the device on both sides of the page boundary.
+The windowed seek-walk boundary pair, the day-prefixed-TimeSpan record,
+and the zero-distance degenerate record use purpose-built test values.
+They preserve the structural, pagination, parsing, and arithmetic
+properties exercised by the tests: strictly ascending ids and versions,
+page 2's request offset equal to page 1's last record id, starts inside
+``[2026-07-06, 2026-07-13)``, both driver wire variants, ``bF7C1C`` on both
+sides of the page boundary, day-prefixed TimeSpan parsing, seven-digit
+fractional TimeSpan parsing, and interval arithmetic.
 
 Shared by the Trip model tests, the seek-decoder search-survival
-regression, and any future e2e consumers -- a multi-consumer capture
-set, so it lives in one helper module under ``tests/`` (the
-``geotab_devices_capture`` precedent). The JSON literals are the
-captures; the parsed objects beside them are what tests consume.
+regression, and any future e2e consumers -- a multi-consumer fixture set,
+so it lives in one helper module under ``tests/``. The JSON literals are
+the designed wire-shaped fixtures; the parsed objects beside them are
+what tests consume.
 """
 
 import json
 
 from fleetpull.vocabulary import JsonObject, JsonValue
 
-# Captured: windowed seek walk page 1 request (2026-07-13,
-# resultsLimit 3 -- the walk's parameter, not the mechanism;
+# Fixture: windowed seek walk page 1 request (resultsLimit 3 -- the walk's parameter, not the mechanism;
 # production uses 5000). The spec-builder shape: search fromDate/
 # toDate beside sort-by-id with the EXPLICIT null offset;
 # credentials injected by the session strategy.
@@ -58,7 +51,7 @@ TRIP_SEEK_PAGE_1_REQUEST: dict[str, JsonValue] = json.loads(
     TRIP_SEEK_PAGE_1_REQUEST_JSON
 )
 
-# Captured: windowed seek walk page 2 request -- identical but for
+# Fixture: windowed seek walk page 2 request -- identical but for
 # sort.offset carrying page 1's last record id; search survives the
 # advance untouched (the load-bearing seek-rewrite property).
 TRIP_SEEK_PAGE_2_REQUEST_JSON: str = r"""
@@ -88,7 +81,7 @@ TRIP_SEEK_PAGE_2_REQUEST: dict[str, JsonValue] = json.loads(
     TRIP_SEEK_PAGE_2_REQUEST_JSON
 )
 
-# Captured: page 1 response -- three Trips on two devices; both the
+# Fixture: page 1 response -- three Trips on two devices; both the
 # bare UnknownDriverId sentinel and the object-form driver appear.
 # The second record (bF7C08) is TRIP_FULL_RECORD: it carries
 # every modeled field including the object-form driver.
@@ -96,32 +89,32 @@ TRIP_SEEK_PAGE_1_RESPONSE_JSON: str = r"""
 {
     "result": [
         {
-            "afterHoursDistance": 0.04897735,
-            "afterHoursDrivingDuration": "00:04:43.8600000",
+            "afterHoursDistance": 1.0,
+            "afterHoursDrivingDuration": "00:05:00",
             "afterHoursEnd": true,
             "afterHoursStart": true,
-            "afterHoursStopDuration": "00:00:45",
-            "averageSpeed": 0.62114584,
-            "distance": 0.04897735,
-            "drivingDuration": "00:04:43.8600000",
-            "engineHours": 57808048.863,
+            "afterHoursStopDuration": "00:02:00",
+            "averageSpeed": 12.0,
+            "distance": 1.0,
+            "drivingDuration": "00:05:00",
+            "engineHours": 36000.0,
             "idlingDuration": "00:00:00",
             "isSeatBeltOff": false,
-            "maximumSpeed": 5,
-            "nextTripStart": "2026-07-06T05:48:12.000Z",
-            "odometer": 1182036289.7453485,
+            "maximumSpeed": 24,
+            "nextTripStart": "2026-07-06T08:07:00.000Z",
+            "odometer": 1000000.0,
             "speedRange1": 0,
             "speedRange1Duration": "00:00:00",
             "speedRange2": 0,
             "speedRange2Duration": "00:00:00",
             "speedRange3": 0,
             "speedRange3Duration": "00:00:00",
-            "start": "2026-07-06T05:42:43.140Z",
-            "stop": "2026-07-06T05:47:27.000Z",
-            "stopDuration": "00:00:45",
+            "start": "2026-07-06T08:00:00.000Z",
+            "stop": "2026-07-06T08:05:00.000Z",
+            "stopDuration": "00:02:00",
             "stopPoint": {
-                "x": -100.0001,
-                "y": 40.0001
+                "x": -100.1,
+                "y": 40.1
             },
             "workDistance": 0,
             "workDrivingDuration": "00:00:00",
@@ -134,32 +127,32 @@ TRIP_SEEK_PAGE_1_RESPONSE_JSON: str = r"""
             "id": "bF7C03"
         },
         {
-            "afterHoursDistance": 0.119007945,
-            "afterHoursDrivingDuration": "00:01:22",
+            "afterHoursDistance": 2.5,
+            "afterHoursDrivingDuration": "00:10:00",
             "afterHoursEnd": true,
             "afterHoursStart": true,
-            "afterHoursStopDuration": "00:08:07",
-            "averageSpeed": 5.224739,
-            "distance": 0.119007945,
-            "drivingDuration": "00:01:22",
-            "engineHours": 57808617.863,
-            "idlingDuration": "00:08:07",
+            "afterHoursStopDuration": "00:05:00",
+            "averageSpeed": 15.0,
+            "distance": 2.5,
+            "drivingDuration": "00:10:00",
+            "engineHours": 36600.0,
+            "idlingDuration": "00:05:00",
             "isSeatBeltOff": false,
-            "maximumSpeed": 10,
-            "nextTripStart": "2026-07-06T05:57:41.000Z",
-            "odometer": 1182036408.7532907,
+            "maximumSpeed": 32,
+            "nextTripStart": "2026-07-06T08:22:00.000Z",
+            "odometer": 1002500.0,
             "speedRange1": 0,
             "speedRange1Duration": "00:00:00",
             "speedRange2": 0,
             "speedRange2Duration": "00:00:00",
             "speedRange3": 0,
             "speedRange3Duration": "00:00:00",
-            "start": "2026-07-06T05:48:12.000Z",
-            "stop": "2026-07-06T05:49:34.000Z",
-            "stopDuration": "00:08:07",
+            "start": "2026-07-06T08:07:00.000Z",
+            "stop": "2026-07-06T08:17:00.000Z",
+            "stopDuration": "00:05:00",
             "stopPoint": {
-                "x": -100.0002,
-                "y": 40.0002
+                "x": -100.2,
+                "y": 40.2
             },
             "workDistance": 0,
             "workDrivingDuration": "00:00:00",
@@ -175,32 +168,32 @@ TRIP_SEEK_PAGE_1_RESPONSE_JSON: str = r"""
             "id": "bF7C08"
         },
         {
-            "afterHoursDistance": 0.07463475,
-            "afterHoursDrivingDuration": "00:05:22.6900000",
+            "afterHoursDistance": 0.5,
+            "afterHoursDrivingDuration": "00:03:30.0000000",
             "afterHoursEnd": true,
             "afterHoursStart": true,
-            "afterHoursStopDuration": "00:01:39",
-            "averageSpeed": 0.8326416,
-            "distance": 0.07463475,
-            "drivingDuration": "00:05:22.6900000",
-            "engineHours": 37553461.71,
+            "afterHoursStopDuration": "00:00:30.0000000",
+            "averageSpeed": 8.571429,
+            "distance": 0.5,
+            "drivingDuration": "00:03:30.0000000",
+            "engineHours": 72000.123,
             "idlingDuration": "00:00:00",
             "isSeatBeltOff": false,
-            "maximumSpeed": 3,
-            "nextTripStart": "2026-07-06T07:32:43.000Z",
-            "odometer": 677495874.8907506,
+            "maximumSpeed": 18,
+            "nextTripStart": "2026-07-06T09:04:00.123Z",
+            "odometer": 2000000.0,
             "speedRange1": 0,
             "speedRange1Duration": "00:00:00",
             "speedRange2": 0,
             "speedRange2Duration": "00:00:00",
             "speedRange3": 0,
             "speedRange3Duration": "00:00:00",
-            "start": "2026-07-06T07:25:41.310Z",
-            "stop": "2026-07-06T07:31:04.000Z",
-            "stopDuration": "00:01:39",
+            "start": "2026-07-06T09:00:00.123Z",
+            "stop": "2026-07-06T09:03:30.123Z",
+            "stopDuration": "00:00:30.0000000",
             "stopPoint": {
-                "x": -100.0003,
-                "y": 40.0003
+                "x": -100.3,
+                "y": 40.3
             },
             "workDistance": 0,
             "workDrivingDuration": "00:00:00",
@@ -220,38 +213,38 @@ TRIP_SEEK_PAGE_1_RESPONSE: dict[str, JsonValue] = json.loads(
     TRIP_SEEK_PAGE_1_RESPONSE_JSON
 )
 
-# Captured: page 2 response -- ids continue strictly ascending across
+# Fixture: page 2 response -- ids continue strictly ascending across
 # the boundary; b106 appears as the device on both sides of it.
 TRIP_SEEK_PAGE_2_RESPONSE_JSON: str = r"""
 {
     "result": [
         {
-            "afterHoursDistance": 0.06195259,
-            "afterHoursDrivingDuration": "00:04:35",
+            "afterHoursDistance": 1.5,
+            "afterHoursDrivingDuration": "00:06:00",
             "afterHoursEnd": true,
             "afterHoursStart": true,
-            "afterHoursStopDuration": "00:06:34",
-            "averageSpeed": 0.8110157,
-            "distance": 0.06195259,
-            "drivingDuration": "00:04:35",
-            "engineHours": 37554130.71,
-            "idlingDuration": "00:06:34",
+            "afterHoursStopDuration": "00:02:30",
+            "averageSpeed": 15.0,
+            "distance": 1.5,
+            "drivingDuration": "00:06:00",
+            "engineHours": 72360.123,
+            "idlingDuration": "00:02:30",
             "isSeatBeltOff": false,
-            "maximumSpeed": 4,
-            "nextTripStart": "2026-07-06T07:43:52.000Z",
-            "odometer": 677495936.8433416,
+            "maximumSpeed": 30,
+            "nextTripStart": "2026-07-06T09:12:30.123Z",
+            "odometer": 2001500.0,
             "speedRange1": 0,
             "speedRange1Duration": "00:00:00",
             "speedRange2": 0,
             "speedRange2Duration": "00:00:00",
             "speedRange3": 0,
             "speedRange3Duration": "00:00:00",
-            "start": "2026-07-06T07:32:43.000Z",
-            "stop": "2026-07-06T07:37:18.000Z",
-            "stopDuration": "00:06:34",
+            "start": "2026-07-06T09:04:00.123Z",
+            "stop": "2026-07-06T09:10:00.123Z",
+            "stopDuration": "00:02:30",
             "stopPoint": {
-                "x": -100.0004,
-                "y": 40.0004
+                "x": -100.4,
+                "y": 40.4
             },
             "workDistance": 0,
             "workDrivingDuration": "00:00:00",
@@ -267,32 +260,32 @@ TRIP_SEEK_PAGE_2_RESPONSE_JSON: str = r"""
             "id": "bF7C07"
         },
         {
-            "afterHoursDistance": 5.4301457,
-            "afterHoursDrivingDuration": "00:16:56",
+            "afterHoursDistance": 10.0,
+            "afterHoursDrivingDuration": "00:20:00",
             "afterHoursEnd": true,
             "afterHoursStart": true,
-            "afterHoursStopDuration": "00:04:00.1300000",
-            "averageSpeed": 19.240673,
-            "distance": 5.4301457,
-            "drivingDuration": "00:16:56",
-            "engineHours": 37555200.003,
-            "idlingDuration": "00:00:18",
+            "afterHoursStopDuration": "00:05:30.5000000",
+            "averageSpeed": 30.0,
+            "distance": 10.0,
+            "drivingDuration": "00:20:00",
+            "engineHours": 73560.0,
+            "idlingDuration": "00:00:30",
             "isSeatBeltOff": false,
-            "maximumSpeed": 61,
-            "nextTripStart": "2026-07-06T08:04:48.130Z",
-            "odometer": 677501400.2560003,
+            "maximumSpeed": 55,
+            "nextTripStart": "2026-07-06T10:25:30.500Z",
+            "odometer": 2011500.0,
             "speedRange1": 0,
             "speedRange1Duration": "00:00:00",
             "speedRange2": 0,
             "speedRange2Duration": "00:00:00",
             "speedRange3": 0,
             "speedRange3Duration": "00:00:00",
-            "start": "2026-07-06T07:43:52.000Z",
-            "stop": "2026-07-06T08:00:48.000Z",
-            "stopDuration": "00:04:00.1300000",
+            "start": "2026-07-06T10:00:00.000Z",
+            "stop": "2026-07-06T10:20:00.000Z",
+            "stopDuration": "00:05:30.5000000",
             "stopPoint": {
-                "x": -100.0005,
-                "y": 40.0005
+                "x": -100.5,
+                "y": 40.5
             },
             "workDistance": 0,
             "workDrivingDuration": "00:00:00",
@@ -308,32 +301,32 @@ TRIP_SEEK_PAGE_2_RESPONSE_JSON: str = r"""
             "id": "bF7C04"
         },
         {
-            "afterHoursDistance": 0.018614754,
+            "afterHoursDistance": 0.25,
             "afterHoursDrivingDuration": "00:00:46.5030000",
             "afterHoursEnd": true,
             "afterHoursStart": true,
             "afterHoursStopDuration": "00:00:14.9700000",
-            "averageSpeed": 1.4410493,
-            "distance": 0.018614754,
+            "averageSpeed": 19.354,
+            "distance": 0.25,
             "drivingDuration": "00:00:46.5030000",
-            "engineHours": 21673141.477,
+            "engineHours": 108000.503,
             "idlingDuration": "00:00:00",
             "isSeatBeltOff": false,
-            "maximumSpeed": 0,
-            "nextTripStart": "2026-07-06T08:11:50.000Z",
-            "odometer": 413906118.59677917,
+            "maximumSpeed": 20,
+            "nextTripStart": "2026-07-06T10:31:01.473Z",
+            "odometer": 3000000.25,
             "speedRange1": 0,
             "speedRange1Duration": "00:00:00",
             "speedRange2": 0,
             "speedRange2Duration": "00:00:00",
             "speedRange3": 0,
             "speedRange3Duration": "00:00:00",
-            "start": "2026-07-06T08:10:48.527Z",
-            "stop": "2026-07-06T08:11:35.030Z",
+            "start": "2026-07-06T10:30:00.000Z",
+            "stop": "2026-07-06T10:30:46.503Z",
             "stopDuration": "00:00:14.9700000",
             "stopPoint": {
-                "x": -100.0006,
-                "y": 40.0006
+                "x": -100.6,
+                "y": 40.6
             },
             "workDistance": 0,
             "workDrivingDuration": "00:00:00",
@@ -353,8 +346,8 @@ TRIP_SEEK_PAGE_2_RESPONSE: dict[str, JsonValue] = json.loads(
     TRIP_SEEK_PAGE_2_RESPONSE_JSON
 )
 
-# Captured: the day-prefixed TimeSpan shape -- its stop window spans
-# the July 4 holiday weekend (stopDuration "4.16:41:16"), and the
+# Fixture: the day-prefixed TimeSpan shape -- its stop window spans
+# multiple days (stopDuration "4.16:41:16"), and the
 # work/after-hours split sums to it exactly.
 TRIP_DAY_FORMAT_RECORD_JSON: str = r"""
 {
@@ -363,29 +356,29 @@ TRIP_DAY_FORMAT_RECORD_JSON: str = r"""
     "afterHoursEnd": false,
     "afterHoursStart": false,
     "afterHoursStopDuration": "3.19:36:59",
-    "averageSpeed": 2.6459758,
-    "distance": 0.17272343,
-    "drivingDuration": "00:03:55",
-    "engineHours": 40103395,
-    "idlingDuration": "00:08:36",
+    "averageSpeed": 12.0,
+    "distance": 1.0,
+    "drivingDuration": "00:05:00",
+    "engineHours": 144000.0,
+    "idlingDuration": "00:10:00",
     "isSeatBeltOff": false,
-    "maximumSpeed": 7,
-    "nextTripStart": "2026-07-06T10:36:59.000Z",
-    "odometer": 717726000,
+    "maximumSpeed": 24,
+    "nextTripStart": "2026-07-06T04:46:16.000Z",
+    "odometer": 4000000.0,
     "speedRange1": 0,
     "speedRange1Duration": "00:00:00",
     "speedRange2": 0,
     "speedRange2Duration": "00:00:00",
     "speedRange3": 0,
     "speedRange3Duration": "00:00:00",
-    "start": "2026-07-01T17:51:48.000Z",
-    "stop": "2026-07-01T17:55:43.000Z",
+    "start": "2026-07-01T12:00:00.000Z",
+    "stop": "2026-07-01T12:05:00.000Z",
     "stopDuration": "4.16:41:16",
     "stopPoint": {
-        "x": -100.0007,
-        "y": 40.0007
+        "x": -100.7,
+        "y": 40.7
     },
-    "workDistance": 0.17272343,
+    "workDistance": 1.0,
     "workDrivingDuration": "00:03:55",
     "workStopDuration": "21:04:17",
     "device": {
@@ -398,7 +391,7 @@ TRIP_DAY_FORMAT_RECORD_JSON: str = r"""
 
 TRIP_DAY_FORMAT_RECORD: JsonObject = json.loads(TRIP_DAY_FORMAT_RECORD_JSON)
 
-# Captured: the zero-distance degenerate shape -- start == stop and
+# Fixture: the zero-distance degenerate shape -- start == stop and
 # NO averageSpeed key at all (absence is a shape, lands as null).
 TRIP_ZERO_DISTANCE_RECORD_JSON: str = r"""
 {
@@ -409,24 +402,24 @@ TRIP_ZERO_DISTANCE_RECORD_JSON: str = r"""
     "afterHoursStopDuration": "00:08:15",
     "distance": 0,
     "drivingDuration": "00:00:00",
-    "engineHours": 40104728,
+    "engineHours": 144600.0,
     "idlingDuration": "00:08:15",
     "isSeatBeltOff": false,
     "maximumSpeed": 0,
-    "nextTripStart": "2026-07-06T10:59:12.000Z",
-    "odometer": 717726189.9556732,
+    "nextTripStart": "2026-07-06T11:08:15.000Z",
+    "odometer": 4001000.0,
     "speedRange1": 0,
     "speedRange1Duration": "00:00:00",
     "speedRange2": 0,
     "speedRange2Duration": "00:00:00",
     "speedRange3": 0,
     "speedRange3Duration": "00:00:00",
-    "start": "2026-07-06T10:50:57.000Z",
-    "stop": "2026-07-06T10:50:57.000Z",
+    "start": "2026-07-06T11:00:00.000Z",
+    "stop": "2026-07-06T11:00:00.000Z",
     "stopDuration": "00:08:15",
     "stopPoint": {
-        "x": -100.0008,
-        "y": 40.0008
+        "x": -100.8,
+        "y": 40.8
     },
     "workDistance": 0,
     "workDrivingDuration": "00:00:00",
@@ -446,10 +439,10 @@ TRIP_ZERO_DISTANCE_RECORD: JsonObject = json.loads(TRIP_ZERO_DISTANCE_RECORD_JSO
 
 
 def _result_records(envelope: dict[str, JsonValue]) -> list[JsonObject]:
-    """Narrow a captured Get envelope's ``result`` to its record list.
+    """Narrow a fixture Get envelope's ``result`` to its record list.
 
-    The captures are known-good record lists; the asserts exist for the
-    type checker (and would fail loudly if a capture were ever edited
+    The fixtures are known-good record lists; the asserts exist for the
+    type checker (and would fail loudly if a fixture were ever edited
     into a different shape).
     """
     records = envelope['result']

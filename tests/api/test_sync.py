@@ -4,8 +4,8 @@ The integration tests run the whole real composition (state DB, stores,
 discovered registries, limiter, clients, run executor) against
 ``httpx.MockTransport`` via the transport-test seam, from a config file
 in ``tmp_path``. Wire shapes are each provider's real envelopes --
-Motive's synthetic-identifier bodies and GeoTab's committed 2026-07-09
-capture set (``tests/geotab_devices_capture.py``).
+Motive's synthetic-identifier bodies and GeoTab's deterministic
+provider-shaped fixture set (``tests/geotab_devices_capture.py``).
 """
 
 import json
@@ -128,7 +128,7 @@ def _write_geotab_config(
 class _GeotabRpcHandler:
     """The GeoTab JSON-RPC route for sync runs.
 
-    Serves the captured Authenticate success, the committed seek pages
+    Serves the deterministic Authenticate success and seek pages
     (cycling every three ``Get`` calls, so any number of harvests is
     servable), and a ``GetCountOf`` count the test scripts.
     """
