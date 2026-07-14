@@ -1,11 +1,10 @@
 """Tests for fleetpull.network.decoders.geotab.
 
-Feed fixtures upgraded to the 2026-07-09 live captures where shapes
-match (GTA-09's live half); remaining feed bodies are synthetic,
-constructed in the verified GetFeed shapes: zeroed-pattern version
-strings, scrubbed ids, real camelCase keys. The seek-paging Get tests
-run on the committed boundary capture
-(``tests/geotab_devices_capture.py``).
+GeoTab decoder fixtures model observed provider wire shapes with
+deterministic synthetic values. Bare GetFeed is cursor-at-now, token
+advance carries six-field LogRecord data, and short-page caught-up uses
+the verified GetFeed shape. Seek-paging Get tests share the deterministic
+boundary fixtures in ``tests/geotab_devices_capture.py``.
 """
 
 import json
@@ -32,9 +31,8 @@ from tests.geotab_trips_capture import (
 
 BOOTSTRAP_SEARCH: dict[str, JsonValue] = {'fromDate': '2026-06-01T00:00:00Z'}
 
-# Captured: bare GetFeed request (2026-07-09) -- no fromVersion, no
-# search: the cursor-at-now call. The token-advance request (the P5
-# advance capture, not the P4 bootstrap page) is this body plus
+# Fixture: bare GetFeed request -- no fromVersion, no
+# search: the cursor-at-now call. The token-advance request is this body plus
 # "fromVersion": "000000000014c3e0"; credentials are the session
 # strategy's injection.
 GETFEED_BARE_REQUEST_JSON: str = (
@@ -44,24 +42,23 @@ GETFEED_BARE_REQUEST_JSON: str = (
     ' "sessionId": "SyntheticSessionId000001"}}}'
 )
 
-# Captured: the bare call's response (2026-07-09) -- the
+# Fixture: the bare call response -- the
 # empty-data-with-toVersion envelope shape; toVersion surfaces even
 # when nothing streamed.
 GETFEED_EMPTY_RESPONSE_JSON: str = (
     '{"result": {"data": [], "toVersion": "000000000014c3e0"}, "jsonrpc": "2.0"}'
 )
 
-# Captured: the token-advance page (2026-07-09; the P5 advance capture,
-# not the P4 bootstrap) -- data-bearing, the six-field LogRecord shape,
-# strict advance from the bare call's toVersion.
+# Fixture: the token-advance page uses the six-field LogRecord shape
+# with strict advance from the bare call's toVersion.
 GETFEED_ADVANCE_RESPONSE_JSON: str = (
-    '{"result": {"data": [{"latitude": 40.1000001, "longitude":'
-    ' -100.1000001, "speed": 96, "dateTime": "2026-07-09T15:34:55.000Z",'
+    '{"result": {"data": [{"latitude": 40.1, "longitude":'
+    ' -100.1, "speed": 10, "dateTime": "2026-07-09T12:00:00.000Z",'
     ' "device": {"id": "b101"}, "id": "b14c3e1"}, {"latitude":'
-    ' 40.2000002, "longitude": -100.2000002, "speed": 9, "dateTime":'
-    ' "2026-07-09T15:34:56.000Z", "device": {"id": "b102"}, "id":'
-    ' "b14c3e2"}, {"latitude": 40.3000003, "longitude": -100.3000003,'
-    ' "speed": 0, "dateTime": "2026-07-09T15:34:56.000Z", "device":'
+    ' 40.2, "longitude": -100.2, "speed": 20, "dateTime":'
+    ' "2026-07-09T12:00:01.000Z", "device": {"id": "b102"}, "id":'
+    ' "b14c3e2"}, {"latitude": 40.3, "longitude": -100.3,'
+    ' "speed": 0, "dateTime": "2026-07-09T12:00:02.000Z", "device":'
     ' {"id": "b103"}, "id": "b14c3e3"}], "toVersion":'
     ' "000000000014c3e3"}, "jsonrpc": "2.0"}'
 )
@@ -102,7 +99,7 @@ class TestGeotabFeedPageDecoder:
         assert GeotabFeedPageDecoder().first_request(spec) is spec
 
     def test_advance_strips_search_and_sets_from_version(self) -> None:
-        # Body upgraded to the captured advance page; assertions unchanged.
+        # Body uses the deterministic advance page; assertions unchanged.
         decoded = GeotabFeedPageDecoder().decode_page(
             build_feed_spec(results_limit=3),
             json.loads(GETFEED_ADVANCE_RESPONSE_JSON),
@@ -120,7 +117,7 @@ class TestGeotabFeedPageDecoder:
         assert next_params['resultsLimit'] == 3
 
     def test_full_page_continues(self) -> None:
-        # Body upgraded to the captured advance page; assertions unchanged.
+        # Body uses the deterministic advance page; assertions unchanged.
         decoded = GeotabFeedPageDecoder().decode_page(
             build_feed_spec(results_limit=3),
             json.loads(GETFEED_ADVANCE_RESPONSE_JSON),
@@ -143,7 +140,7 @@ class TestGeotabFeedPageDecoder:
         assert decoded.advance.durable_progress == '0000000000000002'
 
     def test_empty_page_completes_with_the_envelope_to_version(self) -> None:
-        # Body upgraded to the captured bare-call (cursor-at-now) envelope;
+        # Body uses the deterministic bare-call (cursor-at-now) envelope;
         # assertions unchanged.
         decoded = GeotabFeedPageDecoder().decode_page(
             build_feed_spec(results_limit=3),
@@ -216,7 +213,7 @@ class TestGeotabFeedPageDecoder:
 def build_get_spec(
     body: dict[str, JsonValue] | None = None,
 ) -> RequestSpec:
-    """A sent Get spec carrying the captured page-1 request body."""
+    """A sent Get spec carrying the fixture page-1 request body."""
     return RequestSpec(
         method=HttpMethod.POST,
         url='https://resolved.example.geotab.com/apiv1',
@@ -234,7 +231,7 @@ class TestGeotabGetPageDecoder:
         assert GeotabGetPageDecoder().first_request(spec) is spec
 
     def test_boundary_pair_advances_by_last_id(self) -> None:
-        # The captured boundary: page 1's last id becomes page 2's offset,
+        # The fixture boundary: page 1's last id becomes page 2's offset,
         # exactly as the committed page-2 request shows.
         decoded = GeotabGetPageDecoder().decode_page(
             build_get_spec(), SEEK_PAGE_1_RESPONSE
@@ -250,15 +247,15 @@ class TestGeotabGetPageDecoder:
         assert isinstance(next_params, dict)
         next_sort = next_params['sort']
         assert isinstance(next_sort, dict)
-        captured_page_2_params = SEEK_PAGE_2_REQUEST['params']
-        assert isinstance(captured_page_2_params, dict)
-        assert next_sort == captured_page_2_params['sort']
+        fixture_page_2_params = SEEK_PAGE_2_REQUEST['params']
+        assert isinstance(fixture_page_2_params, dict)
+        assert next_sort == fixture_page_2_params['sort']
         # Untouched params survive the rewrite (typeName, resultsLimit,
-        # even the captured credentials the strategy owns).
+        # even the fixture credentials the strategy owns).
         assert next_params['typeName'] == 'Device'
         assert next_params['resultsLimit'] == 3
 
-    def test_the_captured_boundary_ids_are_hex_consecutive(self) -> None:
+    def test_the_fixture_boundary_ids_are_hex_consecutive(self) -> None:
         # The no-loss/no-overlap seam, visible in the fixture itself:
         # page 1 ends at 0xb105 and page 2 begins at 0xb106.
         page_1_records = SEEK_PAGE_1_RESPONSE['result']
@@ -362,7 +359,7 @@ class TestGeotabGetPageDecoder:
 
 
 def test_windowed_search_survives_the_seek_advance() -> None:
-    # The load-bearing trips behavior, pinned against the captured pair
+    # The load-bearing trips behavior, pinned against the fixture pair
     # (2026-07-13): the seek rewrite must never drop or mutate the window
     # filter -- the advance spreads the sent params, so search rides
     # every page while sort.offset seeks.
@@ -384,7 +381,7 @@ def test_windowed_search_survives_the_seek_advance() -> None:
     next_sort = next_params['sort']
     assert isinstance(next_sort, dict)
     assert next_sort['offset'] == 'b12AC4214'
-    # The advance reproduces the captured page-2 request's sort exactly.
-    captured_page_2_params = TRIP_SEEK_PAGE_2_REQUEST['params']
-    assert isinstance(captured_page_2_params, dict)
-    assert next_sort == captured_page_2_params['sort']
+    # The advance reproduces the fixture page-2 request's sort exactly.
+    fixture_page_2_params = TRIP_SEEK_PAGE_2_REQUEST['params']
+    assert isinstance(fixture_page_2_params, dict)
+    assert next_sort == fixture_page_2_params['sort']

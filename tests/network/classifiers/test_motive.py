@@ -1,4 +1,4 @@
-"""Tests for the Motive response classifier (fixtures: scrubbed
+"""Tests for the Motive response classifier (fixtures: normalized
 provider-behavior verification, June 2026)."""
 
 import pytest

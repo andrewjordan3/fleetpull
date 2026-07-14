@@ -1,7 +1,7 @@
 # src/fleetpull/network/decoders/geotab.py
 """GeoTab page decoders: GetFeed (toVersion cursor) and seek-paging Get.
 
-Feed pagination over JSON-RPC (scrubbed provider-behavior verification,
+Feed pagination over JSON-RPC (normalized provider-behavior verification,
 June 2026): the request body's ``params`` carry ``typeName``,
 ``resultsLimit``, and either ``search`` (the historical bootstrap) or
 ``fromVersion`` (the resume cursor); the ``result`` is
@@ -10,7 +10,7 @@ cursor and surfaces from every page including the terminal one.
 
 Seek paging over plain ``Get`` (captured 2026-07-09): ``Get`` silently
 hard-caps at 5,000 records with no continuation signal (``GetCountOf``
-5,666 vs the capped 5,000), so a capped entity pages by ``sort`` on
+can exceed the capped page size), so a capped entity pages by ``sort`` on
 ``id`` ascending -- each advance sets ``sort.offset`` to the last
 returned record's ``id``; termination is the empty result list (a short
 page is NOT terminal, deliberately unlike the feed rule). The ``result``

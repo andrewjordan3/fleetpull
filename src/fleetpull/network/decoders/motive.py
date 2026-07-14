@@ -1,6 +1,6 @@
 # src/fleetpull/network/decoders/motive.py
 """Motive page decoders: wrapped-list records, paginated and single-page
-(sources: scrubbed provider-behavior verification, June 2026).
+(sources: normalized provider-behavior verification, June 2026).
 
 Records arrive as a list of single-key wrappers under a per-endpoint
 top-level key -- ``{"vehicles": [{"vehicle": {...}}, ...]}`` -- and the
