@@ -109,8 +109,8 @@ def process_batch(
     Side Effects:
         None -- pure transform; the caller writes the frame.
     """
-    models = validate_records(batch, definition.response_model)
-    frame = models_to_dataframe(models, definition.response_model)
+    models: list[ResponseModel] = validate_records(batch, definition.response_model)
+    frame: pl.DataFrame = models_to_dataframe(models, definition.response_model)
     if context is None:
         return ProcessedBatch(frame=frame, latest_event_time=None)
     observed_raw = latest_event_time(frame, context.event_time_column)
@@ -123,7 +123,9 @@ def process_batch(
                 f'run clock {context.now.isoformat()}'
             ),
         )
-    in_scope = frame.filter(in_window(context.event_time_column, context.window))
+    in_scope: pl.DataFrame = frame.filter(
+        in_window(context.event_time_column, context.window)
+    )
     return ProcessedBatch(
         frame=in_scope,
         latest_event_time=latest_event_time(in_scope, context.event_time_column),
