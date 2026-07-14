@@ -60,9 +60,9 @@ def extract_roster_members(frame: pl.DataFrame, column: str) -> set[str]:
     if column not in frame.columns:
         raise ValueError(f'roster source column {column!r} is not in the frame')
     series = frame.get_column(column)
-    null_row_count = series.null_count()
+    null_row_count: int = series.null_count()
     stringified = series.drop_nulls().cast(pl.String)
-    empty_row_count = int((stringified.str.len_chars() == 0).sum())
+    empty_row_count: int = int((stringified.str.len_chars() == 0).sum())
     if null_row_count or empty_row_count:
         logger.warning(
             'filtered unfetchable members from roster source column %r: '

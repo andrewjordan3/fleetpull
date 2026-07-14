@@ -1,5 +1,5 @@
 # src/fleetpull/network/classifiers/samsara.py
-"""Samsara response classifier (sources: scrubbed provider-behavior
+"""Samsara response classifier (sources: normalized provider-behavior
 verification, June 2026; rate-limit contract from official Samsara
 documentation).
 

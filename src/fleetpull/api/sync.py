@@ -196,7 +196,7 @@ class Sync:
             limiter_registry=limiter_registry,
             clock=clock,
         )
-        fetch_workers = {
+        fetch_workers: dict[Provider, int] = {
             provider: config.rate_limit.max_concurrency
             for provider, config in self._enabled_providers()
         }
@@ -374,7 +374,7 @@ def _required_database_path(config: FleetpullConfig) -> Path:
     only loads via ``from_yaml`` -- this narrows the field's optional
     type and trips loudly if that invariant is ever bypassed.
     """
-    database_path = config.state.database_path
+    database_path: Path | None = config.state.database_path
     if database_path is None:
         raise ConfigurationError(
             'state database path unresolved',
@@ -394,9 +394,10 @@ def _required_credential(
     Motive's ``SecretStr`` key, GeoTab's four-field credential whole (its
     password's ``SecretStr`` passes straight through -- no unwrap/rewrap).
     """
+    credential: SecretStr | GeotabAuthConfig | None
     match config:
         case MotiveConfig():
-            credential: SecretStr | GeotabAuthConfig | None = config.api_key
+            credential = config.api_key
         case GeotabConfig():
             credential = config.auth
     if credential is None:

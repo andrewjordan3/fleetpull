@@ -6,7 +6,7 @@ discovery, auth ingress, limiter, retry, page decoding, validation,
 frame construction -- runs under every test with no live network
 anywhere. Responses use each provider's real wire shape: Motive's
 ``{"vehicles": [{"vehicle": {...}}], "pagination": {...}}`` envelopes
-(synthetic identifiers) and GeoTab's committed 2026-07-09 capture set
+(synthetic identifiers) and GeoTab's deterministic provider-shaped fixture set
 (``tests/geotab_devices_capture.py``).
 """
 
@@ -196,8 +196,8 @@ class _GeotabHandler:
             return httpx.Response(200, text=AUTHENTICATE_SUCCESS_JSON)
         self.data_credentials.append(body['params']['credentials'])
         if body['method'] == 'GetCountOf':
-            # CONSTRUCTED: the count matching the two committed pages (the
-            # captured envelope carries the live fleet's 5,666).
+            # CONSTRUCTED: the count matching the two committed pages; the
+            # shared fixture envelope uses a purpose-built count above the provider cap.
             return httpx.Response(200, json={'result': 6, 'jsonrpc': '2.0'})
         assert body['method'] == 'Get'
         return httpx.Response(200, json=next(self._pages))
@@ -206,10 +206,10 @@ class _GeotabHandler:
 def test_geotab_devices_end_to_end_through_the_session_stack(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The first live-shaped proof of auth stack + transport POST +
+    # The first provider-shaped proof of auth stack + transport POST +
     # classifier + seek decoder + completeness guard, end to end
     # (GEOTAB-AUDIT GTA-01's composition gap): Authenticate success, two
-    # captured Get pages, the empty terminal page, a matching GetCountOf.
+    # fixture Get pages, the empty terminal page, a matching GetCountOf.
     handler = _GeotabHandler()
     _install_transport(monkeypatch, handler)
     frame = fetch(

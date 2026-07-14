@@ -2,7 +2,7 @@
 
 No real network anywhere: every call is served by ``httpx.MockTransport``
 injected by monkeypatching ``httpx.Client``. Fixtures are synthetic, in
-the captured Authenticate shapes (scrubbed ids, ``exampledb``,
+the captured Authenticate shapes (normalized ids, ``exampledb``,
 ``user@example.com``).
 """
 

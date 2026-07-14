@@ -287,7 +287,7 @@ def require_provider_credentials(providers: ProvidersConfig) -> None:
     """
     motive = providers.motive
     if motive is not None and motive.endpoints and motive.api_key is None:
-        environment_variable = PROVIDER_CREDENTIAL_ENV_VARS['motive']
+        environment_variable: str = PROVIDER_CREDENTIAL_ENV_VARS['motive']
         raise ConfigurationError(
             'provider credential missing',
             provider='motive',
