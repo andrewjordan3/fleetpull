@@ -36,13 +36,18 @@ def rate_limits_from_configs(
     Returns:
         The quota-scope-keyed map ``RateLimiterRegistry`` is constructed on.
     """
-    configs = list(provider_configs)  # the Iterable may be one-shot
-    rate_limits = {config.quota_scope.value: config.rate_limit for config in configs}
+    configs: list[ProviderConfig] = list(
+        provider_configs
+    )  # the Iterable may be one-shot
+    rate_limits: dict[str, RateLimitConfig] = {
+        config.quota_scope.value: config.rate_limit for config in configs
+    }
     for config in configs:
         if isinstance(config, GeotabConfig):
             rate_limits[QuotaScope.GEOTAB_AUTHENTICATE.value] = (
                 config.authenticate_rate_limit
             )
+            rate_limits[QuotaScope.GEOTAB_GET_FEED.value] = config.feed_rate_limit
     return rate_limits
 
 
@@ -99,6 +104,8 @@ class RateLimiterRegistry:
                     quota_scope,
                     detail=f'configured scopes: {configured_scopes}',
                 )
-            new_limiter = QuotaScopeLimiter(quota_scope, scope_config, self._clock)
+            new_limiter: QuotaScopeLimiter = QuotaScopeLimiter(
+                quota_scope, scope_config, self._clock
+            )
             self._limiters[quota_scope] = new_limiter
             return new_limiter

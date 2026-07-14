@@ -3,6 +3,7 @@
 
 from fleetpull.incremental.cursor import (
     DateWatermark,
+    FeedBootstrap,
     FeedToken,
     IncrementalCursor,
 )
@@ -16,6 +17,7 @@ from fleetpull.incremental.window import DateWindow
 __all__: list[str] = [
     'DateWatermark',
     'DateWindow',
+    'FeedBootstrap',
     'FeedToken',
     'IncrementalCursor',
     'resolve_resume_start',

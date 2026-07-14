@@ -2,6 +2,7 @@
 """GeoTab response models; the face re-exports each endpoint module's models."""
 
 from fleetpull.models.geotab.device import CustomFeatures, Device, DeviceFlags
+from fleetpull.models.geotab.log_record import LogRecord, LogRecordDeviceRef
 from fleetpull.models.geotab.shared import (
     GeotabTimeSpan,
     bare_id_to_reference,
@@ -19,6 +20,8 @@ __all__: list[str] = [
     'Device',
     'DeviceFlags',
     'GeotabTimeSpan',
+    'LogRecord',
+    'LogRecordDeviceRef',
     'Trip',
     'TripDeviceRef',
     'TripDriverRef',

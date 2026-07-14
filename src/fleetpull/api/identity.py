@@ -1,5 +1,5 @@
 # src/fleetpull/api/identity.py
-"""The public endpoint identities: snapshot vs windowed at the type level.
+"""The public endpoint identities: snapshot vs incremental at the type level.
 
 An identity is the ``(provider, name)`` pair the endpoint registry keys
 on and nothing more -- inert public data, never behavior. The private
@@ -9,10 +9,10 @@ the ``Endpoints`` catalog (``api/catalog.py``).
 
 Two types, not one type with a mode field, because the split IS the
 public exposure gate (DESIGN §10): ``fetch`` accepts only
-``SnapshotEndpoint``, so handing it a windowed identity fails mypy
+``SnapshotEndpoint``, so handing it an incremental identity fails mypy
 before it can fail at runtime. A snapshot result is bounded by entity
 count -- the property ``fetch``'s in-memory contract stands on; a
-windowed result is not, so windowed retrieval belongs to the
+incremental result is not, so incremental retrieval belongs to the
 config-driven sync path.
 """
 
@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 from fleetpull.vocabulary import Provider
 
-__all__: list[str] = ['EndpointIdentity', 'SnapshotEndpoint', 'WindowedEndpoint']
+__all__: list[str] = ['EndpointIdentity', 'IncrementalEndpoint', 'SnapshotEndpoint']
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,8 +41,8 @@ class SnapshotEndpoint:
 
 
 @dataclass(frozen=True, slots=True)
-class WindowedEndpoint:
-    """A windowed (non-snapshot) endpoint's public identity.
+class IncrementalEndpoint:
+    """An incremental (non-snapshot) endpoint's public identity.
 
     The endpoint's result grows with window width and fleet activity --
     unbounded by anything a caller controls in memory -- so it is
@@ -61,4 +61,4 @@ class WindowedEndpoint:
 
 # Every identity the catalog can hold: the union the mode-agnostic
 # surfaces (the catalog manifest, the auth ingress) accept.
-type EndpointIdentity = SnapshotEndpoint | WindowedEndpoint
+type EndpointIdentity = SnapshotEndpoint | IncrementalEndpoint

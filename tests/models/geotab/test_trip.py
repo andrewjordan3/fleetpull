@@ -1,11 +1,11 @@
 """Tests for fleetpull.models.geotab.trip.
 
-Every fixture is the committed 2026-07-13 capture set
-(``tests/geotab_trips_capture.py``): the windowed seek page pair, the
-day-prefixed-TimeSpan record, and the zero-distance degenerate record.
-The scrub-preserved fixture properties (id/version ordering, the window
-bound, the driver variants, the day-record arithmetic) are asserted
-here beside the model they serve.
+The shared fixtures in ``tests/geotab_trips_capture.py`` model the
+provider wire shape with deterministic synthetic values: the windowed
+seek page pair, the day-prefixed-TimeSpan record, and the zero-distance
+degenerate record. The fixture properties (id/version ordering, the
+window bound, the driver variants, and the day-record arithmetic) are
+asserted here beside the model they serve.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -35,7 +35,7 @@ _WINDOW_END = datetime(2026, 7, 13, tzinfo=UTC)
 
 
 class TestFixtureProperties:
-    """The scrub-preserved properties the capture module promises."""
+    """The preserved properties the fixture module promises."""
 
     def test_ids_strictly_ascend_within_and_across_the_page_pair(self) -> None:
         numeric_ids = [int(str(record['id'])[1:], 16) for record in TRIP_RECORDS]
@@ -118,7 +118,7 @@ class TestTripValidation:
         day = Trip.model_validate(TRIP_DAY_FORMAT_RECORD)
         expected = timedelta(days=4, hours=16, minutes=41, seconds=16)
         assert day.stop_duration == expected
-        # The captured datetimes reproduce the captured duration exactly.
+        # The fixture datetimes reproduce the fixture duration exactly.
         assert day.next_trip_start is not None
         assert day.stop is not None
         assert day.next_trip_start - day.stop == expected
@@ -128,7 +128,7 @@ class TestTripValidation:
         assert day.work_stop_duration + day.after_hours_stop_duration == expected
 
     def test_interval_semantics_hold_across_every_record(self) -> None:
-        # 12-of-12 in the probe session; the committed 8 re-prove it:
+        # The committed records preserve the interval rule:
         # driving_duration = stop - start on every record.
         for record in _ALL_RECORDS:
             trip = Trip.model_validate(record)

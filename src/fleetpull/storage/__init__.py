@@ -9,7 +9,13 @@ is the half-open ``[start, end)`` window-membership predicate the orchestrator
 filters watermark batches with."""
 
 from fleetpull.storage.frames import in_window
-from fleetpull.storage.result import WriteResult
+from fleetpull.storage.result import WriteResult, combine_write_results
 from fleetpull.storage.writers import DatasetWriter, select_writer
 
-__all__: list[str] = ['DatasetWriter', 'WriteResult', 'in_window', 'select_writer']
+__all__: list[str] = [
+    'DatasetWriter',
+    'WriteResult',
+    'combine_write_results',
+    'in_window',
+    'select_writer',
+]

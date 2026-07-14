@@ -118,6 +118,7 @@ class TestMigrateToHead:
             'mode',
             'window_start',
             'window_end',
+            'bootstrap_start',
             'from_version',
             'to_version',
             'row_count',

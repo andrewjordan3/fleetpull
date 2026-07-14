@@ -10,7 +10,7 @@ is a sync user, not a fetch user with missing parameters.
 
 Snapshot-only because the in-memory contract is only honest for
 snapshots: a snapshot result is bounded by entity count, while a
-windowed result grows with window width and fleet activity, unbounded by
+incremental result grows with window width and fleet activity, unbounded by
 anything the caller controls in memory. The exposure gate is the
 ``SnapshotEndpoint`` parameter type; a runtime guard backs it for the
 audiences mypy never covers (notebooks foremost).
@@ -40,7 +40,7 @@ from fleetpull.api.auth_ingress import (
     ProviderProfileContext,
     build_provider_profile,
 )
-from fleetpull.api.identity import SnapshotEndpoint, WindowedEndpoint
+from fleetpull.api.identity import IncrementalEndpoint, SnapshotEndpoint
 from fleetpull.config import (
     GeotabConfig,
     HttpConfig,
@@ -95,18 +95,18 @@ def _require_snapshot_identity(endpoint: object) -> None:
         None when ``endpoint`` is a ``SnapshotEndpoint``.
 
     Raises:
-        ConfigurationError: ``endpoint`` is windowed-typed (naming the
+        ConfigurationError: ``endpoint`` is incremental-typed (naming the
             endpoint and its mode) or is no catalog identity at all.
     """
     if isinstance(endpoint, SnapshotEndpoint):
         return
-    if isinstance(endpoint, WindowedEndpoint):
+    if isinstance(endpoint, IncrementalEndpoint):
         raise ConfigurationError(
             'fetch is snapshot-only',
             provider=endpoint.provider.value,
             endpoint=endpoint.name,
             detail=(
-                'this endpoint is windowed-mode; windowed retrieval is the '
+                'this endpoint is incremental-mode; incremental retrieval is the '
                 'config-driven sync path, not a fetch option'
             ),
         )

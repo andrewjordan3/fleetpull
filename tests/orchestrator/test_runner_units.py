@@ -33,7 +33,13 @@ from fleetpull.endpoints.shared import (
     WatermarkMode,
 )
 from fleetpull.exceptions import ProviderResponseError
-from fleetpull.incremental import DateWatermark, DateWindow, IncrementalCursor
+from fleetpull.incremental import (
+    DateWatermark,
+    DateWindow,
+    FeedBootstrap,
+    FeedToken,
+    IncrementalCursor,
+)
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import FetchedPage, TransportClient
 from fleetpull.network.contract import DecodedPage, PageAdvance, RequestSpec
@@ -107,7 +113,14 @@ class _RecordingRecorder:
         self.windows.append(window)
         return len(self.windows)
 
-    def complete_run(self, run_id: int, *, row_count: int) -> None:
+    def start_feed_run(
+        self, provider: Provider, endpoint: str, *, start: FeedBootstrap | FeedToken
+    ) -> int:
+        raise AssertionError('a watermark run must never open a feed run')
+
+    def complete_run(
+        self, run_id: int, *, row_count: int, to_version: str | None = None
+    ) -> None:
         self.completed.append((run_id, row_count))
 
     def fail_run(self, run_id: int, *, error_detail: str) -> None:

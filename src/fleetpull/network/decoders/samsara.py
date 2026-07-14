@@ -1,6 +1,6 @@
 # src/fleetpull/network/decoders/samsara.py
 """Samsara page decoder: top-level-list records, cursor pagination
-(sources: scrubbed provider-behavior verification, June 2026; cursor
+(sources: normalized provider-behavior verification, June 2026; cursor
 contract from provider documentation).
 
 Records arrive as a top-level list under a per-endpoint key; the
@@ -22,7 +22,7 @@ from fleetpull.network.contract import (
     require_record_list,
     validated_envelope_slice,
 )
-from fleetpull.vocabulary import JsonValue
+from fleetpull.vocabulary import JsonObject, JsonValue
 
 __all__: list[str] = ['SamsaraCursorPageDecoder']
 
@@ -78,8 +78,10 @@ class SamsaraCursorPageDecoder:
                 cursor block is structurally violating, including
                 continuation promised without a cursor.
         """
-        records = require_record_list(envelope, self.records_key)
-        echo = validated_envelope_slice(_SamsaraEnvelope, envelope).pagination
+        records: list[JsonObject] = require_record_list(envelope, self.records_key)
+        echo: _SamsaraPageEcho = validated_envelope_slice(
+            _SamsaraEnvelope, envelope
+        ).pagination
         if not echo.has_next_page:
             return DecodedPage(
                 records=records,
@@ -92,7 +94,9 @@ class SamsaraCursorPageDecoder:
             raise ProviderResponseError(
                 detail='hasNextPage is true but endCursor is missing or empty'
             )
-        next_spec = sent.with_merged_params({_AFTER_PARAM: echo.end_cursor})
+        next_spec: RequestSpec = sent.with_merged_params(
+            {_AFTER_PARAM: echo.end_cursor}
+        )
         return DecodedPage(
             records=records,
             advance=PageAdvance(next_spec=next_spec, durable_progress=None),

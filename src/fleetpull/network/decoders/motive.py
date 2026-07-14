@@ -1,6 +1,6 @@
 # src/fleetpull/network/decoders/motive.py
 """Motive page decoders: wrapped-list records, paginated and single-page
-(sources: scrubbed provider-behavior verification, June 2026).
+(sources: normalized provider-behavior verification, June 2026).
 
 Records arrive as a list of single-key wrappers under a per-endpoint
 top-level key -- ``{"vehicles": [{"vehicle": {...}}, ...]}`` -- and the
@@ -22,7 +22,7 @@ from fleetpull.network.contract import (
     unwrap_record_objects,
     validated_envelope_slice,
 )
-from fleetpull.vocabulary import JsonValue
+from fleetpull.vocabulary import JsonObject, JsonValue
 
 __all__: list[str] = [
     'MotiveWrappedListPageDecoder',
@@ -92,15 +92,17 @@ class MotiveWrappedListPageDecoder:
             ProviderResponseError: When the record-bearing shape or the
                 pagination block is structurally violating.
         """
-        wrappers = require_record_list(envelope, self.list_key)
-        records = unwrap_record_objects(wrappers, self.item_key)
-        echo = validated_envelope_slice(_MotiveEnvelope, envelope).pagination
+        wrappers: list[JsonObject] = require_record_list(envelope, self.list_key)
+        records: list[JsonObject] = unwrap_record_objects(wrappers, self.item_key)
+        echo: _MotivePageEcho = validated_envelope_slice(
+            _MotiveEnvelope, envelope
+        ).pagination
         if echo.page_no * echo.per_page >= echo.total:
             return DecodedPage(
                 records=records,
                 advance=PageAdvance(next_spec=None, durable_progress=None),
             )
-        next_spec = sent.with_merged_params(
+        next_spec: RequestSpec = sent.with_merged_params(
             {
                 _PAGE_NO_PARAM: str(echo.page_no + 1),
                 _PER_PAGE_PARAM: str(echo.per_page),
@@ -153,8 +155,8 @@ class MotiveWrappedSinglePageDecoder:
         Side Effects:
             None.
         """
-        wrappers = require_record_list(envelope, self.list_key)
-        records = unwrap_record_objects(wrappers, self.item_key)
+        wrappers: list[JsonObject] = require_record_list(envelope, self.list_key)
+        records: list[JsonObject] = unwrap_record_objects(wrappers, self.item_key)
         return DecodedPage(
             records=records,
             advance=PageAdvance(next_spec=None, durable_progress=None),

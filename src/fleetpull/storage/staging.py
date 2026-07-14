@@ -6,7 +6,7 @@ A date-partitioned watermark endpoint fans out -- the writer receives this run's
 records one piece at a time. ``stage_shard`` lands each piece immediately as date-split shards under
 ``date=YYYY-MM-DD/staging/``, so no piece is held in memory waiting for the rest;
 ``compact_partition`` folds each date's shards into that date's single
-``part.parquet``; ``clear_partition_staging`` removes staging the writer is done with
+``part.parquet``; ``clear_endpoint_staging`` removes staging the writer is done with
 -- at construction a crashed run's stale shards, at finalize the shards just folded.
 Three stateless functions, each one concern; the writer (``writers.py``) orchestrates
 them and decides per cell whether compaction folds in the existing partition and
@@ -33,7 +33,7 @@ import polars as pl
 
 from fleetpull.storage.atomic import atomic_write_parquet
 from fleetpull.storage.files import (
-    partition_dir,
+    endpoint_staging_dir,
     partition_part_file,
     partition_staging_dir,
     partition_staging_shard,
@@ -43,6 +43,7 @@ from fleetpull.storage.partition import split_by_date
 
 __all__: list[str] = [
     'CompactionResult',
+    'clear_endpoint_staging',
     'clear_partition_staging',
     'compact_partition',
     'stage_shard',
@@ -108,7 +109,7 @@ def compact_partition(
     to ``part.parquet``, replacing any prior file. The whole partition is
     materialized here; it is bounded by the chunk (DESIGN §3), not the endpoint.
     Folds and nothing else -- the writer clears the staging afterward
-    (``clear_partition_staging``), keeping this single-concern.
+    (``clear_endpoint_staging``), keeping this single-concern.
 
     Args:
         endpoint_dir: The endpoint directory holding the ``date=`` partitions.
@@ -127,52 +128,39 @@ def compact_partition(
         Writes ``part.parquet``. Leaves the staging shards in place for the caller
         to clear.
     """
-    staging_dir = partition_staging_dir(endpoint_dir, partition_date)
-    shard_frames = [
+    staging_dir: Path = partition_staging_dir(endpoint_dir, partition_date)
+    shard_frames: list[pl.DataFrame] = [
         pl.read_parquet(shard) for shard in sorted(staging_dir.glob('*.shard'))
     ]
     if existing is not None:
         shard_frames.append(existing)
-    combined = pl.concat(shard_frames)
-    before = combined.height
-    written = drop_exact_duplicates(combined) if drop_duplicates else combined
+    combined: pl.DataFrame = pl.concat(shard_frames)
+    before: int = combined.height
+    written: pl.DataFrame = (
+        drop_exact_duplicates(combined) if drop_duplicates else combined
+    )
     atomic_write_parquet(written, partition_part_file(endpoint_dir, partition_date))
     return CompactionResult(
         rows_written=written.height, duplicates_dropped=before - written.height
     )
 
 
-def clear_partition_staging(
-    endpoint_dir: Path, partition_dates: Collection[date]
-) -> None:
-    """Remove these dates' staging, dropping any ``date=`` directory it empties.
-
-    For each date: remove its ``staging/`` directory if present, then remove the
-    enclosing ``date=`` directory if that left it empty. The writer calls this in two
-    places. At construction, to sweep a crashed prior run's stale shards before
-    staging anything, so a later ``compact_partition`` folds only the live run's
-    shards; a date that died after ``stage_shard`` but before any ``part.parquet``
-    holds only ``staging/``, and an empty ``date=`` directory must not survive (it
-    would read as a partition with no data, the invariant ``delete_partition``
-    upholds), so it goes too. At finalize, to clear the shards ``compact_partition``
-    just folded; that date now holds a ``part.parquet``, so its directory survives.
-    Only a genuinely empty directory is removed -- a ``part.parquet`` or a crashed
-    atomic-write temp keeps it. Lenient on a missing ``staging/``: a date with none
-    is a no-op, not an error (DESIGN §3/§14).
+def clear_endpoint_staging(endpoint_dir: Path) -> None:
+    """Remove the endpoint-level temporary staging root if present.
 
     Args:
         endpoint_dir: The endpoint directory holding the ``date=`` partitions.
-        partition_dates: The dates whose staging to clear.
 
     Side Effects:
-        Removes any ``staging/`` directory under those dates, and any ``date=``
-        directory left empty by that removal.
+        Removes ``{endpoint_dir}/.staging`` and every temporary shard below it.
     """
-    for partition_date in partition_dates:
-        staging_dir = partition_staging_dir(endpoint_dir, partition_date)
-        if not staging_dir.exists():
-            continue
-        shutil.rmtree(staging_dir)
-        date_dir = partition_dir(endpoint_dir, partition_date)
-        if not any(date_dir.iterdir()):
-            date_dir.rmdir()
+    staging_root: Path = endpoint_staging_dir(endpoint_dir)
+    if staging_root.exists():
+        shutil.rmtree(staging_root)
+
+
+def clear_partition_staging(
+    endpoint_dir: Path, partition_dates: Collection[date]
+) -> None:
+    """Compatibility wrapper for clearing the endpoint-level staging root."""
+    clear_endpoint_staging(endpoint_dir)

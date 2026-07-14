@@ -61,7 +61,7 @@ class TestPartitionDir:
 class TestPartitionStaging:
     def test_staging_dir_is_inside_the_partition(self) -> None:
         result = partition_staging_dir(Path('/d/m/vehicle_locations'), date(2026, 6, 1))
-        assert result == Path('/d/m/vehicle_locations/date=2026-06-01/staging')
+        assert result == Path('/d/m/vehicle_locations/.staging/date=2026-06-01')
 
     def test_shard_parent_is_the_staging_dir(self) -> None:
         endpoint_dir = Path('/d/m/vehicle_locations')

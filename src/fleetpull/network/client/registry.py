@@ -141,9 +141,11 @@ class ProviderClientRegistry:
                 'ProviderClientRegistry is not open; call client_for inside its '
                 '`with` block'
             )
-        client = self._clients.get(provider)
+        client: TransportClient | None = self._clients.get(provider)
         if client is None:
-            configured = ', '.join(sorted(p.value for p in self._clients)) or 'none'
+            configured: str = (
+                ', '.join(sorted(p.value for p in self._clients)) or 'none'
+            )
             raise ConfigurationError(
                 'no transport client configured for provider',
                 provider=provider.value,

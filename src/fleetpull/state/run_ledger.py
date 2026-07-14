@@ -37,11 +37,14 @@ from enum import StrEnum
 from typing import Final
 
 from fleetpull.exceptions import ConfigurationError
+from fleetpull.incremental import FeedBootstrap, FeedToken
 from fleetpull.state.database import SqliteScalar, StateDatabase
 from fleetpull.timing import Clock, from_iso8601, to_iso8601
 from fleetpull.vocabulary import Provider
 
-__all__: list[str] = ['RunLedger', 'RunMode', 'RunStatus']
+__all__: list[str] = ['FeedRunStart', 'RunLedger', 'RunMode', 'RunStatus']
+
+type FeedRunStart = FeedBootstrap | FeedToken
 
 logger = logging.getLogger(__name__)
 
@@ -88,9 +91,9 @@ class RunMode(StrEnum):
 _INSERT_RUN_SQL: Final[str] = """
 INSERT INTO runs (
     provider, endpoint, status, mode,
-    window_start, window_end, from_version, started_at
+    window_start, window_end, bootstrap_start, from_version, started_at
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 _SELECT_RUN_MODE_SQL: Final[str] = 'SELECT mode FROM runs WHERE run_id = ?'
@@ -143,6 +146,7 @@ class _RunRange:
 
     window_start_text: str | None = None
     window_end_text: str | None = None
+    bootstrap_start_text: str | None = None
     from_version: str | None = None
 
 
@@ -238,32 +242,24 @@ class RunLedger:
         )
 
     def start_feed_run(
-        self, provider: Provider, endpoint: str, *, from_version: str
+        self,
+        provider: Provider,
+        endpoint: str,
+        *,
+        start: FeedRunStart | None = None,
+        from_version: str | None = None,
     ) -> int:
-        """
-        Open a feed run resuming from ``from_version`` (``mode='feed'``).
-
-        ``from_version`` is the feed arm's opaque start token, stored verbatim
-        (fleetpull never parses it). The run's end ``toVersion`` is recorded later
-        by :meth:`complete_run`.
-
-        Args:
-            provider: The provider being fetched.
-            endpoint: The endpoint being fetched.
-            from_version: The feed arm's opaque start version.
-
-        Returns:
-            The new run's ``run_id`` (the table's rowid alias).
-
-        Raises:
-            RuntimeError: The INSERT returned no ``lastrowid``.
-
-        Side Effects:
-            Opens a connection, inserts one row, and commits.
-        """
-        return self._insert_run(
-            provider, endpoint, RunMode.FEED, _RunRange(from_version=from_version)
-        )
+        """Open a feed run from either a bootstrap date or a committed token."""
+        if start is None:
+            if from_version is None:
+                raise ValueError('feed runs require a bootstrap start or from_version')
+            start = FeedToken(from_version=from_version)
+        match start:
+            case FeedBootstrap():
+                run_range = _RunRange(bootstrap_start_text=to_iso8601(start.from_date))
+            case FeedToken():
+                run_range = _RunRange(from_version=start.from_version)
+        return self._insert_run(provider, endpoint, RunMode.FEED, run_range)
 
     def _insert_run(
         self, provider: Provider, endpoint: str, mode: RunMode, run_range: _RunRange
@@ -292,6 +288,7 @@ class RunLedger:
                     mode.value,
                     run_range.window_start_text,
                     run_range.window_end_text,
+                    run_range.bootstrap_start_text,
                     run_range.from_version,
                     started_at,
                 ),
@@ -341,7 +338,9 @@ class RunLedger:
             raise ValueError(f'row_count must be non-negative, got {row_count}')
         ended_at: str = to_iso8601(self._clock.now_utc())
         with self._database.connect() as connection:
-            mode_row = connection.execute(_SELECT_RUN_MODE_SQL, (run_id,)).fetchone()
+            mode_row: tuple[SqliteScalar, ...] | None = connection.execute(
+                _SELECT_RUN_MODE_SQL, (run_id,)
+            ).fetchone()
             if mode_row is None:
                 raise ValueError(f'no run with run_id {run_id}')
             stored_mode: SqliteScalar = mode_row[0]
@@ -443,7 +442,7 @@ class RunLedger:
             Opens a connection and reads one aggregate row.
         """
         with self._database.connect() as connection:
-            frontier_row = connection.execute(
+            frontier_row: tuple[SqliteScalar, ...] = connection.execute(
                 _COVERAGE_FRONTIER_SQL,
                 (provider.value, endpoint, RunStatus.SUCCEEDED.value),
             ).fetchone()
@@ -494,7 +493,7 @@ class RunLedger:
             Opens a connection and reads one aggregate row.
         """
         with self._database.connect() as connection:
-            row = connection.execute(
+            row: tuple[SqliteScalar, ...] = connection.execute(
                 _LAST_SUCCESS_SQL,
                 (provider.value, endpoint, RunStatus.SUCCEEDED.value),
             ).fetchone()

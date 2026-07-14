@@ -187,6 +187,10 @@ _GEOTAB_DEFAULT_AUTHENTICATE_RATE_LIMIT: RateLimitConfig = RateLimitConfig(
     requests_per_period=10, period_seconds=60.0, burst=2, max_concurrency=1
 )
 
+_GEOTAB_DEFAULT_GET_FEED_RATE_LIMIT: RateLimitConfig = RateLimitConfig(
+    requests_per_period=60, period_seconds=60.0, burst=10, max_concurrency=1
+)
+
 _GEOTAB_DEFAULT_LOOKBACK_DAYS: int = 7
 _GEOTAB_DEFAULT_CUTOFF_DAYS: int = 0
 
@@ -198,8 +202,9 @@ class GeotabConfig(ProviderConfig):
     Carries the watermark window knobs since the ``trips`` vertical
     (amended 2026-07-13; the earlier omission encoded a superseded
     feeds-only view of GeoTab incrementality -- windowed ``Get`` is
-    GeoTab's history path today, and feeds remain the future incremental
-    mechanism; DESIGN §4's amendment). Deliberately no ``base_url``: the
+    GeoTab's trips history path today, while ``GetFeed`` backs the
+    ``log_records`` feed vertical; DESIGN §4's amendment). Deliberately no
+    ``base_url``: the
     API host is ``auth.server``, and the session strategy retargets
     every call to the host ``Authenticate`` resolves (DESIGN §8).
 
@@ -245,6 +250,9 @@ class GeotabConfig(ProviderConfig):
     authenticate_rate_limit: RateLimitConfig = Field(
         default=_GEOTAB_DEFAULT_AUTHENTICATE_RATE_LIMIT
     )
+    feed_rate_limit: RateLimitConfig = Field(
+        default=_GEOTAB_DEFAULT_GET_FEED_RATE_LIMIT
+    )
     lookback_days: int = Field(default=_GEOTAB_DEFAULT_LOOKBACK_DAYS, ge=0)
     cutoff_days: int = Field(default=_GEOTAB_DEFAULT_CUTOFF_DAYS, ge=0)
 
@@ -287,7 +295,7 @@ def require_provider_credentials(providers: ProvidersConfig) -> None:
     """
     motive = providers.motive
     if motive is not None and motive.endpoints and motive.api_key is None:
-        environment_variable = PROVIDER_CREDENTIAL_ENV_VARS['motive']
+        environment_variable: str = PROVIDER_CREDENTIAL_ENV_VARS['motive']
         raise ConfigurationError(
             'provider credential missing',
             provider='motive',

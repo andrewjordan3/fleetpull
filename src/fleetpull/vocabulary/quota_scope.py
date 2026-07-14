@@ -41,5 +41,6 @@ class QuotaScope(StrEnum):
     GEOTAB = 'geotab'
     GEOTAB_AUTHENTICATE = 'geotab_authenticate'
     GEOTAB_GET = 'geotab_get'
+    GEOTAB_GET_FEED = 'geotab_get_feed'
     MOTIVE = 'motive'
     SAMSARA = 'samsara'

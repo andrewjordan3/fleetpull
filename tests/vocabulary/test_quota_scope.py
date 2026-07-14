@@ -12,11 +12,12 @@ class TestQuotaScope:
         assert QuotaScope.GEOTAB.value == 'geotab'
         assert QuotaScope.GEOTAB_AUTHENTICATE.value == 'geotab_authenticate'
         assert QuotaScope.GEOTAB_GET.value == 'geotab_get'
+        assert QuotaScope.GEOTAB_GET_FEED.value == 'geotab_get_feed'
         assert QuotaScope.MOTIVE.value == 'motive'
         assert QuotaScope.SAMSARA.value == 'samsara'
 
     def test_closed_at_the_declared_scopes(self) -> None:
-        # The closed set: three provider scopes plus GeoTab's two
+        # The closed set: three provider scopes plus GeoTab's three
         # method-class scopes (DESIGN section 8 -- GeoTab meters per
         # method class). A new member lands here deliberately, never as
         # a side effect.
@@ -24,6 +25,7 @@ class TestQuotaScope:
             QuotaScope.GEOTAB,
             QuotaScope.GEOTAB_AUTHENTICATE,
             QuotaScope.GEOTAB_GET,
+            QuotaScope.GEOTAB_GET_FEED,
             QuotaScope.MOTIVE,
             QuotaScope.SAMSARA,
         }

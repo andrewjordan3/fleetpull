@@ -9,7 +9,7 @@ fleet-telemetry-hub's merge stats.
 from dataclasses import dataclass, field
 from datetime import date
 
-__all__: list[str] = ['WriteResult']
+__all__: list[str] = ['WriteResult', 'combine_write_results']
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,3 +32,17 @@ class WriteResult:
     duplicates_dropped: int
     files_written: int
     deleted_partitions: list[date] = field(default_factory=list)
+
+
+def combine_write_results(results: list[WriteResult]) -> WriteResult:
+    """Aggregate write reports in order."""
+    return WriteResult(
+        rows_written=sum(result.rows_written for result in results),
+        duplicates_dropped=sum(result.duplicates_dropped for result in results),
+        files_written=sum(result.files_written for result in results),
+        deleted_partitions=[
+            deleted_date
+            for result in results
+            for deleted_date in result.deleted_partitions
+        ],
+    )

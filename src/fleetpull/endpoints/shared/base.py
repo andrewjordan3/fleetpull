@@ -25,7 +25,7 @@ from enum import StrEnum
 from typing import Any, Protocol, get_args
 
 from fleetpull.endpoints.shared.fan_out import FanOutBinding
-from fleetpull.incremental import DateWindow, FeedToken
+from fleetpull.incremental import DateWindow, FeedBootstrap, FeedToken
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import TransportClient
 from fleetpull.network.contract import PageDecoder, RequestSpec
@@ -141,7 +141,7 @@ type SyncMode = SnapshotMode | WatermarkMode | FeedMode
 # first-fetch bootstrap. Named here with SpecBuilder because it is the
 # spec-builder's input contract; the resolver's own return stays the narrower
 # DateWindow | None (watermark arm).
-type ResumeValue = DateWindow | FeedToken | None
+type ResumeValue = DateWindow | FeedBootstrap | FeedToken | None
 
 
 class SpecBuilder(Protocol):

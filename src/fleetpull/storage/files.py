@@ -17,6 +17,7 @@ from fleetpull.paths import date_partition_segment
 
 __all__: list[str] = [
     'data_file',
+    'endpoint_staging_dir',
     'partition_dir',
     'partition_part_file',
     'partition_staging_dir',
@@ -30,8 +31,8 @@ _SINGLE_FILE_NAME: str = 'data.parquet'
 # The date-partitioned layout's per-partition part file name (DESIGN §3).
 _PART_FILE_NAME: str = 'part.parquet'
 
-# The per-partition staging directory and shard suffix (DESIGN §3).
-_STAGING_DIR_NAME: str = 'staging'
+# The endpoint-level staging root and shard suffix (DESIGN §3).
+_STAGING_DIR_NAME: str = '.staging'
 
 
 def data_file(endpoint_dir: Path) -> Path:
@@ -82,44 +83,18 @@ def partition_part_file(endpoint_dir: Path, partition_date: date) -> Path:
     return partition_dir(endpoint_dir, partition_date) / _PART_FILE_NAME
 
 
+def endpoint_staging_dir(endpoint_dir: Path) -> Path:
+    """The endpoint-level temporary staging root."""
+    return endpoint_dir / _STAGING_DIR_NAME
+
+
 def partition_staging_dir(endpoint_dir: Path, partition_date: date) -> Path:
-    """The staging directory inside one date partition.
-
-    Holds the per-piece ``.shard`` files a fanned-out write lands before
-    compaction folds them into ``part.parquet``. Inside the partition directory
-    so staging is co-located with the partition it feeds; the ``.shard`` extension
-    on the shards (not ``.parquet``) keeps them out of a hive ``*.parquet`` read.
-
-    Args:
-        endpoint_dir: The endpoint directory (from ``endpoint_directory``).
-        partition_date: The partition's calendar date.
-
-    Returns:
-        ``{endpoint_dir}/date=YYYY-MM-DD/staging``.
-
-    Side Effects:
-        None -- pure path arithmetic; no filesystem access.
-    """
-    return partition_dir(endpoint_dir, partition_date) / _STAGING_DIR_NAME
+    """The staging directory for one date under the endpoint staging root."""
+    return endpoint_staging_dir(endpoint_dir) / date_partition_segment(partition_date)
 
 
 def partition_staging_shard(endpoint_dir: Path, partition_date: date) -> Path:
-    """A unique ``.shard`` path under one date partition's staging directory.
-
-    Each call returns a fresh uuid-named shard, so the fanned-out writes to one
-    date never collide. The ``.shard`` extension keeps the file out of a hive
-    ``*.parquet`` read; compaction reads it back by explicit path.
-
-    Args:
-        endpoint_dir: The endpoint directory (from ``endpoint_directory``).
-        partition_date: The partition's calendar date.
-
-    Returns:
-        ``{endpoint_dir}/date=YYYY-MM-DD/staging/shard-{uuid}.shard``.
-
-    Side Effects:
-        None -- pure path construction (the uuid makes each call unique).
-    """
+    """A unique ``.shard`` path under one date's staging directory."""
     return partition_staging_dir(endpoint_dir, partition_date) / (
         f'shard-{uuid4().hex}.shard'
     )

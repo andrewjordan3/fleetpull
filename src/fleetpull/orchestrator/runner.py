@@ -14,8 +14,7 @@ observation, record the ledger row -- parquet -> cursor -> ledger in that
 crash order -- and mark the unit done. Serial ascending completion keeps
 completed units a contiguous prefix, so every persisted watermark is true at
 every instant; a crash resumes from the work-units ledger instead of
-refetching the window. The feed arm raises ``NotImplementedError`` until its
-prompt. The pure resume decisions live in ``orchestrator/resume.py``, the
+refetching the window. The feed arm executes GetFeed chains one page at a time, committing parquet before cursor and ledger state. The pure resume decisions live in ``orchestrator/resume.py``, the
 per-batch transform in ``orchestrator/batch.py``, and the claim choreography
 in ``orchestrator/unit_loop.py``, so the runner only orchestrates -- read
 state, call pure functions, write state. Request cardinality and batch
@@ -51,10 +50,12 @@ from fleetpull.endpoints.shared import (
     SnapshotMode,
     WatermarkMode,
 )
-from fleetpull.exceptions import ConfigurationError
+from fleetpull.exceptions import ConfigurationError, ProviderResponseError
 from fleetpull.incremental import (
     DateWatermark,
     DateWindow,
+    FeedBootstrap,
+    FeedToken,
     IncrementalCursor,
     resolve_resume_start,
     resolve_trailing_edge,
@@ -67,6 +68,7 @@ from fleetpull.orchestrator.batch import (
     ProcessedBatch,
     WindowContext,
     combine_latest_event_time,
+    process_batch,
 )
 from fleetpull.orchestrator.drivers import RequestDriver
 from fleetpull.orchestrator.outcome import CaughtUp, Executed, RunOutcome
@@ -76,7 +78,7 @@ from fleetpull.orchestrator.resume import (
 )
 from fleetpull.orchestrator.streaming import stream_processed_batches
 from fleetpull.orchestrator.unit_loop import UnitQueue, drive_claimable_units
-from fleetpull.storage import WriteResult, select_writer
+from fleetpull.storage import WriteResult, combine_write_results, select_writer
 from fleetpull.timing import Clock
 from fleetpull.vocabulary import Provider
 
@@ -136,12 +138,20 @@ class RunRecorder(Protocol):
         """Open a snapshot run and return its id."""
         ...
 
-    def complete_run(self, run_id: int, *, row_count: int) -> None:
+    def complete_run(
+        self, run_id: int, *, row_count: int, to_version: str | None = None
+    ) -> None:
         """Close a run as succeeded with its row count."""
         ...
 
     def fail_run(self, run_id: int, *, error_detail: str) -> None:
         """Close a run as failed with an error detail."""
+        ...
+
+    def start_feed_run(
+        self, provider: Provider, endpoint: str, *, start: FeedBootstrap | FeedToken
+    ) -> int:
+        """Open a feed run and return its id."""
         ...
 
     def start_window_run(
@@ -224,9 +234,8 @@ class EndpointRunner:
 
     Constructed once with its four collaborators (client source, the bundled
     state surfaces, clock, the root config); ``run`` takes the endpoint and
-    its request driver, so one instance runs every endpoint. The snapshot arm
-    and the watermark arm's plan-and-drive unit loop are built; the feed arm
-    raises ``NotImplementedError``.
+    its request driver, so one instance runs every endpoint. Snapshot,
+    watermark, and feed arms share the same provider-agnostic dispatch surface.
     """
 
     def __init__(
@@ -275,8 +284,6 @@ class EndpointRunner:
             run had nothing to drive.
 
         Raises:
-            NotImplementedError: The endpoint's sync mode is feed (built in a
-                later prompt).
             FleetpullError: A fetch, validation, or write failure -- the run is
                 recorded failed and the error propagates.
         """
@@ -286,9 +293,7 @@ class EndpointRunner:
             case WatermarkMode() as mode:
                 return self._run_watermark(definition, driver, mode, observer)
             case FeedMode():
-                raise NotImplementedError(
-                    f'{type(definition.sync_mode).__name__} is not yet executable'
-                )
+                return self._run_feed(definition, driver, observer)
 
     def _run_snapshot(
         self,
@@ -325,7 +330,7 @@ class EndpointRunner:
             writer = select_writer(
                 definition, self._dataset_root, drop_duplicates=self._drop_duplicates
             )
-            records_fetched = 0
+            records_fetched: int = 0
             batches = stream_processed_batches(
                 definition, driver, client, resume=None, context=None
             )
@@ -335,6 +340,75 @@ class EndpointRunner:
             write = writer.finalize()
             self._state.recorder.complete_run(run_id, row_count=records_fetched)
             return Executed(records_fetched=records_fetched, write=write)
+        except Exception as error:
+            self._fail_run_safely(run_id, error)
+            raise
+
+    def _run_feed(
+        self,
+        definition: EndpointDefinition[ResponseModel],
+        driver: RequestDriver,
+        observer: BatchObserver | None,
+    ) -> RunOutcome:
+        """Run the feed arm: one durable storage/cursor transaction per page."""
+        if not self._drop_duplicates:
+            raise ConfigurationError(
+                'feed endpoints require storage.drop_exact_duplicates=true',
+                provider=definition.provider.value,
+                endpoint=definition.name,
+            )
+        client = self._client_source.client_for(definition.provider)
+        stored = self._state.cursors.get_cursor(definition.provider, definition.name)
+        match stored:
+            case None:
+                start: FeedBootstrap | FeedToken = FeedBootstrap(
+                    from_date=self._sync_config.default_start_datetime
+                )
+            case FeedToken():
+                start = stored
+            case DateWatermark():
+                raise ConfigurationError(
+                    'date watermark stored for feed endpoint',
+                    provider=definition.provider.value,
+                    endpoint=definition.name,
+                )
+        run_id = self._state.recorder.start_feed_run(
+            definition.provider, definition.name, start=start
+        )
+        try:
+            records_fetched = 0
+            write_results: list[WriteResult] = []
+            final_token: str | None = None
+            for page in driver.record_batches(definition, client, start):
+                token = _feed_token_from_progress(definition, page.durable_progress)
+                processed = process_batch(page.records, definition, context=None)
+                if observer is not None:
+                    observer(processed.frame)
+                writer = select_writer(
+                    definition,
+                    self._dataset_root,
+                    drop_duplicates=self._drop_duplicates,
+                )
+                writer.write(processed.frame)
+                write_results.append(writer.finalize())
+                self._state.cursors.set_cursor(
+                    definition.provider, definition.name, FeedToken(from_version=token)
+                )
+                records_fetched += processed.frame.height
+                final_token = token
+            if final_token is None:
+                raise ProviderResponseError(
+                    provider=definition.provider.value,
+                    endpoint=definition.name,
+                    detail='feed run produced no durable progress',
+                )
+            self._state.recorder.complete_run(
+                run_id, row_count=records_fetched, to_version=final_token
+            )
+            return Executed(
+                records_fetched=records_fetched,
+                write=combine_write_results(write_results),
+            )
         except Exception as error:
             self._fail_run_safely(run_id, error)
             raise
@@ -534,7 +608,7 @@ class EndpointRunner:
                 window=window,
                 drop_duplicates=self._drop_duplicates,
             )
-            records_fetched = 0
+            records_fetched: int = 0
             latest_observed: datetime | None = None
             for processed in batches:
                 writer.write(processed.frame)
@@ -579,6 +653,19 @@ class EndpointRunner:
             )
 
 
+def _feed_token_from_progress(
+    definition: EndpointDefinition[ResponseModel], durable_progress: str | None
+) -> str:
+    """Validate one feed page's durable progress token."""
+    if not isinstance(durable_progress, str) or durable_progress == '':
+        raise ProviderResponseError(
+            provider=definition.provider.value,
+            endpoint=definition.name,
+            detail='feed page did not carry a valid durable progress token',
+        )
+    return durable_progress
+
+
 def _merge_executed(outcomes: Sequence[Executed]) -> Executed:
     """Fold the driven units' outcomes into the invocation's one ``Executed``.
 
@@ -594,16 +681,5 @@ def _merge_executed(outcomes: Sequence[Executed]) -> Executed:
     """
     return Executed(
         records_fetched=sum(outcome.records_fetched for outcome in outcomes),
-        write=WriteResult(
-            rows_written=sum(outcome.write.rows_written for outcome in outcomes),
-            duplicates_dropped=sum(
-                outcome.write.duplicates_dropped for outcome in outcomes
-            ),
-            files_written=sum(outcome.write.files_written for outcome in outcomes),
-            deleted_partitions=[
-                deleted_date
-                for outcome in outcomes
-                for deleted_date in outcome.write.deleted_partitions
-            ],
-        ),
+        write=combine_write_results([outcome.write for outcome in outcomes]),
     )

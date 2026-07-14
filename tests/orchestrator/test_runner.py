@@ -25,6 +25,7 @@ from fleetpull.endpoints.shared import (
 from fleetpull.exceptions import ConfigurationError, ProviderResponseError
 from fleetpull.incremental import (
     DateWatermark,
+    FeedBootstrap,
     FeedToken,
     IncrementalCursor,
 )
@@ -100,6 +101,8 @@ class _RecordingRecorder:
         self.started: list[tuple[Provider, str]] = []
         self.windows: list[tuple[datetime, datetime]] = []
         self.completed: list[tuple[int, int]] = []
+        self.completed_versions: list[tuple[int, int, str | None]] = []
+        self.feed_starts: list[FeedBootstrap | FeedToken] = []
         self.failed: list[tuple[int, str]] = []
         self.frontier: datetime | None = None
 
@@ -114,8 +117,18 @@ class _RecordingRecorder:
         self.windows.append(window)
         return len(self.started)
 
-    def complete_run(self, run_id: int, *, row_count: int) -> None:
+    def start_feed_run(
+        self, provider: Provider, endpoint: str, *, start: FeedBootstrap | FeedToken
+    ) -> int:
+        self.started.append((provider, endpoint))
+        self.feed_starts.append(start)
+        return len(self.started)
+
+    def complete_run(
+        self, run_id: int, *, row_count: int, to_version: str | None = None
+    ) -> None:
         self.completed.append((run_id, row_count))
+        self.completed_versions.append((run_id, row_count, to_version))
 
     def fail_run(self, run_id: int, *, error_detail: str) -> None:
         self.failed.append((run_id, error_detail))
@@ -127,7 +140,9 @@ class _RecordingRecorder:
 class _CompleteFailingRecorder(_RecordingRecorder):
     """A RunRecorder whose complete_run raises (a completion-write failure)."""
 
-    def complete_run(self, run_id: int, *, row_count: int) -> None:
+    def complete_run(
+        self, run_id: int, *, row_count: int, to_version: str | None = None
+    ) -> None:
         raise RuntimeError('completion write failed')
 
 
@@ -211,16 +226,17 @@ def _watermark_definition() -> EndpointDefinition[_WatermarkModel]:
     )
 
 
-def _feed_definition() -> EndpointDefinition[_SnapshotModel]:
+def _feed_definition() -> EndpointDefinition[_WatermarkModel]:
     return EndpointDefinition(
         provider=Provider.MOTIVE,
         name='feed',
         spec_builder=StaticGetSpecBuilder(base_url='https://x.test', path='/v1/feed'),
         page_decoder=_StubPageDecoder(),
-        response_model=_SnapshotModel,
+        response_model=_WatermarkModel,
         quota_scope=QuotaScope.MOTIVE,
-        storage_kind=StorageKind.SINGLE,
+        storage_kind=StorageKind.DATE_PARTITIONED,
         sync_mode=FeedMode(),
+        event_time_column='occurred_at',
     )
 
 
@@ -336,11 +352,31 @@ def test_unresolvable_client_opens_no_run(tmp_path: Path) -> None:
     assert recorder.started == []
 
 
-def test_feed_mode_is_not_yet_executable(tmp_path: Path) -> None:
+def test_feed_run_commits_each_page_token(tmp_path: Path) -> None:
     recorder = _RecordingRecorder()
-    runner = _make_runner(recorder, tmp_path)
-    with pytest.raises(NotImplementedError):
-        runner.run(_feed_definition(), _CannedDriver([]))
+    cursor = _StubCursorAccess()
+    runner = _make_runner(recorder, tmp_path, cursor_access=cursor)
+
+    class _FeedDriver:
+        def record_batches(
+            self,
+            definition: EndpointDefinition[ResponseModel],
+            client: TransportClient,
+            resume: ResumeValue,
+        ) -> Iterator[FetchedPage]:
+            assert isinstance(resume, FeedBootstrap)
+            yield FetchedPage(
+                records=[{'occurred_at': '2026-06-01T01:00:00+00:00'}],
+                durable_progress='v1',
+            )
+            assert cursor.set_calls[-1][2] == FeedToken(from_version='v1')
+            yield FetchedPage(records=[], durable_progress='v2')
+
+    outcome = runner.run(_feed_definition(), _FeedDriver())
+    assert isinstance(outcome, Executed)
+    assert outcome.records_fetched == 1
+    assert cursor.set_calls[-1] == (Provider.MOTIVE, 'feed', FeedToken('v2'))
+    assert recorder.completed_versions == [(1, 1, 'v2')]
 
 
 class TestBatchObserver:

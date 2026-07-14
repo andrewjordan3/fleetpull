@@ -1,6 +1,6 @@
 # fleetpull — Design Document
 
-**Status:** Design settled through module layout; implementation well underway — the `vehicles` snapshot vertical is complete end-to-end, and the `vehicle_locations` date-partitioned/watermark vertical has run its incremental loop end-to-end live; the window-granularity defect that run surfaced is fixed (the floored resume window, §4). See §15 for run status and the build roadmap.
+**Status:** Design settled through the current public API and sync orchestration verticals. Built and tested today: the `fetch` public API; configuration-driven `Sync(config_path).run()`; snapshot, watermark, and LogRecord feed orchestration; work-unit planning and crash-resume; per-provider fan-out executors; Motive `vehicles`; Motive `vehicle_locations`; GeoTab `devices`; GeoTab `trips`; and GeoTab `log_records`. Deferred: single-file feed storage cells, a separate CLI wrapper, metadata snapshot generation, and schema overrides for unsupported model shapes. See §15 for the roadmap and deliberately deferred work.
 **Name:** `fleetpull` — final. Describes exactly what the package does and nothing more (PyPI availability confirmed 2026-06-10).
 **Relationship to fleet-telemetry-hub:** New package, not a rewrite. fleet-telemetry-hub remains in production untouched while fleetpull is built.
 
@@ -14,9 +14,9 @@ the raw API responses as is reasonable.
 
 **In scope**
 
-- Fetching from provider APIs (Motive, Samsara, GeoTab when access lands; extensible to others)
+- Fetching from provider APIs (Motive and GeoTab endpoints are implemented; Samsara support remains represented in shared abstractions and models as it ports; extensible to others)
 - Dtype coercion and structural normalization (flattening) so output is predictable
-- DataFrame output via programmatic API and CLI
+- DataFrame output via the programmatic `fetch` API; config-driven parquet/state output via `Sync`
 - Config-driven incremental updates across multiple endpoints
 - Multi-threaded fetching (backfill speed, concurrent endpoints)
 - Exact-duplicate dedup at write time (fetch hygiene — see §6)
@@ -60,19 +60,20 @@ orchestrators.
 
 One schema per (provider, endpoint). No exceptions, no cross-endpoint merging.
 
-Each endpoint gets its own folder containing its data and a human-readable
-metadata file:
+Each endpoint gets its own folder containing its data. A future metadata snapshot
+may be generated beside the data, but current production runner/storage paths do not
+write `metadata.json`:
 
 ```
 data/
   motive/
     vehicles/              # single-parquet strategy
       data.parquet
-      metadata.json
+      # metadata.json  # deferred, generated from SQLite in a future doc snapshot pass
     vehicle_locations/     # date-partitioned strategy (breadcrumb-scale)
       date=2026-06-01/part.parquet
       date=2026-06-02/part.parquet
-      metadata.json
+      # metadata.json  # deferred, generated from SQLite in a future doc snapshot pass
   samsara/
     trips/
       ...
@@ -83,9 +84,11 @@ data/
 - `single` — one parquet file; a merge reads the whole file, applies the `SyncMode`'s write semantics, and rewrites it. Fine for low-volume endpoints (on the order of 10–15k rows/day or less). Snapshot endpoints are always `single` — a current-state snapshot has no event-time dimension to partition on.
 - `date_partitioned` — hive-style `date=YYYY-MM-DD` partitions; a merge touches only the partitions the fetch window overlaps. Required for breadcrumb-scale endpoints. Hive layout is read natively by BigQuery external tables and `pl.scan_parquet`.
 
-`metadata.json` is a **generated human-readable snapshot**, written from SQLite
-contents at the end of each successful run. It is never read by the program.
-SQLite is the single source of truth (see §5) — no dual-write divergence.
+`metadata.json` generation is **deferred**. When built, it will be a generated
+human-readable snapshot projected from SQLite after successful runs and never read
+by the program. Today, SQLite is still the single source of truth (see §5), and
+production writers/runners emit parquet plus SQLite state only — no dual-write
+divergence.
 
 **Realized structure (`snapshot`+`single` and `watermark`+`date_partitioned` built;
 the feed cells next).** Each `(StorageKind, SyncMode)` cell is its own
@@ -97,9 +100,9 @@ cell's writer, constructed with the runtime resume `window` an incremental cell
 needs. The orchestrator drives every endpoint identically — `write` per fetched
 piece, `finalize` once — and `finalize` returns a `WriteResult`. The exact-duplicate
 dedup (§6) runs inside each writer's finalize, on the frame it is about to write.
-Storage is stateless — parquet only, no SQLite, no watermark commit, no
-`metadata.json` (the orchestrator sequences those after a successful `finalize`,
-§5). The single-file family (`SingleFileWriter` → `SnapshotWriter`) and the
+Storage is stateless — parquet only, no SQLite, no watermark commit, and no
+metadata snapshot. The orchestrator sequences state advancement after a successful
+`finalize` (§5); metadata projection remains deferred. The single-file family (`SingleFileWriter` → `SnapshotWriter`) and the
 date-partitioned watermark cell (`PartitionedWriter` → `WatermarkPartitionedWriter`)
 are built; the feed cells (single and partitioned) fill with GeoTab. The leaf
 primitives the writers compose: `split_by_date` (`storage/partition.py`: a frame →
@@ -195,15 +198,15 @@ def window_dates(window: DateWindow) -> list[date]:
     return [first + timedelta(days=n) for n in range((last - first).days + 1)]
 ```
 
-**`persist` grows a keyword-only `window`.** The signature becomes
-`persist(definition, new_frame, dataset_root, *, window: DateWindow | None = None)`.
-The window is computed per-run by the driver (the resume resolver, §4) and passed
-in — never read off the definition — and `persist` validates the pairing against the
-sync mode: a `WatermarkMode` endpoint with `window is None` is a wiring bug and
-raises, and a `SnapshotMode` endpoint handed a non-`None` window also raises.
+**Writer selection carries the runtime `window`.** The old `persist` sketch is
+realized as `select_writer(definition, dataset_root, *, window=...)`: the window is
+computed per run by the orchestrator/resume resolver (§4) and passed in — never
+read off the definition. `select_writer` validates the pairing against the sync
+mode: a date-partitioned `WatermarkMode` endpoint without a window is a wiring bug,
+and a `SnapshotMode` endpoint handed a non-`None` window also raises.
 
 **How the fleet's rows for one date are assembled across the per-vehicle fan-out** —
-`vehicle_locations` fetches per vehicle (~1,459 `GET .../{vehicle_id}` calls) but a
+`vehicle_locations` fetches per roster member (fleet-scale `GET .../{vehicle_id}` fan-out) but a
 single `date=` partition holds the whole fleet's rows for that date — is settled. A
 backfill decomposes into per-chunk work units (`partition_key=None`, §5); a chunk
 fans the whole roster at execution, so the partition is replaced with every member's
@@ -213,8 +216,8 @@ arrival (`stage_shard`), folds each date's shards into its `part.parquet` at fin
 the chunk, not the endpoint — a high-volume endpoint stays in bounds via a smaller
 chunk, not by streaming. Per-vehicle multi-part files (`part-{uuid}.parquet`, no
 coalesce) were rejected for the small-files problem partitioning exists to prevent:
-at this fleet's ~1,459 vehicles × ~7 window-days that is ≈ 10k tiny files per
-refresh, compounding every refresh, and tens of thousands of few-KB files degrade
+at fleet-scale fan-out over a multi-day window, this would create many tiny files
+per refresh, compounding every refresh, and those small files degrade
 BigQuery external tables and `scan_parquet` badly — so each date folds to one
 `part.parquet`.
 
@@ -1085,7 +1088,7 @@ budgets → `RetriesExhaustedError`, failed auth paths →
 | GeoTab | `Authenticate` re-run returned `path: "ThisServer"`; the envelope byte-shape matches the June fixture (captured 2026-07-09). |
 | GeoTab | `Get` honors `resultsLimit` exactly when at or under the cap (captured 2026-07-09). |
 | GeoTab | `Get` hard-caps at 5,000 records **silently** — no continuation signal or metadata of any kind; a `resultsLimit` above the cap still returns exactly 5,000 (captured 2026-07-09). |
-| GeoTab | `GetCountOf` returns the true entity count: 5,666 captured against the capped 5,000 — 666 records invisible to a bare `Get` (captured 2026-07-09). |
+| GeoTab | `GetCountOf` returns the true entity count; a captured account returned an entity count above the silent 5,000 cap, proving that records beyond the cap are invisible to a bare `Get` (captured 2026-07-09). |
 | GeoTab | Sort-seek paging works as documented: `sort.sortBy: "id"` ascending with `offset` set to the last returned id; page sums matched `GetCountOf` exactly; adjacent page-boundary ids were numerically consecutive — no loss, no overlap at the seam; the terminal signal is an **empty result list**, now captured. `lastId` must not be sent with id-sort — `ArgumentException` (docs, not captured) (captured 2026-07-09). |
 | GeoTab | Device schema is polymorphic across device generations and types: at least three shapes observed (GO7-era, GO9-era, and untracked/trailer entries with `deviceType: "None"`, `productId: -1`, and a `tmpTrailerId` field absent from the others); one tracked record lacked `deviceFlags`/`devicePlans` entirely — modeling requires the union of fields with everything optional (captured 2026-07-09). |
 | GeoTab | Sentinel values: `activeTo: 2050-01-01` means active, and retired devices remain listed — the full-harvest property holds on GeoTab; VIN fields carry `""` and a literal `"?"`; `ignoreDownloadsUntil` observed at both `1986-01-01` and `0001-01-01` — the year-one value overflows nanosecond-precision timestamp columns, so datetime parsing of such fields requires microsecond precision or exclusion (captured 2026-07-09). |
@@ -1109,7 +1112,7 @@ budgets → `RetriesExhaustedError`, failed auth paths →
 | Motive | `/v3/vehicle_locations/{vehicle_id}` verified live: envelope `{"vehicle_locations": [{"vehicle_location": {...}}]}`, `located_at` is UTC ISO-8601 (`Z`-suffixed), one non-paginated page per fetch (so `SinglePageDecoder` fits), and a single per-vehicle fetch spans multiple calendar dates (the sample crossed two) — confirming `split_by_date`'s multi-partition output is load-bearing in production, not a theoretical edge: one fetch genuinely fans into several partitions. |
 | Motive | `/v3/vehicle_locations/{vehicle_id}` date bounds pinned by direct probing: day-granular `start_date`/`end_date` are honored inclusively on both bounds — a single-day request returns that full day, a two-day request both complete days. The documented 3-month maximum range is real: long backfills will eventually need request chunking (a range limit, unrelated to the §15 item-1 window defect). |
 | Motive | `updated_after` on `/v3/vehicle_locations/{vehicle_id}`: documented as required, observably optional and inert — omitting it and supplying it produced byte-identical responses. It remains a candidate ingestion-time CDC hook for the late-upload gap (§13). |
-| Motive | The collection endpoint `/v3/vehicle_locations` (no vehicle id) is a different animal: a last-known-location roster snapshot that ignores date parameters and serves active vehicles only (~1,029 vehicles vs the full harvest's 1,460). It is not a history source and must not be conflated with the per-vehicle history endpoint. |
+| Motive | The collection endpoint `/v3/vehicle_locations` (no vehicle id) is a different animal: a last-known-location roster snapshot that ignores date parameters and serves active vehicles only. It is not a history source and must not be conflated with the per-vehicle history endpoint. |
 
 The `updated_after` finding generalizes into a standing rule: **encode probed
 provider behavior, never documented behavior alone.** Motive silently
@@ -1162,12 +1165,12 @@ wants windows, incremental resume, partitioned storage, or fan-out is not a
 `fetch` user with missing parameters; they are a `sync` user.
 
 **Snapshot-only `fetch`, and why.** `fetch` exposes snapshot-mode endpoints
-only; windowed retrieval is config/sync territory. The in-memory contract is
+only; incremental retrieval is config/sync territory. The in-memory contract is
 only honest for snapshots: a snapshot result is bounded by entity count, while
-a windowed result grows with window width and fleet activity — unbounded by
+a incremental result grows with window width and fleet activity — unbounded by
 anything the caller controls in memory. The exposed subset is a *type*, not a
 runtime allowlist: identity types encode sync mode, and `fetch`'s signature
-accepts only snapshot-typed identities, so handing it a windowed identity
+accepts only snapshot-typed identities, so handing it an incremental identity
 fails mypy — backed, as built, by a runtime exposure guard (the first
 statement of `fetch` raises `ConfigurationError` naming the endpoint and its
 mode, before any client construction), because the convenience verb's
@@ -1242,10 +1245,10 @@ keeps catching it. Every other exception type is internal and renameable.
 (`Path` or `str`); a `run()` method returning `None`; failure signaled by
 raising. Endpoints inside one sync run and commit independently — a sibling's
 failure never halts the others. The YAML schema *is* sync's API: designing
-sync means designing the config schema, so sync's full vocabulary is
-deliberately deferred to roadmap item 6, where the schema and the programmatic
-shell (`Sync(path).run()`) are designed as one unit. `fetch` was separable and
-designed first because its vocabulary does not depend on the schema.
+sync meant designing the config schema, and that work is now implemented as
+`Sync(config_path).run()` plus the validated `FleetpullConfig` schema. `fetch`
+was separable and designed first because its vocabulary does not depend on the
+schema.
 
 **`Sync`, as built (`fleetpull/api/sync.py`).** Construction is validation
 only: the config loads via `from_yaml`, every selected endpoint name is
@@ -1316,13 +1319,12 @@ structural normalization only: no cross-endpoint joins, no unified schema, no
 warehouse loading, no presumption of the user's use case. The column-order
 stance above is an instance of this refusal, not a separate policy.
 
-**What survives from the old section.** `iter_records(endpoint, **params)` —
-typed iterator of Pydantic models, pagination transparent. (Renamed from
-fleet-telemetry-hub's `fetch_all`, whose "all" misleadingly suggested all
-endpoints rather than all pages.) This is the escape hatch for consumers who
-don't want Polars; the dataframe path is built on top of it. The old CLI
-framing is superseded: fleetpull makes no fetch-CLI commitment; the CLI story
-is the yaml-run tool over `sync` (item 6).
+**What does not survive as current public API.** The earlier `iter_records(endpoint,
+**params)` idea is not implemented, exported, or tested today. The current public
+surface is `fetch(...)` for snapshot DataFrames and `Sync(config_path).run()` for
+configuration-driven parquet/state syncs. A typed model iterator can be revisited
+as a future design option, but it is not current behavior. A separate CLI wrapper
+would likewise serialize the two verbs rather than introduce a third concept.
 
 ---
 
@@ -1503,7 +1505,7 @@ fleetpull/
     roster_refresh.py # RosterRefreshCoordinator: refresh a roster when stale (staleness -> harvest -> reconcile -> apply); refresh only, not fan-out
     resume.py      # resolve_watermark_start + should_advance_watermark (§14)
     backfill.py    # plan_backfill_units: whole-UTC-day chunk -> WorkUnitSpecs (§5)
-  cli.py           # fetch, sync
+  # cli.py         # deferred future wrapper over fetch/sync, absent today
 ```
 
 The package root holds user-facing modules only; internal code lives in
@@ -1518,8 +1520,9 @@ alongside the limiter, contract, and auth it consumes; `records`, `storage`,
 `state`, and `orchestrator` are internal by the same test (consumers call
 the public API, never these) and each receives its own subpackage home when
 its prompt builds it — a single-module subpackage is the blessed shape.
-`exceptions.py` and `cli.py` are user-facing and stay at the root: consumers
-catch the exceptions and invoke the CLI. The hierarchy itself — members,
+`exceptions.py` is user-facing and stays at the root: consumers catch the
+exceptions exported from the package face. A separate `cli.py` wrapper is deferred
+and absent from the current tree. The exception hierarchy itself — members,
 consumer actions, and stances — is recorded in §8.
 
 Boundary rules:
@@ -1535,14 +1538,15 @@ package-wide vertical `layers` contract over every top-level module under
 `fleetpull/`:
 
 ```
-orchestrator
-storage
-endpoints | records | state
-models | network
-logger
-config | roster
-exceptions
-vocabulary | incremental | timing | model_contract | polars_typing | paths
+fleetpull.api
+fleetpull.orchestrator
+fleetpull.storage
+fleetpull.endpoints | fleetpull.records | fleetpull.state
+fleetpull.models | fleetpull.network
+fleetpull.logger
+fleetpull.config | fleetpull.roster
+fleetpull.exceptions
+fleetpull.vocabulary | fleetpull.incremental | fleetpull.timing | fleetpull.model_contract | fleetpull.polars_typing | fleetpull.paths
 ```
 
 Read top-down: a layer may import any layer strictly below it; a lower
@@ -1841,8 +1845,8 @@ tzinfo-construction rules mechanically.
   - *Handler scope:* configure the root logger or the `fleetpull` package
     logger only — and whether third-party verbosity (httpx and kin) becomes
     a deliberate opt-in rather than an accident of root configuration.
-  - *What `Sync` narrates at INFO during long fan-outs:* the last live run
-    was ~80 minutes and produced two log lines. Progress narration (members
+  - *What `Sync` narrates at INFO during long fan-outs:* long fleet-scale live runs
+    can currently produce very sparse INFO output. Progress narration (members
     completed, pages fetched, penalties waited out) is the open surface; the
     concurrency vertical added no narration pending this policy (its one new
     log call is the error-path record of a discarded in-flight failure).
@@ -1852,9 +1856,9 @@ tzinfo-construction rules mechanically.
 ## 14. Orchestration: the run executor, the request driver, and the client registry
 
 The layer that sequences fetch, records, storage (§3), and state (§5) into one
-endpoint's run. The network, `records/`, `storage/`, and `state/` layers are all
-built; this is the layer that drives them, and the only major vertical still
-unbuilt.
+endpoint's run. Snapshot execution is implemented; watermark execution is
+implemented; windowed execution uses planned and persisted work units; fan-out is
+implemented; and feed execution remains unsupported and fails closed.
 
 **The orchestrator-boundary principle: higher-level orchestrators and tools are
 polymorphic — provider-agnostic and endpoint-agnostic.** A caller invoking an
@@ -1947,23 +1951,26 @@ finalizes once. This resolves the §13 question on how a date partition's rows
 assemble across the per-vehicle fan-out: the driver yields per vehicle, the runner
 writes per vehicle, and `stage_shard` lands each piece to disk immediately (§3), so
 the fleet's rows for a date assemble across per-vehicle `write` calls bounded by one
-chain's records — never a RAM buffer holding the fleet. Backfill chunk sizing (§13)
-remains the one open piece.
+chain's records — never a RAM buffer holding the fleet. Backfill chunk sizing is
+implemented: `sync.backfill_chunk_days` controls planned work-unit width, a
+smaller-than-chunk residual window becomes one unit, units are driven serially in
+ascending order, completed units are not refetched during crash recovery, and
+persisted unfinished unit boundaries survive later configuration changes.
 
 **The run is constructed, not self-assembling.** The `EndpointRunner` is injected
-with five collaborators — the `ProviderClientRegistry` (client source), the
-`RunLedger` (run recorder), the `Clock`, the `CursorStore` (cursor access), and the
-root `FleetpullConfig` — the container its composition root already holds, read for
-exactly two values: `sync.default_start_datetime` (the cold-start anchor) and
-`storage.dataset_root` (where the writers land). Passing the root keeps the
-constructor at five flat parameters without minting a bundle type for the pair
-(pass-the-container over field-threading). The `EndpointDefinition` and the driver are
-`run()` arguments, not constructor fields, so one runner instance runs `vehicles`,
-then `vehicle_locations`, each with the driver its caller built. The runner
-constructs no clients and reads no credentials. One `Clock` instance is shared by the
-runner, the `RunLedger`, the `CursorStore`, and the limiter inside the registry's
-runtime — otherwise run timestamps, window resolution, and the future guards skew
-apart.
+with a client source (the `ProviderClientRegistry` surface that answers
+`client_for(provider)`), a bundled `RunStateAccess`, the shared `Clock`, and the
+root `FleetpullConfig`. `RunStateAccess` groups the state responsibilities the
+runner needs: the run recorder/ledger, cursor access, and work-unit queue. The
+runner reads the root config for `sync.default_start_datetime` (the cold-start
+anchor), `sync.backfill_chunk_days` (the planned work-unit width),
+`storage.dataset_root` (where writers land), and `storage.drop_exact_duplicates`
+(the writer dedup policy). The `EndpointDefinition` and the driver are `run()`
+arguments, not constructor fields, so one runner instance can run multiple
+endpoints with the driver each caller resolved. The runner constructs no clients
+and reads no credentials. One `Clock` instance is shared by the runner, state
+stores, and the limiter inside the registry's runtime — otherwise run timestamps,
+window resolution, and future guards skew apart.
 
 **`ProviderClientRegistry`** (`network/client/registry.py`) owns
 `{provider: TransportClient}` and answers `client_for(provider)`. It is a
@@ -2058,12 +2065,11 @@ that compacts a date always covers it and so always clears it first. The `.shard
 extension keeps a half-staged partition out of any hive `*.parquet` read in the
 interim.
 
-**Build order.** (1) `ProviderClientRegistry`; (2) `EndpointRunner` +
-`SingleRequestDriver` + `RunOutcome`, exercising the snapshot path end-to-end on
-`vehicles`; (3) the staging crash-clean; (4) the watermark arm — window resolution,
-both guards, the incremental fold, the parquet -> cursor -> ledger ordering, and a
-watermark stub endpoint to exercise it without fan-out. `FanOutRequestDriver` and
-the coordinator follow, wiring `vehicle_locations.fan_out`.
+**Build order (historical, now complete for snapshot and watermark).** The
+`ProviderClientRegistry`, `EndpointRunner`, request drivers, `RunOutcome`, staging
+crash-clean, watermark arm, `FanOutRequestDriver`, and roster coordinator have all
+shipped for the snapshot and watermark paths. Feed execution is the remaining
+runner arm.
 
 ## 15. Next Steps
 
@@ -2090,8 +2096,8 @@ date-partitioned/watermark vertical has run end-to-end live
 (`scripts/run_vehicle_locations.py`, on local disk): the incremental loop
 mechanics are live-proven — cold backfill, watermark persistence and resume
 (through the canonical-UTC serialization path), wholesale date-partition
-replacement idempotency, compaction dedup (0 duplicates across ~1.03M
-combined rows), and fan-out over a script-harvested roster. The same run
+replacement idempotency, compaction dedup over more than one million combined rows, and fan-out over a
+script-harvested roster. The same run
 surfaced a window-granularity defect in the resume machinery (roadmap item 1
 below); the defect was internal to fleetpull — the provider was exonerated by
 direct probing — and has since been fixed by flooring the resume window at
@@ -2108,8 +2114,8 @@ resolution (item 1, done).
    of it; wholesale date-partition replacement would then overwrite the
    boundary day's complete partition with that sliver on every steady-state
    daily sync — silent, cumulative data destruction. The live run
-   materialized a 6-row `date=2026-06-30` sliver partition via exactly this
-   mechanism (1,029,760 + 6 = 1,029,766, to the row). The fix, delivered:
+   materialized a severely truncated boundary partition via exactly this
+   mechanism. The fix, delivered:
    `resolve_resume_start` floors the chosen start to the UTC midnight of its
    date, so the window `in_window` filters against equals the requested date
    range and the filter's residual job is guarding provider overshoot.
@@ -2156,32 +2162,33 @@ resolution (item 1, done).
    `vocabulary/`, the `ResponseModel` bound, the carrier-contract rename,
    and the script comment drifts). The item-6-owned findings (roster
    discovery, the state DB path key, `runs.row_count` semantics, the
-   rate-limit YAML key) remain open in `AUDIT.md`.
+   rate-limit YAML key) were closed by the config/Sync vertical and recorded in
+   the implementation docs/tests.
 5. **Build the fetch side of the public API (§10), after the audit (done —
    `fleetpull/api/`, 2026-07-07):** the `Endpoints` catalog (a static
    committed module plus the two-way parity discipline test against the
    discovery registry), the typed endpoint identities, `fetch` itself, and
    the auth ingress coercion. The snapshot script re-pointed through the
    verb is the audit's consumer-cost evidence, closed.
-6. **Config-YAML framework, then the YAML-run tool** — in that order, and
-   after the API: the YAML is a serialization of the API surface, and built
-   earlier it would serialize a guess. This item absorbs sync's programmatic
-   surface: the YAML schema *is* sync's API, so designing the config schema
-   and designing `Sync(path).run()` are one unit (§10). `fetch` was separable
-   and designed first because its vocabulary does not depend on the schema.
-7. **One GeoTab endpoint end-to-end before bulk porting.** GeoTab is the
-   architectural stress test (different auth, pagination, decode); if it
-   bends the abstractions, that must surface before more Motive endpoints are
-   stamped from the existing mold. Once it proves the pattern crosses
-   providers: bulk-port the remaining Motive and GeoTab models (low-risk; can
-   run parallel to item 6). *First half shipped (2026-07-09): the `devices`
-   snapshot vertical is built end-to-end — `GeotabConfig` and the two
-   method-class scopes, the ingress `ProviderProfileContext` seam, the
-   seek-paging Get decoder, the `GetCountOf` completeness guard (probe-settled
-   decisions 1 and 2), the union-of-shapes `Device` model, `Endpoints.Geotab`,
-   and both verbs; `scripts/run_geotab_devices.py` is the live-proof driver.
-   The abstractions held — no driver, runner, or entry change carried a
-   provider branch. Second half (the feed vertical) remains.*
+6. **Config-YAML framework and `Sync(config_path).run()` (done); CLI wrapper
+   deferred.** The YAML is a serialization of the API surface, so it followed
+   the public API design. The schema, loader, endpoint selection validation, and
+   programmatic `Sync(config_path).run()` shell are built and tested (§10). A
+   separate command-line wrapper over the same verbs remains deferred; it must
+   serialize the existing `fetch`/`Sync` concepts rather than invent a third
+   surface.
+7. **GeoTab verticals.** GeoTab is the architectural stress test (different
+   auth, pagination, decode). The `devices` snapshot vertical is built
+   end-to-end — `GeotabConfig` and the two method-class scopes, the ingress
+   `ProviderProfileContext` seam, the seek-paging Get decoder, the `GetCountOf`
+   completeness guard (probe-settled decisions 1 and 2), the union-of-shapes
+   `Device` model, `Endpoints.Geotab.devices`, and both public verbs. The
+   `trips` vertical is also built as a watermark/date-partitioned endpoint over
+   windowed `Get` (`TripSearch` date bounds plus seek paging) with
+   `event_time_column='start'`. The `log_records` feed vertical is built over
+   `GetFeed`/`LogRecord`, using the global cold-start anchor and persisted feed
+   tokens. The abstractions held — no driver, runner, or entry change carried a
+   provider branch.
 8. **Polish phase, gated on a stable public surface:** full-tree ceremony
    audit, test-coverage audit, documentation audit, the real usage-driven
    README, multi-platform CI (a Windows leg would have caught the
@@ -2204,5 +2211,10 @@ single writer per endpoint stands, §3.)
 
 **Deliberately deferred — off the roadmap's critical path.**
 `metadata.json` generation (cosmetic, projected from SQLite, never read by
-the program). The YAML config loader, previously deferred here, is now
-roadmap item 6.
+the program), a separate CLI wrapper, single-file feed storage, calculated-feed
+tombstone handling, and schema overrides for unsupported model shapes.
+
+
+## 2026-07-14 LogRecord feed update
+
+The GeoTab `log_records` endpoint is the first built `GetFeed` vertical. Cold feed starts use non-persisted `FeedBootstrap(sync.default_start_datetime)`, subsequent starts use persisted opaque `FeedToken`, and each API page is its own durable storage transaction: date-partitioned parquet finalization, then feed-token cursor commit, then the run ledger. Feed output stages temporary `.shard` files under the endpoint `.staging/` root and compacts to exactly one production `part.parquet` per touched date with append-plus-exact-dedup semantics. Feed single-file storage and calculated-feed tombstone handling remain deferred. The public non-snapshot identity is now `IncrementalEndpoint`. Pre-release SQLite state installs the consolidated head schema version 3; development databases at versions 1 or 2 must be recreated.
