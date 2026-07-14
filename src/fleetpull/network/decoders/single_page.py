@@ -14,7 +14,7 @@ from fleetpull.network.contract import (
     RequestSpec,
     require_record_list,
 )
-from fleetpull.vocabulary import JsonValue
+from fleetpull.vocabulary import JsonObject, JsonValue
 
 __all__: list[str] = ['SinglePageDecoder']
 
@@ -48,7 +48,7 @@ class SinglePageDecoder:
             ProviderResponseError: When the record-bearing shape is
                 structurally violating.
         """
-        records = require_record_list(envelope, self.records_key)
+        records: list[JsonObject] = require_record_list(envelope, self.records_key)
         return DecodedPage(
             records=records,
             advance=PageAdvance(next_spec=None, durable_progress=None),

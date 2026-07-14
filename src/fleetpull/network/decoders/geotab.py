@@ -146,7 +146,9 @@ class GeotabFeedPageDecoder:
             raise ValueError('GeoTab feed requests require a JSON-RPC body')
         sent_body: Mapping[str, JsonValue] = sent.json_body
         sent_params, results_limit = _params_from_body(sent_body, 'feed')
-        feed = validated_envelope_slice(_GeotabFeedEnvelope, envelope).result
+        feed: _GeotabFeedResult = validated_envelope_slice(
+            _GeotabFeedEnvelope, envelope
+        ).result
         if len(feed.data) < results_limit:
             # The terminal page still carries the resume point.
             return DecodedPage(
@@ -284,8 +286,10 @@ class GeotabGetPageDecoder:
             raise ValueError('GeoTab Get requests require a JSON-RPC body')
         sent_body: Mapping[str, JsonValue] = sent.json_body
         sent_params, _results_limit = _params_from_body(sent_body, 'Get')
-        sent_sort = _sort_from_params(sent_params)
-        records = validated_envelope_slice(_GeotabGetEnvelope, envelope).result
+        sent_sort: Mapping[str, JsonValue] = _sort_from_params(sent_params)
+        records: list[JsonObject] = validated_envelope_slice(
+            _GeotabGetEnvelope, envelope
+        ).result
         if not records:
             return DecodedPage(
                 records=[],

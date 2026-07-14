@@ -60,10 +60,10 @@ def render_url_path_template(path_template: str, path_values: Mapping[str, str])
     Side Effects:
         None -- pure function.
     """
-    placeholder_names = _extract_placeholder_names(path_template)
+    placeholder_names: tuple[str, ...] = _extract_placeholder_names(path_template)
 
-    expected = set(placeholder_names)
-    supplied = set(path_values)
+    expected: set[str] = set(placeholder_names)
+    supplied: set[str] = set(path_values)
     if expected != supplied:
         raise UrlPathTemplateError(
             _mismatch_message(
@@ -73,9 +73,9 @@ def render_url_path_template(path_template: str, path_values: Mapping[str, str])
             )
         )
 
-    rendered = path_template
+    rendered: str = path_template
     for placeholder_name in placeholder_names:
-        value = path_values[placeholder_name]
+        value: str = path_values[placeholder_name]
         if value == '':
             raise UrlPathTemplateError(
                 f'URL path value {placeholder_name!r} must not be empty.'
@@ -107,7 +107,7 @@ def _extract_placeholder_names(path_template: str) -> tuple[str, ...]:
     Side Effects:
         None -- pure function.
     """
-    residual = _PLACEHOLDER_PATTERN.sub('', path_template)
+    residual: str = _PLACEHOLDER_PATTERN.sub('', path_template)
     if '{' in residual or '}' in residual:
         raise UrlPathTemplateError(
             'URL path template has malformed or unsupported brace syntax: '
@@ -118,7 +118,7 @@ def _extract_placeholder_names(path_template: str) -> tuple[str, ...]:
     seen: set[str] = set()
     ordered_names: list[str] = []
     for match in _PLACEHOLDER_PATTERN.finditer(path_template):
-        name = match.group(1)
+        name: str = match.group(1)
         if name not in seen:
             seen.add(name)
             ordered_names.append(name)
@@ -139,9 +139,11 @@ def _mismatch_message(path_template: str, missing: set[str], unused: set[str]) -
     Side Effects:
         None -- pure function.
     """
-    parts = [f'URL path values do not match placeholders for {path_template!r}.']
+    parts: list[str] = [
+        f'URL path values do not match placeholders for {path_template!r}.'
+    ]
     if missing:
-        names = ', '.join(repr(name) for name in sorted(missing))
+        names: str = ', '.join(repr(name) for name in sorted(missing))
         parts.append(f'Missing: {names}.')
     if unused:
         names = ', '.join(repr(name) for name in sorted(unused))
