@@ -33,7 +33,7 @@ from fleetpull.config import GeotabAuthConfig, HttpConfig
 from fleetpull.exceptions import AuthenticationError, ProviderResponseError
 from fleetpull.network.auth.models import AuthenticationResult
 from fleetpull.network.contract import body_snippet, validated_envelope_slice
-from fleetpull.network.limits import RateLimiterRegistry
+from fleetpull.network.limits import QuotaScopeLimiter, RateLimiterRegistry
 from fleetpull.network.tls import build_truststore_ssl_context
 from fleetpull.vocabulary import JsonValue
 
@@ -262,12 +262,12 @@ def build_geotab_authenticator(
             httpx.TransportError: On a transport failure — propagated raw
                 and loop-free; retry is the client's design question.
         """
-        limiter = limiter_registry.get(quota_scope)
+        limiter: QuotaScopeLimiter = limiter_registry.get(quota_scope)
         url: str = f'https://{config.server}{_APIV1_PATH}'
         request_body: dict[str, JsonValue] = _build_authenticate_body(config)
         # All four Timeout members explicitly: httpx raises at
         # construction when some are set and others have no default.
-        timeout = httpx.Timeout(
+        timeout: httpx.Timeout = httpx.Timeout(
             connect=http_config.connect_timeout_seconds,
             read=http_config.read_timeout_seconds,
             write=http_config.read_timeout_seconds,
@@ -283,7 +283,7 @@ def build_geotab_authenticator(
             limiter.request_slot(),
             httpx.Client(verify=verify, timeout=timeout) as client,
         ):
-            response = client.post(url, json=request_body)
+            response: httpx.Response = client.post(url, json=request_body)
         return _resolve_authenticate_outcome(response, config)
 
     return authenticate
