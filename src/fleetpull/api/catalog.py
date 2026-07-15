@@ -37,6 +37,10 @@ class Endpoints:
         vehicle_locations: WindowedEndpoint = WindowedEndpoint(
             Provider.MOTIVE, 'vehicle_locations'
         )
+        driving_periods: WindowedEndpoint = WindowedEndpoint(
+            Provider.MOTIVE, 'driving_periods'
+        )
+        idle_events: WindowedEndpoint = WindowedEndpoint(Provider.MOTIVE, 'idle_events')
 
     class Geotab:
         """GeoTab endpoint identities."""
@@ -54,6 +58,8 @@ def available_endpoints() -> tuple[EndpointIdentity, ...]:
     return (
         Endpoints.Motive.vehicles,
         Endpoints.Motive.vehicle_locations,
+        Endpoints.Motive.driving_periods,
+        Endpoints.Motive.idle_events,
         Endpoints.Geotab.devices,
         Endpoints.Geotab.trips,
     )

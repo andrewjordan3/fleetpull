@@ -31,9 +31,10 @@ no edge double-count, idempotent on refetch. Both strings come from
 ``to_utc_date_string`` (the timing codec), the house encoder for a date-only param.
 
 This is the dedicated builder for vehicle_locations specifically -- a date-range
-fetch plus a per-vehicle path fan-out. Other Motive date-range endpoints
-(driving_periods, idle_events) are fleet-wide with no fan-out, so they would take a
-different builder; promotion to a shared Motive builder waits for a real second user.
+fetch plus a per-vehicle path fan-out. The fleet-wide Motive date-range endpoints
+(driving_periods, idle_events) share ``MotiveFleetDateRangeSpecBuilder``
+(``endpoints/motive/_spec_builders.py``); this one stays separate because it renders
+the per-vehicle path.
 """
 
 import logging

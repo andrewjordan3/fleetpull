@@ -1,10 +1,16 @@
 """Tests for fleetpull.models.motive.shared."""
 
-from fleetpull.models.motive.shared import DriverSummary, EldDeviceInfo
+from fleetpull.models.motive.shared import (
+    DriverSummary,
+    EldDeviceInfo,
+    VehicleSummary,
+)
+from fleetpull.vocabulary import JsonValue
 
 # Obviously-synthetic identifiers — never real VINs or fleet IDs in commits.
 _DRIVER_ID: int = 9000001
 _DEVICE_ID: int = 8800001
+_VEHICLE_ID: int = 9900001
 
 
 class TestEldDeviceInfo:
@@ -39,3 +45,44 @@ class TestDriverSummary:
         assert driver.username is None
         assert driver.email is None
         assert driver.status is None
+
+
+def _vehicle_block(**overrides: str) -> dict[str, JsonValue]:
+    block: dict[str, JsonValue] = {
+        'id': _VEHICLE_ID,
+        'number': '000001',
+        'year': '2022',
+        'make': 'Kenworth',
+        'model': 'Box',
+        'vin': '4SYNTHV1N00000001',
+        'metric_units': False,
+    }
+    block.update(overrides)
+    return block
+
+
+class TestVehicleSummary:
+    def test_validates_and_aliases_id(self) -> None:
+        vehicle: VehicleSummary = VehicleSummary.model_validate(_vehicle_block())
+        assert vehicle.vehicle_id == _VEHICLE_ID
+        assert vehicle.vin == '4SYNTHV1N00000001'
+
+    def test_quoted_year_coerces_to_int(self) -> None:
+        vehicle = VehicleSummary.model_validate(_vehicle_block(year='2022'))
+        assert vehicle.year == 2022
+
+    def test_year_zero_sentinel_mirrors_uninterpreted(self) -> None:
+        # The captured not-configured sentinel: "0" mirrors as 0, never
+        # as null -- the value is the provider's, not ours to read.
+        vehicle = VehicleSummary.model_validate(_vehicle_block(year='0'))
+        assert vehicle.year == 0
+
+    def test_empty_make_and_model_lift_to_none(self) -> None:
+        vehicle = VehicleSummary.model_validate(_vehicle_block(make='', model=''))
+        assert vehicle.make is None
+        assert vehicle.model is None
+
+    def test_real_make_and_model_survive(self) -> None:
+        vehicle = VehicleSummary.model_validate(_vehicle_block())
+        assert vehicle.make == 'Kenworth'
+        assert vehicle.model == 'Box'
