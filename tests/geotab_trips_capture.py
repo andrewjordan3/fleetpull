@@ -11,9 +11,12 @@ values kept VERBATIM -- they carry the arithmetic properties under
 test). The capture used ``resultsLimit: 3`` where production uses 5000.
 Load-bearing properties preserved: ids strictly ascending within and
 across the page pair, page 2's request offset equal to page 1's last
-record id, versions ascending in id order, every paging-record start
-inside ``[2026-07-06, 2026-07-13)``, both driver variants present, and
-``bF7C1C`` as the device on both sides of the page boundary.
+record id, versions ascending in id order, every paging-record stop
+inside ``[2026-07-06, 2026-07-13)`` (``TripSearch`` matches by STOP
+time — prediction-confirmed 2026-07-15; the starts also fell inside
+this capture's window but carry no retrieval guarantee), both driver
+variants present, and ``bF7C1C`` as the device on both sides of the page
+boundary.
 
 Shared by the Trip model tests, the seek-decoder search-survival
 regression, and any future e2e consumers -- a multi-consumer capture

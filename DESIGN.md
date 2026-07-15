@@ -1046,10 +1046,12 @@ banked probes (GEOTAB-AUDIT §3, P11) select the paging arm.
    trips template** — windowed watermark, date-partitioned, the shared
    provider `lookback_days`/`cutoff_days` knobs. The captured
    mutation-after-creation envelope (observed-behaviors row below) sits
-   well inside a one-day lookback. The paging mechanism is deliberately
-   unsettled until the banked discrimination probes run: seek paging if
-   `sort` composes with a dates-only `ExceptionEventSearch`, otherwise the
-   bisection fallback (decision 3).
+   well inside a one-day lookback. **Paging resolved (2026-07-15):**
+   the discrimination probes found id-sort unsupported on this type
+   outright (the observed-behaviors row), so the seek template is
+   structurally unavailable and the bisection fallback (decision 3)
+   ships. Version/date sortability, which the ArgumentException
+   revealed, is banked as feed-design input, not a paging arm here.
 2. **Version one ships the unfiltered stream — no rule-filter config
    knob.** Three reasons, in force order: the captured silent-empty hazard
    means a typo'd rule id reads as a permanently empty dataset, never an
@@ -1087,13 +1089,15 @@ banked probes (GEOTAB-AUDIT §3, P11) select the paging arm.
    per-type facts that currently coincide, not one fact stated twice —
    and the value is flagged in-code as a strong candidate for a user
    config knob.
-5. **The event-time column is probe-gated.** A discriminating trips
-   capture falsified start-matching for that type (the positive rule is
-   under confirmation probes — GEOTAB-AUDIT §3, P10), so which timestamp
-   an ExceptionEvent window matches is never assumed: the banked
-   window-matching pair (P12) discriminates `activeFrom`, `activeTo`,
-   overlap, and containment, and the column follows that result so
-   retrieval matching and partition routing coincide.
+5. **The event-time column is resolved (2026-07-15): `active_from`.**
+   The window-matching pair found OVERLAP matching (the
+   observed-behaviors row) — retrieval supersets start-anchored
+   ownership, so every record whose `activeFrom` falls in a chunk's UTC
+   window is guaranteed returned by that chunk's fetch, the existing
+   post-fetch window filter assigns single ownership, and no wire-window
+   pad is needed. Edge records fetched by a neighboring chunk are
+   filtered out there and kept by their owner — the Samsara-settled
+   normalization pattern, at zero new machinery.
 
 ### Motive `driving_periods` / `idle_events` probe-settled decisions (2026-07-15)
 
@@ -1201,6 +1205,11 @@ budgets → `RetriesExhaustedError`, failed auth paths →
 | GeoTab | `Get` `sort` composed with `ExceptionEventSearch.ruleSearch` returned `-32000 GenericException` — open, under discrimination probes; do not assume sort composes with every search type (captured 2026-07-13). |
 | GeoTab | `ExceptionEventSearch` composes cleanly with `ruleSearch` + `fromDate`/`toDate` when `sort` is absent — the identical body that crashes with sort succeeds without it, a one-member delta; this is the request shape window bisection needs, so bisection's feasibility is Captured while seek paging's remains open (captured 2026-07-13). |
 | GeoTab | ExceptionEvent records mutate after creation (`lastModifiedDateTime` observed ~17 min past `createdDateTime`; creation observed up to ~1 h after the interval begins — the basis for the one-day lookback), and `duration = activeTo − activeFrom` holds exactly on every captured record, including a fractional-second span reproducing a fractional `activeFrom` (captured 2026-07-13). |
+| GeoTab | **`TripSearch` matches trips by their STOP time — prediction-confirmed.** The original discriminating capture (2026-07-06) falsified start-, overlap-, and containment-matching; the confirmation pair sealed stop-matching: widening the window's end to 13:30 pulled in the trip stopping 13:27:56 exactly as predicted, and moving the start to 13:03 dropped exactly the trip stopping 13:02:20. The trips binding anchors `event_time_column='stop'`; retrieval and routing coincide, and the watermark advances on stop — record-materialization order (captured 2026-07-15). |
+| GeoTab | ExceptionEvent does not support id-sort at all: `sort.sortBy: "id"` with no search returns `ArgumentException` — "Can not sort by id. Supported sortable fields are version, date." Composed with any search (rule or dates-only) the same request degrades to the `-32000 GenericException`, reproduced deterministically on exact retry. The trips seek template is structurally unavailable for this type; version/date sortability is a feed-design datum, unprobed for seek composition (captured 2026-07-15). |
+| GeoTab | `ExceptionEventSearch` window matching is OVERLAP-anchored: a window catching only an event's activeTo returned it, and a window catching only an event's activeFrom returned it too — both discriminating bodies agree; activeFrom-, activeTo-, and containment-matching are all falsified. Third distinct window-matching rule observed across providers (Trip: stop; Motive driving_periods: start; this: overlap) — never assume the rule, per type, ever. Overlap retrieval supersets start-anchored ownership, so `active_from` routing needs no fetch pad (captured 2026-07-15). |
+| GeoTab | The silent 5,000 `Get` cap is confirmed on ExceptionEvent: `GetCountOf` returned 304,716 against a bare `Get` returning exactly 5,000 — the bisection overflow signal's per-type precondition, now Captured for this type (captured 2026-07-15). |
+| GeoTab | The User visibility anomaly was scope, not nonexistence: after the account fix, `GetCountOf User` returned 157 (previously 2), `isDriver: true` search returns driver records, and a by-id fetch of a trip-referenced driver succeeds. The driver-variant User shape is captured (60+ fields; carries list-of-nested-object fields like `mapViews` — the list-of-structs derivation vertical is load-bearing for any User model) (captured 2026-07-15). |
 | Samsara | 429 with fractional `Retry-After` (e.g. `0.40235`); 401 body is `{"message": ...}`; 5xx bodies are plain strings, never JSON. |
 | Motive | 401 body is `{"error_message": ...}`; the documented /vehicle_locations limit was not observed to enforce — generic 429 posture. |
 | Motive | `/v3/vehicle_locations/{vehicle_id}` verified live: envelope `{"vehicle_locations": [{"vehicle_location": {...}}]}`, `located_at` is UTC ISO-8601 (`Z`-suffixed), one non-paginated page per fetch (so `SinglePageDecoder` fits), and a single per-vehicle fetch spans multiple calendar dates (the sample crossed two) — confirming `split_by_date`'s multi-partition output is load-bearing in production, not a theoretical edge: one fetch genuinely fans into several partitions. |
