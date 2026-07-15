@@ -1,6 +1,6 @@
 # src/fleetpull/network/decoders/samsara.py
 """Samsara page decoder: top-level-list records, cursor pagination
-(sources: normalized provider-behavior verification, June 2026; cursor
+(sources: scrubbed provider-behavior verification, June 2026; cursor
 contract from provider documentation).
 
 Records arrive as a top-level list under a per-endpoint key; the

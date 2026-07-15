@@ -1,5 +1,5 @@
 # src/fleetpull/network/classifiers/geotab.py
-"""GeoTab response classifier (sources: normalized provider-behavior
+"""GeoTab response classifier (sources: scrubbed provider-behavior
 verification, June 2026).
 
 GeoTab is JSON-RPC: every application-level failure arrives inside

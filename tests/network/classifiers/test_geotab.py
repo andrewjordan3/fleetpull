@@ -1,4 +1,4 @@
-"""Tests for the GeoTab response classifier (fixtures: normalized
+"""Tests for the GeoTab response classifier (fixtures: scrubbed
 provider-behavior verification, June 2026; constructed fixtures
 marked)."""
 

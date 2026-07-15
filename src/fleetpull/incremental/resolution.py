@@ -97,7 +97,7 @@ def resolve_resume_start(
     ``23:59:59`` less the lookback covers its boundary date by a seconds-wide
     sliver: the day-granular request fetches the whole day, the window filter
     keeps only the sliver, and replacement/prune then destroy the boundary
-    partition (the live severely truncated boundary-partition defect). Floored, lookback reads as
+    partition (the live 6-row sliver defect). Floored, lookback reads as
     "re-cover N whole days before the watermark's day". Arms 2 and 3 are
     midnight-aligned by construction, so the floor is idempotent there and
     load-bearing on arm 1. This rule is for snapshot/point-event endpoints

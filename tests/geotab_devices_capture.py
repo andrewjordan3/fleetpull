@@ -1,33 +1,34 @@
-"""Deterministic GeoTab Device fixtures modeled on provider wire shapes.
+"""The committed GeoTab devices capture set (2026-07-09 probe session).
 
-The seek-walk boundary fixture, six Device records, trailer-shape record,
-terminal empty page, and ``GetCountOf`` envelope use purpose-built test
-values. They preserve the structural and pagination properties exercised
-by the tests: distinct device-generation shapes, missing nested blocks,
-trailer-only fields, required sentinels, ids strictly ascending, page 2's
-request offset equal to page 1's last record id, hex-consecutive boundary
-ids, terminal empty-page behavior, and a count above the provider cap.
+The seek-walk boundary fixture and its six Device records, the trailer-
+shape record, the terminal empty page, and the ``GetCountOf`` envelope
+-- all Captured from live GeoTab and scrubbed per the Data Hygiene
+convention before commit (synthetic ids, names, VINs; load-bearing
+properties preserved: ids strictly ascending, page 2's request offset
+equal to page 1's last record id, the boundary ids hex-consecutive).
 
 Shared by the seek-decoder tests, the Device model tests, and the
-fetch/Sync end-to-end tests -- a multi-consumer fixture set, so it lives
-in one helper module under ``tests/`` instead of being duplicated beside
-each consumer. The JSON literals are the designed wire-shaped fixtures;
-the parsed objects beside them are what tests consume.
+fetch/Sync end-to-end tests -- a multi-consumer capture set, so it lives
+in one helper module under ``tests/`` (the ``serial_executor``
+precedent) instead of being duplicated beside each consumer. The raw
+JSON literals are the captures verbatim (raw strings: one captured
+value carries an escaped quote); the parsed objects beside them are
+what tests consume.
 """
 
 import json
 
 from fleetpull.vocabulary import JsonObject, JsonValue
 
-# Fixture: Authenticate success in the shared JSON-RPC envelope shape.
-# The deterministic credential values are shared with classifier and ingress tests.
+# Captured: Authenticate success (June 2026; the harness-pattern fixture,
+# same capture as the classifier and ingress test modules carry).
 AUTHENTICATE_SUCCESS_JSON: str = (
     '{"result": {"credentials": {"database": "exampledb", "sessionId":'
     ' "SyntheticSessionId000001", "userName": "user@example.com"},'
     ' "path": "ThisServer"}, "jsonrpc": "2.0"}'
 )
 
-# Fixture: seek walk page 1 request (resultsLimit 3 -- the
+# Captured: seek walk page 1 request (2026-07-09, resultsLimit 3 -- the
 # walk's parameter, not the mechanism; production uses 5000). The
 # authoritative request-key placement: sort inside params, sortBy id,
 # an EXPLICIT null offset on the first page, credentials injected by
@@ -53,7 +54,7 @@ SEEK_PAGE_1_REQUEST_JSON: str = r"""
 
 SEEK_PAGE_1_REQUEST: dict[str, JsonValue] = json.loads(SEEK_PAGE_1_REQUEST_JSON)
 
-# Fixture: seek walk page 1 response -- two GO7-era shapes and one GO9
+# Captured: seek walk page 1 response -- two GO7-era shapes and one GO9
 # (HTTP 200; ids strictly ascending).
 SEEK_PAGE_1_RESPONSE_JSON: str = r"""
 {
@@ -105,7 +106,7 @@ SEEK_PAGE_1_RESPONSE_JSON: str = r"""
             "corneringWarningThreshold": 18,
             "enableBeepOnDangerousDriving": true,
             "enableBeepOnRpm": true,
-            "engineHourOffset": 100.0,
+            "engineHourOffset": 0,
             "isActiveTrackingEnabled": false,
             "forceActiveTracking": true,
             "isDriverSeatbeltWarningOn": true,
@@ -113,11 +114,11 @@ SEEK_PAGE_1_RESPONSE_JSON: str = r"""
             "isReverseDetectOn": false,
             "isIoxConnectionEnabled": true,
             "odometerFactor": 1,
-            "odometerOffset": 1000.0,
+            "odometerOffset": -1250.7679994106293,
             "rpmValue": 3500,
             "seatbeltWarningSpeed": 10,
-            "activeFrom": "2026-01-01T00:00:00.000Z",
-            "activeTo": "2026-06-01T00:00:00.000Z",
+            "activeFrom": "2017-09-12T13:58:56.000Z",
+            "activeTo": "2021-11-05T13:35:43.215Z",
             "disableBuzzer": false,
             "enableBeepOnIdle": false,
             "enableSpeedWarning": false,
@@ -136,7 +137,7 @@ SEEK_PAGE_1_RESPONSE_JSON: str = r"""
             "engineVehicleIdentificationNumber": "4SYNTHV1N00000001",
             "ensureHotStart": false,
             "gpsOffDelay": 0,
-            "licensePlate": "SYN-001",
+            "licensePlate": "0000001",
             "licenseState": "",
             "major": 28,
             "minor": 42,
@@ -178,7 +179,7 @@ SEEK_PAGE_1_RESPONSE_JSON: str = r"""
             "maxSecondsBetweenLogs": 200,
             "name": "synthetic-unit-001",
             "productId": 111,
-            "serialNumber": "SYNTHSERIAL001",
+            "serialNumber": "000-000-0000",
             "timeToDownload": "1.00:00:00",
             "workTime": "WorkTimeStandardHoursId",
             "devicePlans": [
@@ -243,7 +244,7 @@ SEEK_PAGE_1_RESPONSE_JSON: str = r"""
             "corneringWarningThreshold": 18,
             "enableBeepOnDangerousDriving": true,
             "enableBeepOnRpm": true,
-            "engineHourOffset": 200.0,
+            "engineHourOffset": 0,
             "isActiveTrackingEnabled": false,
             "forceActiveTracking": true,
             "isDriverSeatbeltWarningOn": true,
@@ -251,11 +252,11 @@ SEEK_PAGE_1_RESPONSE_JSON: str = r"""
             "isReverseDetectOn": false,
             "isIoxConnectionEnabled": true,
             "odometerFactor": 1,
-            "odometerOffset": 2000.0,
+            "odometerOffset": 1500.2080001831055,
             "rpmValue": 3500,
             "seatbeltWarningSpeed": 10,
-            "activeFrom": "2026-01-02T00:00:00.000Z",
-            "activeTo": "2026-06-02T00:00:00.000Z",
+            "activeFrom": "2017-09-12T13:58:56.000Z",
+            "activeTo": "2021-10-05T22:09:06.254Z",
             "disableBuzzer": false,
             "enableBeepOnIdle": false,
             "enableSpeedWarning": false,
@@ -274,7 +275,7 @@ SEEK_PAGE_1_RESPONSE_JSON: str = r"""
             "engineVehicleIdentificationNumber": "4SYNTHV1N00000002",
             "ensureHotStart": false,
             "gpsOffDelay": 0,
-            "licensePlate": "SYN-002",
+            "licensePlate": "0000002",
             "licenseState": "",
             "major": 29,
             "minor": 47,
@@ -316,7 +317,7 @@ SEEK_PAGE_1_RESPONSE_JSON: str = r"""
             "maxSecondsBetweenLogs": 200,
             "name": "synthetic-unit-002",
             "productId": 111,
-            "serialNumber": "SYNTHSERIAL002",
+            "serialNumber": "000-000-0000",
             "timeToDownload": "1.00:00:00",
             "workTime": "WorkTimeStandardHoursId",
             "devicePlans": [
@@ -383,7 +384,7 @@ SEEK_PAGE_1_RESPONSE_JSON: str = r"""
             "corneringWarningThreshold": 18,
             "enableBeepOnDangerousDriving": true,
             "enableBeepOnRpm": true,
-            "engineHourOffset": 300.0,
+            "engineHourOffset": 0,
             "isActiveTrackingEnabled": false,
             "forceActiveTracking": true,
             "isDriverSeatbeltWarningOn": true,
@@ -391,10 +392,10 @@ SEEK_PAGE_1_RESPONSE_JSON: str = r"""
             "isReverseDetectOn": false,
             "isIoxConnectionEnabled": true,
             "odometerFactor": 1,
-            "odometerOffset": 3000.0,
+            "odometerOffset": -1700.8479996919632,
             "rpmValue": 3500,
             "seatbeltWarningSpeed": 6,
-            "activeFrom": "2026-01-03T00:00:00.000Z",
+            "activeFrom": "2024-09-10T22:44:05.119Z",
             "activeTo": "2050-01-01T00:00:00.000Z",
             "disableBuzzer": false,
             "enableBeepOnIdle": false,
@@ -427,7 +428,7 @@ SEEK_PAGE_1_RESPONSE_JSON: str = r"""
             "engineVehicleIdentificationNumber": "4SYNTHV1N00000003",
             "ensureHotStart": false,
             "gpsOffDelay": 0,
-            "licensePlate": "SYN-003",
+            "licensePlate": "0000003",
             "licenseState": "IN",
             "major": 45,
             "minor": 42,
@@ -499,7 +500,7 @@ SEEK_PAGE_1_RESPONSE_JSON: str = r"""
 
 SEEK_PAGE_1_RESPONSE: dict[str, JsonValue] = json.loads(SEEK_PAGE_1_RESPONSE_JSON)
 
-# Fixture: seek walk page 2 request -- its sort.offset equals page 1's
+# Captured: seek walk page 2 request -- its sort.offset equals page 1's
 # last record id (the no-loss/no-overlap seam; 0xb105 + 1 == 0xb106).
 SEEK_PAGE_2_REQUEST_JSON: str = r"""
 {
@@ -522,7 +523,7 @@ SEEK_PAGE_2_REQUEST_JSON: str = r"""
 
 SEEK_PAGE_2_REQUEST: dict[str, JsonValue] = json.loads(SEEK_PAGE_2_REQUEST_JSON)
 
-# Fixture: seek walk page 2 response -- three GO9s, two of which carry
+# Captured: seek walk page 2 response -- three GO9s, two of which carry
 # no deviceFlags/devicePlans (shape poverty is two records, not one:
 # the model tests treat it as a shape, not a curiosity).
 SEEK_PAGE_2_RESPONSE_JSON: str = r"""
@@ -577,7 +578,7 @@ SEEK_PAGE_2_RESPONSE_JSON: str = r"""
             "corneringWarningThreshold": 18,
             "enableBeepOnDangerousDriving": true,
             "enableBeepOnRpm": true,
-            "engineHourOffset": 400.0,
+            "engineHourOffset": 0,
             "isActiveTrackingEnabled": false,
             "forceActiveTracking": true,
             "isDriverSeatbeltWarningOn": true,
@@ -585,10 +586,10 @@ SEEK_PAGE_2_RESPONSE_JSON: str = r"""
             "isReverseDetectOn": false,
             "isIoxConnectionEnabled": true,
             "odometerFactor": 1,
-            "odometerOffset": 4000.0,
+            "odometerOffset": -1899.743999660015,
             "rpmValue": 3500,
             "seatbeltWarningSpeed": 10,
-            "activeFrom": "2026-01-04T00:00:00.000Z",
+            "activeFrom": "2023-04-19T21:55:09.606Z",
             "activeTo": "2050-01-01T00:00:00.000Z",
             "disableBuzzer": false,
             "enableBeepOnIdle": false,
@@ -617,7 +618,7 @@ SEEK_PAGE_2_RESPONSE_JSON: str = r"""
             "engineVehicleIdentificationNumber": "4SYNTHV1N00000004",
             "ensureHotStart": false,
             "gpsOffDelay": 0,
-            "licensePlate": "SYN-004",
+            "licensePlate": "0000004",
             "licenseState": "",
             "major": 45,
             "minor": 44,
@@ -732,7 +733,7 @@ SEEK_PAGE_2_RESPONSE_JSON: str = r"""
             "corneringWarningThreshold": 18,
             "enableBeepOnDangerousDriving": true,
             "enableBeepOnRpm": true,
-            "engineHourOffset": 500.0,
+            "engineHourOffset": 0,
             "isActiveTrackingEnabled": false,
             "forceActiveTracking": true,
             "isDriverSeatbeltWarningOn": true,
@@ -740,11 +741,11 @@ SEEK_PAGE_2_RESPONSE_JSON: str = r"""
             "isReverseDetectOn": false,
             "isIoxConnectionEnabled": true,
             "odometerFactor": 1,
-            "odometerOffset": 5000.0,
+            "odometerOffset": 1194.4320001006126,
             "rpmValue": 3500,
             "seatbeltWarningSpeed": 10,
-            "activeFrom": "2026-01-05T00:00:00.000Z",
-            "activeTo": "2026-06-05T00:00:00.000Z",
+            "activeFrom": "2023-10-20T20:16:07.016Z",
+            "activeTo": "2023-10-21T19:59:59.639Z",
             "disableBuzzer": true,
             "enableBeepOnIdle": false,
             "enableSpeedWarning": false,
@@ -772,7 +773,7 @@ SEEK_PAGE_2_RESPONSE_JSON: str = r"""
             "engineVehicleIdentificationNumber": "4SYNTHV1N00000005",
             "ensureHotStart": false,
             "gpsOffDelay": 0,
-            "licensePlate": "SYN-005",
+            "licensePlate": "0000005",
             "licenseState": "",
             "major": 37,
             "minor": 20,
@@ -798,7 +799,7 @@ SEEK_PAGE_2_RESPONSE_JSON: str = r"""
             "maxSecondsBetweenLogs": 200,
             "name": "synthetic-unit-005",
             "productId": 120,
-            "serialNumber": "SYNTHSERIAL005",
+            "serialNumber": "000-000-0000",
             "timeToDownload": "1.00:00:00",
             "workTime": "WorkTimeStandardHoursId",
             "customFeatures": {
@@ -856,7 +857,7 @@ SEEK_PAGE_2_RESPONSE_JSON: str = r"""
             "corneringWarningThreshold": 18,
             "enableBeepOnDangerousDriving": true,
             "enableBeepOnRpm": true,
-            "engineHourOffset": 600.0,
+            "engineHourOffset": 0,
             "isActiveTrackingEnabled": false,
             "forceActiveTracking": true,
             "isDriverSeatbeltWarningOn": true,
@@ -864,11 +865,11 @@ SEEK_PAGE_2_RESPONSE_JSON: str = r"""
             "isReverseDetectOn": false,
             "isIoxConnectionEnabled": true,
             "odometerFactor": 1,
-            "odometerOffset": 6000.0,
+            "odometerOffset": -241.71199959516525,
             "rpmValue": 3500,
             "seatbeltWarningSpeed": 10,
-            "activeFrom": "2026-01-06T00:00:00.000Z",
-            "activeTo": "2026-06-06T00:00:00.000Z",
+            "activeFrom": "2023-04-19T22:03:30.531Z",
+            "activeTo": "2023-12-29T21:55:33.257Z",
             "disableBuzzer": false,
             "enableBeepOnIdle": false,
             "enableSpeedWarning": false,
@@ -900,7 +901,7 @@ SEEK_PAGE_2_RESPONSE_JSON: str = r"""
             "engineVehicleIdentificationNumber": "4SYNTHV1N00000006",
             "ensureHotStart": false,
             "gpsOffDelay": 0,
-            "licensePlate": "SYN-006",
+            "licensePlate": "0000006",
             "licenseState": "IN",
             "major": 39,
             "minor": 27,
@@ -927,9 +928,9 @@ SEEK_PAGE_2_RESPONSE_JSON: str = r"""
             "communicationThresholdIntervalMoving": 86400,
             "communicationThresholdIntervalStationary": 86400,
             "maxSecondsBetweenLogs": 200,
-            "name": "synthetic-unit-006",
+            "name": "synthetic-unit-006 ",
             "productId": 120,
-            "serialNumber": "SYNTHSERIAL006",
+            "serialNumber": "000-000-0000",
             "timeToDownload": "1.00:00:00",
             "workTime": "WorkTimeStandardHoursId",
             "customFeatures": {
@@ -944,7 +945,8 @@ SEEK_PAGE_2_RESPONSE_JSON: str = r"""
 
 SEEK_PAGE_2_RESPONSE: dict[str, JsonValue] = json.loads(SEEK_PAGE_2_RESPONSE_JSON)
 
-# Fixture: the terminal empty page -- the only termination signal seek paging has.
+# Captured: the terminal empty page, from the same day's full-fleet walk
+# (the devices: 0 call) -- the ONLY termination signal seek paging has.
 SEEK_TERMINAL_RESPONSE_JSON: str = r"""
 {
     "result": [],
@@ -953,8 +955,9 @@ SEEK_TERMINAL_RESPONSE_JSON: str = r"""
 
 SEEK_TERMINAL_RESPONSE: dict[str, JsonValue] = json.loads(SEEK_TERMINAL_RESPONSE_JSON)
 
-# Fixture: trailer-shape Device record (deviceType "None", productId -1,
+# Captured: trailer-shape Device record (deviceType "None", productId -1,
 # tmpTrailerId; the VIN sentinels "" and the literal "?" live here).
+# From the saved full-page capture, 2026-07-09.
 TRAILER_DEVICE_RECORD_JSON: str = r"""
 {
     "vehicleIdentificationNumber": "",
@@ -966,7 +969,7 @@ TRAILER_DEVICE_RECORD_JSON: str = r"""
     "licenseState": "",
     "pinDevice": true,
     "autoGroups": [],
-    "activeFrom": "2026-02-01T00:00:00.000Z",
+    "activeFrom": "2022-02-06T07:12:45.339Z",
     "activeTo": "2050-01-01T00:00:00.000Z",
     "comment": "",
     "groups": [
@@ -981,7 +984,7 @@ TRAILER_DEVICE_RECORD_JSON: str = r"""
     "communicationThresholdIntervalMoving": 86400,
     "communicationThresholdIntervalStationary": 86400,
     "maxSecondsBetweenLogs": 200,
-    "name": "synthetic-trailer-001",
+    "name": "synthetic-unit-007",
     "productId": -1,
     "serialNumber": "",
     "timeToDownload": "1.00:00:00",
@@ -993,23 +996,20 @@ TRAILER_DEVICE_RECORD_JSON: str = r"""
 
 TRAILER_DEVICE_RECORD: JsonObject = json.loads(TRAILER_DEVICE_RECORD_JSON)
 
-# Fixture: GetCountOf response (2026-07-09) -- the completeness guard's
-# slice-model fixture; a purpose-built count above the capped 5,000 Get
-# preserves the completeness-check branch that forced seek paging.
+# Captured: GetCountOf response (2026-07-09) -- the completeness guard's
+# slice-model fixture; 5,666 against the same-day capped 5,000 Get is
+# the finding that forced seek paging.
 GET_COUNT_OF_RESPONSE_JSON: str = r"""
-{
-    "result": 5100,
-    "jsonrpc": "2.0"
-}"""
+{"result": 5666, "jsonrpc": "2.0"}"""
 
 GET_COUNT_OF_RESPONSE: dict[str, JsonValue] = json.loads(GET_COUNT_OF_RESPONSE_JSON)
 
 
 def _result_records(envelope: dict[str, JsonValue]) -> list[JsonObject]:
-    """Narrow a fixture Get envelope's ``result`` to its record list.
+    """Narrow a captured Get envelope's ``result`` to its record list.
 
-    The fixtures are known-good record lists; the asserts exist for the
-    type checker (and would fail loudly if a fixture were ever edited
+    The captures are known-good record lists; the asserts exist for the
+    type checker (and would fail loudly if a capture were ever edited
     into a different shape).
     """
     records = envelope['result']

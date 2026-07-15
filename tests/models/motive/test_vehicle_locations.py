@@ -19,7 +19,7 @@ _ODOMETER: float = 123456.78901234567
 
 
 def _canonical_record() -> JsonObject:
-    """A provider-shaped synthetic ``/v3/vehicle_locations`` inner record.
+    """A scrubbed real ``/v3/vehicle_locations`` inner record (every value fake).
 
     Returns:
         A wire-shaped mapping using Motive's response keys, populated with
