@@ -118,11 +118,11 @@ class MotiveVehicleLocationsSpecBuilder:
                 'MotiveVehicleLocationsSpecBuilder requires a DateWindow resume, '
                 f'got {type(resume).__name__}.'
             )
-        rendered_path: str = render_url_path_template(self.path_template, path_values)
-        url: str = f'{self.base_url}{rendered_path}'
-        start_date: str = to_utc_date_string(resume.start)
-        end_date: str = to_utc_date_string(resume.end - timedelta(microseconds=1))
-        params: dict[str, str] = {'start_date': start_date, 'end_date': end_date}
+        rendered_path = render_url_path_template(self.path_template, path_values)
+        url = f'{self.base_url}{rendered_path}'
+        start_date = to_utc_date_string(resume.start)
+        end_date = to_utc_date_string(resume.end - timedelta(microseconds=1))
+        params = {'start_date': start_date, 'end_date': end_date}
         return RequestSpec(method=HttpMethod.GET, url=url, params=params)
 
 

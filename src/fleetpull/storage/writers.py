@@ -44,7 +44,6 @@ from fleetpull.storage.partitioning import prune_window_partitions, window_dates
 from fleetpull.storage.read import read_parquet_if_exists
 from fleetpull.storage.result import WriteResult
 from fleetpull.storage.staging import (
-    CompactionResult,
     clear_partition_staging,
     compact_partition,
     stage_shard,
@@ -134,11 +133,9 @@ class SingleFileWriter(ABC):
         Side Effects:
             Atomically rewrites ``data.parquet`` under the endpoint directory.
         """
-        frame: pl.DataFrame = self._finalize_frame()
-        before: int = frame.height
-        written: pl.DataFrame = (
-            drop_exact_duplicates(frame) if self._drop_duplicates else frame
-        )
+        frame = self._finalize_frame()
+        before = frame.height
+        written = drop_exact_duplicates(frame) if self._drop_duplicates else frame
         atomic_write_parquet(written, data_file(self._target_dir))
         return WriteResult(
             rows_written=written.height,
@@ -290,10 +287,8 @@ class PartitionedWriter(ABC):
         Side Effects:
             Writes ``.shard`` files under the touched dates' staging directories.
         """
-        touched_dates: set[date] = stage_shard(
-            self._target_dir, frame, self._event_time_column
-        )
-        out_of_window: set[date] = touched_dates - self._covered_dates
+        touched_dates = stage_shard(self._target_dir, frame, self._event_time_column)
+        out_of_window = touched_dates - self._covered_dates
         if out_of_window:
             raise ValueError(
                 f'staged partition dates outside the resume window: '
@@ -315,17 +310,17 @@ class PartitionedWriter(ABC):
             Writes each touched ``part.parquet`` and clears its staging; deletes
             the pruned partition directories.
         """
-        rows_written: int = 0
-        duplicates_dropped: int = 0
+        rows_written = 0
+        duplicates_dropped = 0
         for partition_date in sorted(self._written_dates):
-            existing: pl.DataFrame | None = (
+            existing = (
                 read_parquet_if_exists(
                     partition_part_file(self._target_dir, partition_date)
                 )
                 if self._reads_existing
                 else None
             )
-            result: CompactionResult = compact_partition(
+            result = compact_partition(
                 self._target_dir,
                 partition_date,
                 existing,
@@ -334,7 +329,7 @@ class PartitionedWriter(ABC):
             rows_written += result.rows_written
             duplicates_dropped += result.duplicates_dropped
         clear_partition_staging(self._target_dir, self._written_dates)
-        deleted_partitions: list[date] = (
+        deleted_partitions = (
             prune_window_partitions(self._target_dir, self._window, self._written_dates)
             if self._prunes
             else []

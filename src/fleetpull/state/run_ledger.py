@@ -341,9 +341,7 @@ class RunLedger:
             raise ValueError(f'row_count must be non-negative, got {row_count}')
         ended_at: str = to_iso8601(self._clock.now_utc())
         with self._database.connect() as connection:
-            mode_row: tuple[SqliteScalar, ...] | None = connection.execute(
-                _SELECT_RUN_MODE_SQL, (run_id,)
-            ).fetchone()
+            mode_row = connection.execute(_SELECT_RUN_MODE_SQL, (run_id,)).fetchone()
             if mode_row is None:
                 raise ValueError(f'no run with run_id {run_id}')
             stored_mode: SqliteScalar = mode_row[0]
@@ -445,7 +443,7 @@ class RunLedger:
             Opens a connection and reads one aggregate row.
         """
         with self._database.connect() as connection:
-            frontier_row: tuple[SqliteScalar, ...] = connection.execute(
+            frontier_row = connection.execute(
                 _COVERAGE_FRONTIER_SQL,
                 (provider.value, endpoint, RunStatus.SUCCEEDED.value),
             ).fetchone()
@@ -496,7 +494,7 @@ class RunLedger:
             Opens a connection and reads one aggregate row.
         """
         with self._database.connect() as connection:
-            row: tuple[SqliteScalar, ...] = connection.execute(
+            row = connection.execute(
                 _LAST_SUCCESS_SQL,
                 (provider.value, endpoint, RunStatus.SUCCEEDED.value),
             ).fetchone()

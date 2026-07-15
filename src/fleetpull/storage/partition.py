@@ -75,10 +75,10 @@ def split_by_date(
     """
     if frame.height == 0:
         return []
-    with_partition_date: pl.DataFrame = frame.with_columns(
+    with_partition_date = frame.with_columns(
         pl.col(event_time_column).dt.date().alias(_PARTITION_DATE_COLUMN)
     )
-    partitions: list[pl.DataFrame] = with_partition_date.partition_by(
+    partitions = with_partition_date.partition_by(
         _PARTITION_DATE_COLUMN, maintain_order=True
     )
     result: list[tuple[date, pl.DataFrame]] = []

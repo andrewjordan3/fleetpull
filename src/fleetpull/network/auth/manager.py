@@ -211,7 +211,7 @@ class GeotabSessionManager:
             self._config
         )
         self._generation_counter += 1
-        new_session: GeotabSession = GeotabSession(
+        new_session = GeotabSession(
             session_id=authentication_result.session_id,
             resolved_host=authentication_result.resolved_host,
             database=self._config.database,

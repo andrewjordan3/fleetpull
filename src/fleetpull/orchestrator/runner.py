@@ -325,7 +325,7 @@ class EndpointRunner:
             writer = select_writer(
                 definition, self._dataset_root, drop_duplicates=self._drop_duplicates
             )
-            records_fetched: int = 0
+            records_fetched = 0
             batches = stream_processed_batches(
                 definition, driver, client, resume=None, context=None
             )
@@ -534,7 +534,7 @@ class EndpointRunner:
                 window=window,
                 drop_duplicates=self._drop_duplicates,
             )
-            records_fetched: int = 0
+            records_fetched = 0
             latest_observed: datetime | None = None
             for processed in batches:
                 writer.write(processed.frame)
