@@ -1,6 +1,6 @@
 # fleetpull — Design Document
 
-**Status:** Design settled through module layout; implementation well underway — the `vehicles` snapshot vertical is complete end-to-end, and the `vehicle_locations` date-partitioned/watermark vertical has run its incremental loop end-to-end live; the window-granularity defect that run surfaced is fixed (the floored resume window, §4). See §15 for run status and the build roadmap.
+**Status:** Design settled through the two-verb public API (§10) and config-driven sync. Shipped end-to-end: the `fetch` API; `Sync(config_path).run()`; work-unit planning with crash resume and the per-provider fan-out executor; Motive `vehicles` (snapshot) and `vehicle_locations` (date-partitioned watermark, live-run); GeoTab `devices` (snapshot, live-run) and `trips` (windowed watermark). The GeoTab feed arm (`GetFeed` runner, storage cells, token commit) remains unbuilt — trips ships windowed until it lands (§8). See §15 for run status and the build roadmap.
 **Name:** `fleetpull` — final. Describes exactly what the package does and nothing more (PyPI availability confirmed 2026-06-10).
 **Relationship to fleet-telemetry-hub:** New package, not a rewrite. fleet-telemetry-hub remains in production untouched while fleetpull is built.
 
