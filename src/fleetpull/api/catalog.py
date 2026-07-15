@@ -47,6 +47,9 @@ class Endpoints:
 
         devices: SnapshotEndpoint = SnapshotEndpoint(Provider.GEOTAB, 'devices')
         trips: WindowedEndpoint = WindowedEndpoint(Provider.GEOTAB, 'trips')
+        exception_events: WindowedEndpoint = WindowedEndpoint(
+            Provider.GEOTAB, 'exception_events'
+        )
 
 
 def available_endpoints() -> tuple[EndpointIdentity, ...]:
@@ -62,4 +65,5 @@ def available_endpoints() -> tuple[EndpointIdentity, ...]:
         Endpoints.Motive.idle_events,
         Endpoints.Geotab.devices,
         Endpoints.Geotab.trips,
+        Endpoints.Geotab.exception_events,
     )

@@ -63,6 +63,7 @@ import polars as pl
 from fleetpull.endpoints.shared import EndpointDefinition, SnapshotMode
 from fleetpull.exceptions import ConfigurationError
 from fleetpull.model_contract import ResponseModel
+from fleetpull.orchestrator.bisection import BisectingWindowDriver
 from fleetpull.orchestrator.drivers import (
     FanOutRequestDriver,
     RequestDriver,
@@ -274,19 +275,21 @@ def _resolve_driver(
     rosters: RosterMachinery,
     fetch_pools: FetchPoolSource,
 ) -> RequestDriver:
-    """Resolve the definition's declared fan-out into a request driver.
+    """Resolve the definition's declared strategy into a request driver.
 
-    Module-private by design: the fan-out/single-fetch distinction is the
-    entry's to hide, not the caller's to compose with.
+    Module-private by design: the bisection/fan-out/single-fetch
+    distinction is the entry's to hide, not the caller's to compose with.
 
     Args:
-        definition: The endpoint whose ``fan_out`` declaration routes.
-        rosters: Resolves the binding's ``RosterKey``, refreshes the
+        definition: The endpoint whose declarations route.
+        rosters: Resolves a fan-out binding's ``RosterKey``, refreshes the
             membership when stale, and reads it back.
         fetch_pools: Supplies the provider's fetch pool for a fan-out driver.
 
     Returns:
-        The ``SingleRequestDriver`` for ``fan_out=None``; otherwise the
+        The ``BisectingWindowDriver`` for a declared ``window_bisection``
+        (construction guarantees it never composes with a fan-out); the
+        ``SingleRequestDriver`` for ``fan_out=None``; otherwise the
         ``FanOutRequestDriver`` over the roster's members with the binding's
         declared placeholder and the provider's fetch pool.
 
@@ -300,6 +303,8 @@ def _resolve_driver(
         On the fan-out path: whatever the refresh performs (a feeder listing
         and a store write when stale).
     """
+    if definition.window_bisection is not None:
+        return BisectingWindowDriver(bisection=definition.window_bisection)
     binding = definition.fan_out
     if binding is None:
         return SingleRequestDriver()
