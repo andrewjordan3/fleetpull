@@ -1,6 +1,6 @@
 # fleetpull — Design Document
 
-**Status:** Design settled through the two-verb public API (§10) and config-driven sync. Shipped end-to-end: the `fetch` API; `Sync(config_path).run()`; work-unit planning with crash resume and the per-provider fan-out executor; Motive `vehicles` (snapshot) and `vehicle_locations` (date-partitioned watermark, live-run); GeoTab `devices` (snapshot, live-run) and `trips` (windowed watermark). The GeoTab feed arm (`GetFeed` runner, storage cells, token commit) remains unbuilt — trips ships windowed until it lands (§8). See §15 for run status and the build roadmap.
+**Status:** Design settled through the two-verb public API (§10) and config-driven sync. Shipped end-to-end: the `fetch` API; `Sync(config_path).run()`; work-unit planning with crash resume and the per-provider fan-out executor; Motive `vehicles` (snapshot), `vehicle_locations` (date-partitioned watermark, live-run), and the fleet-wide event pair `driving_periods` / `idle_events` (windowed watermark); GeoTab `devices` (snapshot, live-run) and `trips` (windowed watermark). The GeoTab feed arm (`GetFeed` runner, storage cells, token commit) remains unbuilt — trips ships windowed until it lands (§8). See §15 for run status and the build roadmap.
 **Name:** `fleetpull` — final. Describes exactly what the package does and nothing more (PyPI availability confirmed 2026-06-10).
 **Relationship to fleet-telemetry-hub:** New package, not a rewrite. fleet-telemetry-hub remains in production untouched while fleetpull is built.
 
@@ -1122,8 +1122,10 @@ port build prompt implements them.
    precision buys nothing over the pad.
 3. **Backfill chunking bounds at a ≤ 30-day date delta on both endpoints.**
    `driving_periods` enforces it loudly; applying the same bound to
-   `idle_events` keeps wide-window latency (observed 12–18 s) inside
-   sensible per-endpoint HTTP timeouts, which these two set generously.
+   `idle_events` keeps wide-window latency (observed 12–18 s) inside the
+   configured HTTP read timeout (`HttpConfig.read_timeout_seconds`,
+   default 30 s — global, not per-endpoint; a user running wide backfill
+   chunks raises it in config).
 4. **The rollup endpoints stay unported** (`vehicle_utilization`,
    `driver_utilization`): superseded in the legacy package, and their
    documented company-local rollup timestamps make them a modeling hazard
@@ -2283,7 +2285,12 @@ resolution (item 1, done).
    provider branch. The `trips` windowed vertical followed (2026-07-13),
    proving the watermark arm crosses providers, and the `exception_events`
    design is settled (2026-07-15; the §8 decision block, probe-gated
-   build). Second half (the feed vertical) remains.*
+   build). The Motive bulk-port began on the pattern's other side
+   (2026-07-15): `driving_periods` and `idle_events` shipped as the
+   fleet-wide event pair per their §8 decision block, on a shared
+   fleet-date-range spec builder; the remaining legacy Motive endpoints
+   (`groups`, `users`, the rollup pair) are deliberately unported.
+   Second half (the feed vertical) remains.*
 8. **Polish phase, gated on a stable public surface:** full-tree ceremony
    audit, test-coverage audit, documentation audit, the real usage-driven
    README, multi-platform CI (a Windows leg would have caught the
