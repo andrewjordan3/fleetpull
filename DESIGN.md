@@ -1095,6 +1095,40 @@ banked probes (GEOTAB-AUDIT §3, P11) select the paging arm.
    overlap, and containment, and the column follows that result so
    retrieval matching and partition routing coincide.
 
+### Motive `driving_periods` / `idle_events` probe-settled decisions (2026-07-15)
+
+Settled by the 2026-07-15 live probe session (the captured rows above); the
+port build prompt implements them.
+
+1. **Both port as windowed watermark, date-partitioned, fleet-wide** (no
+   fan-out), offset-paginated through the existing Motive wrapped-list
+   decoder family; `event_time_column='start_time'` on both — start was
+   never observed null (in-progress records null their *end* fields), and
+   for `driving_periods` the retrieval anchor and the routing anchor
+   coincide natively.
+2. **`idle_events` pads its wire window one day on each side and the true
+   UTC window does the trimming.** The leaf's spec builder writes
+   `start_date − 1` / `end_date + 1` onto the wire; the resume window, the
+   post-fetch window filter, and the writer-side partition tripwire all
+   keep the true UTC window, so every record lands in exactly one chunk
+   (the §4 start-anchored normalization rule, generalized
+   timezone-agnostic — a one-day pad covers any account timezone on
+   earth). Rejected: deriving the account zone from `/v1/companies`
+   `time_zone` — the field-to-window linkage is unverified (Motive's
+   rollup-timezone documentation covers returned timestamps on rollup
+   endpoints, not window interpretation on raw-event endpoints), the
+   Rails-style display name needs a maintained mapping plus DST handling,
+   and overlap-matching makes the client-side filter mandatory anyway, so
+   precision buys nothing over the pad.
+3. **Backfill chunking bounds at a ≤ 30-day date delta on both endpoints.**
+   `driving_periods` enforces it loudly; applying the same bound to
+   `idle_events` keeps wide-window latency (observed 12–18 s) inside
+   sensible per-endpoint HTTP timeouts, which these two set generously.
+4. **The rollup endpoints stay unported** (`vehicle_utilization`,
+   `driver_utilization`): superseded in the legacy package, and their
+   documented company-local rollup timestamps make them a modeling hazard
+   with no consumer.
+
 ### The exception hierarchy (implemented: `exceptions.py`)
 
 The operational errors consumers catch, mirroring the classification
@@ -1171,6 +1205,10 @@ budgets → `RetriesExhaustedError`, failed auth paths →
 | Motive | `/v3/vehicle_locations/{vehicle_id}` date bounds pinned by direct probing: day-granular `start_date`/`end_date` are honored inclusively on both bounds — a single-day request returns that full day, a two-day request both complete days. The documented 3-month maximum range is real: long backfills will eventually need request chunking (a range limit, unrelated to the §15 item-1 window defect). |
 | Motive | `updated_after` on `/v3/vehicle_locations/{vehicle_id}`: documented as required, observably optional and inert — omitting it and supplying it produced byte-identical responses. It remains a candidate ingestion-time CDC hook for the late-upload gap (§13). |
 | Motive | The collection endpoint `/v3/vehicle_locations` (no vehicle id) is a different animal: a last-known-location roster snapshot that ignores date parameters and serves active vehicles only (~1,029 vehicles vs the full harvest's 1,460). It is not a history source and must not be conflated with the per-vehicle history endpoint. |
+| Motive | `/v1/driving_periods` window matching is START-anchored on UTC days: across a 10,366-record two-day window, zero returned periods start before the window's UTC midnight while ends freely spill past the window's right edge (62 right-straddlers observed; end-anchoring and overlap both falsified). Retrieval anchor = `start_time` (captured 2026-07-15). |
+| Motive | `/v1/idle_events` window matching is OVERLAP-anchored on **company-local** day boundaries, not UTC — `start_date`/`end_date` are interpreted at UTC−5 (matching the account's `/v1/companies` `time_zone: "Central Time (US & Canada)"`): a single-local-day probe's earliest end landed 05:14:58Z against the predicted ≥ 05:00:00Z boundary with prior-local-evening overlappers present, and two-day windows returned records lying entirely outside the window on UTC terms. Two sibling endpoints, same param names, different anchor AND different timezone semantics (prediction-confirmed, captured 2026-07-15). |
+| Motive | The 30-day range cap is real and LOUD on `/v1/driving_periods` — HTTP 400, `{"error_message": "Date range cannot be greater than 30 days"}`, with a 30-day delta accepted exactly (the limit counts the date delta) — and is NOT enforced on `/v1/idle_events`, which honored a 35-day window to its final record. Never generalize a per-endpoint cap across siblings (captured 2026-07-15). |
+| Motive | Event-record mechanics, both endpoints: completed `driving_periods` reproduce `duration = end_time − start_time` exactly (float seconds); the in-progress shape carries `status: "in_progress"`, null `end_time`/`end_kilometers`/`distance`, an EMPTY-STRING `destination` beside null destination coordinates, and a fractional running `duration` counter. `start_time` was never observed null. Sort orders differ per endpoint (driving: start desc; idle: end asc); a past-the-end page returns 200 with an empty list and intact pagination echo (`total` = records); success responses carry NO rate-limit headers (the real budget is unobservable outside a 429); wide windows run 12–18 s with one observed 30 s client timeout (captured 2026-07-15). |
 
 The `updated_after` finding generalizes into a standing rule: **encode probed
 provider behavior, never documented behavior alone.** Motive silently
