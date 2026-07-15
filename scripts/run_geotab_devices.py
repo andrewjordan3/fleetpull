@@ -12,10 +12,9 @@ reporting is reads over the results: record count, the ``deviceType``
 polymorphism and per-column null share (the union-of-shapes model made
 visible), the parquet layout, and the run-ledger row.
 
-Set GEOTAB_PASSWORD in the environment (never in a file -- ``Sync``'s
-credential fallback reads it; the other three credential fields are not
-secrets and live in the knobs below) and DATASET_ROOT, then run from the
-repo root:
+Set GEOTAB_USERNAME, GEOTAB_DATABASE, GEOTAB_PASSWORD, and DATASET_ROOT
+in the environment (the password never lands in a file -- ``Sync``'s
+credential fallback reads it), then run from the repo root:
 
     uv run python scripts/run_geotab_devices.py
 
@@ -34,15 +33,15 @@ from fleetpull.vocabulary import Provider
 
 # --- knobs (the config file below is generated from these) ------------------
 
-# The three non-secret credential fields -- safe to write in a file. The
-# password comes from the GEOTAB_PASSWORD environment variable only.
-GEOTAB_USERNAME: str = 'user@example.com'
-GEOTAB_DATABASE: str = 'exampledb'
+# The account-identifying credential fields come from the environment,
+# never this file; the password rides GEOTAB_PASSWORD through Sync's
+# credential fallback. The server is GeoTab's public entry host.
+GEOTAB_USERNAME: str = os.environ.get('GEOTAB_USERNAME', '')
+GEOTAB_DATABASE: str = os.environ.get('GEOTAB_DATABASE', '')
 GEOTAB_SERVER: str = 'my.geotab.com'
 
-# Where the parquet and the SQLite operational-state DB land. Set this for
-# your environment before running.
-DATASET_ROOT: str = ''
+# Where the parquet and the SQLite operational-state DB land.
+DATASET_ROOT: str = os.environ.get('DATASET_ROOT', '')
 
 # True behind the Zscaler-intercepting laptop; False on Colab / a GCP VM.
 USE_TRUSTSTORE: bool = True
@@ -53,8 +52,8 @@ def _write_config_file(dataset_root: Path) -> Path:
 
     The password is deliberately absent: Sync's environment fallback
     resolves GEOTAB_PASSWORD into the auth section's password field, so
-    the secret never lands in a file. Username, database, and server are
-    not secrets and are written from the knobs above.
+    the secret never lands in a file. Username and database arrive via
+    the environment (the knobs above) and are written with the server.
 
     Args:
         dataset_root: Where the dataset (and the generated config) live.
@@ -122,10 +121,15 @@ def _print_ledger_row(dataset_root: Path) -> None:
 
 def main() -> None:
     """Drive the devices snapshot through Sync and report the reads."""
-    if not os.environ.get('GEOTAB_PASSWORD', ''):
-        raise SystemExit('Set GEOTAB_PASSWORD in the environment before running.')
-    if not DATASET_ROOT:
-        raise SystemExit('Set DATASET_ROOT to a destination path before running.')
+    required_env = (
+        'GEOTAB_USERNAME',
+        'GEOTAB_DATABASE',
+        'GEOTAB_PASSWORD',
+        'DATASET_ROOT',
+    )
+    for variable_name in required_env:
+        if not os.environ.get(variable_name, ''):
+            raise SystemExit(f'Set {variable_name} in the environment before running.')
 
     dataset_root = Path(DATASET_ROOT)
     dataset_root.mkdir(parents=True, exist_ok=True)
