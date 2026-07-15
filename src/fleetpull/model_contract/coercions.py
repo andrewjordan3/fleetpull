@@ -15,12 +15,13 @@ from typing import Annotated
 
 from pydantic import BeforeValidator
 
-from fleetpull.vocabulary import JsonValue
-
 __all__: list[str] = ['EmptyStrIsNone', 'empty_str_to_none']
 
 
-def empty_str_to_none(value: JsonValue) -> JsonValue:
+# A BeforeValidator receives the raw wire value, and the layering
+# contract bars model_contract from vocabulary's JsonValue.
+# typing-justified: object is the strictest annotation available here.
+def empty_str_to_none(value: object) -> object:
     """Lift a bare empty string to ``None``; everything else passes through.
 
     Args:

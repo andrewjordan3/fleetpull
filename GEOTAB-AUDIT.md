@@ -304,6 +304,29 @@ blocked on the GeoTab account fix; run in this order:
   for trusting bisection's overflow signal here (DESIGN §8, decision 4) —
   and yields the type's scale datum.
 
+**Update (2026-07-15) — banked probes executed** (Andrew, live MyGeotab,
+post-account-fix; findings recorded in DESIGN §8's observed-behaviors
+table and the two decision blocks). Status per probe:
+
+- **P10 ✓** — stop-matching prediction-confirmed on both bodies (widened
+  end pulled the 13:27:56-stop trip in; moved start dropped the
+  13:02:20-stop trip). The trips fix ships with this update.
+- **P11 ✓** — resolved harder than either arm anticipated: id-sort is
+  unsupported on ExceptionEvent outright (`ArgumentException`: "Can not
+  sort by id. Supported sortable fields are version, date"); composed
+  with any search the same request degrades to the deterministic
+  `-32000 GenericException`. Seek paging dead for this type; bisection
+  ships; version/date sortability banked for the feed design.
+- **P12 ✓** — OVERLAP matching: both discriminating bodies agree, all
+  three rival hypotheses falsified. `event_time_column='active_from'`,
+  no wire pad.
+- **P13 ✓** — cap confirmed: `GetCountOf` 304,716 vs a bare `Get`
+  returning exactly 5,000. Scale datum banked.
+- **Bonus** — the User visibility anomaly closed as scope: 157 users
+  visible, driver records retrievable by `isDriver` search and by id;
+  the driver-variant shape is captured in chat, earmarked for the User
+  modeling conversation (list-of-nested-object fields present).
+
 **Fixture earmarks (2026-07-15)** — the 2026-07-13 ExceptionEvent captures,
 transferred and held in chat (earmarked only; the `exception_events` build
 prompt commits them, scrubbed per this section's convention including the

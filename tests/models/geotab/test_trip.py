@@ -57,11 +57,14 @@ class TestFixtureProperties:
         versions = [record['version'] for record in TRIP_RECORDS]
         assert versions == sorted(versions)  # type: ignore[type-var]
 
-    def test_every_paging_start_is_inside_the_window(self) -> None:
-        starts = [Trip.model_validate(record).start for record in TRIP_RECORDS]
+    def test_every_paging_stop_is_inside_the_window(self) -> None:
+        # TripSearch matches by STOP time (prediction-confirmed
+        # 2026-07-15): stops inside the window are the retrieval
+        # guarantee; starts merely happened to fall inside this capture's
+        # window and carry no guarantee.
+        stops = [Trip.model_validate(record).stop for record in TRIP_RECORDS]
         assert all(
-            start is not None and _WINDOW_START <= start < _WINDOW_END
-            for start in starts
+            stop is not None and _WINDOW_START <= stop < _WINDOW_END for stop in stops
         )
 
     def test_both_driver_variants_appear_in_the_pair(self) -> None:
