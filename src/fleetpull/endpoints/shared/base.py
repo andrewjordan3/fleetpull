@@ -24,6 +24,7 @@ from datetime import date, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Protocol, get_args
 
+from fleetpull.endpoints.shared.bisection import WindowBisection
 from fleetpull.endpoints.shared.fan_out import FanOutBinding
 from fleetpull.incremental import DateWindow, FeedToken
 from fleetpull.model_contract import ResponseModel
@@ -269,6 +270,12 @@ class EndpointDefinition[ModelT: ResponseModel]:
             listing, which a windowed (partial) or fan-out (per-member) run
             never is; any other declaration is a wiring error rejected at
             construction.
+        window_bisection: The adaptive window-bisection declaration
+            (``WindowBisection``) for a capped, unsortable Get endpoint;
+            ``None`` everywhere else. Watermark-mode, date-partitioned,
+            ``fan_out=None`` endpoints only; any other pairing is a wiring
+            error rejected at construction. Executed by the orchestrator's
+            bisecting driver.
     """
 
     provider: Provider
@@ -282,6 +289,7 @@ class EndpointDefinition[ModelT: ResponseModel]:
     event_time_column: str | None = None
     fan_out: FanOutBinding | None = None
     completeness_check: CompletenessCheck | None = None
+    window_bisection: WindowBisection | None = None
 
     def __post_init__(self) -> None:
         """Validate the binding's storage / sync / event-time / guard coherence.
@@ -289,8 +297,10 @@ class EndpointDefinition[ModelT: ResponseModel]:
         Raises:
             ValueError: The storage-kind / sync-mode pairing is invalid, the
                 event-time column is required-but-missing or forbidden-but-present
-                or names no field on the response model, or a completeness check
-                is declared outside snapshot-mode single-fetch.
+                or names no field on the response model, a completeness check
+                is declared outside snapshot-mode single-fetch, or a window
+                bisection is declared outside watermark / date-partitioned
+                single-fetch.
             TypeError: ``event_time_column`` names a non-date-like field.
 
         Side Effects:
@@ -299,6 +309,38 @@ class EndpointDefinition[ModelT: ResponseModel]:
         self._validate_storage_sync_pairing()
         self._validate_event_time_column()
         self._validate_completeness_check()
+        self._validate_window_bisection()
+
+    def _validate_window_bisection(self) -> None:
+        """Reject a bisection declaration outside its executable shape.
+
+        Bisection recursively narrows a resume window, so it is meaningful
+        only for a windowed (``WatermarkMode``), date-partitioned endpoint;
+        and it owns the unit's whole request cardinality, so it cannot
+        compose with a per-member fan-out.
+
+        Raises:
+            ValueError: A bisection is declared on a non-watermark or
+                non-date-partitioned endpoint, or beside a fan-out.
+
+        Side Effects:
+            None.
+        """
+        if self.window_bisection is None:
+            return
+        if not isinstance(self.sync_mode, WatermarkMode) or (
+            self.storage_kind is not StorageKind.DATE_PARTITIONED
+        ):
+            raise ValueError(
+                f'{self.provider.value}.{self.name}: window_bisection requires '
+                f'WatermarkMode and DATE_PARTITIONED storage, got '
+                f'{type(self.sync_mode).__name__} / {self.storage_kind}.'
+            )
+        if self.fan_out is not None:
+            raise ValueError(
+                f'{self.provider.value}.{self.name}: window_bisection cannot '
+                f'compose with a fan-out declaration.'
+            )
 
     def _validate_storage_sync_pairing(self) -> None:
         """Reject a snapshot endpoint laid out anything but ``SINGLE``.

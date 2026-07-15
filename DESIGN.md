@@ -1,6 +1,6 @@
 # fleetpull — Design Document
 
-**Status:** Design settled through the two-verb public API (§10) and config-driven sync. Shipped end-to-end: the `fetch` API; `Sync(config_path).run()`; work-unit planning with crash resume and the per-provider fan-out executor; Motive `vehicles` (snapshot), `vehicle_locations` (date-partitioned watermark, live-run), and the fleet-wide event pair `driving_periods` / `idle_events` (windowed watermark); GeoTab `devices` (snapshot, live-run) and `trips` (windowed watermark). The GeoTab feed arm (`GetFeed` runner, storage cells, token commit) remains unbuilt — trips ships windowed until it lands (§8). See §15 for run status and the build roadmap.
+**Status:** Design settled through the two-verb public API (§10) and config-driven sync. Shipped end-to-end: the `fetch` API; `Sync(config_path).run()`; work-unit planning with crash resume and the per-provider fan-out executor; Motive `vehicles` (snapshot), `vehicle_locations` (date-partitioned watermark, live-run), and the fleet-wide event pair `driving_periods` / `idle_events` (windowed watermark); GeoTab `devices` (snapshot, live-run), `trips` (windowed watermark, stop-anchored), and `exception_events` (windowed watermark, bisected). The GeoTab feed arm (`GetFeed` runner, storage cells, token commit) remains unbuilt — trips ships windowed until it lands (§8). See §15 for run status and the build roadmap.
 **Name:** `fleetpull` — final. Describes exactly what the package does and nothing more (PyPI availability confirmed 2026-06-10).
 **Relationship to fleet-telemetry-hub:** New package, not a rewrite. fleet-telemetry-hub remains in production untouched while fleetpull is built.
 
@@ -1606,6 +1606,7 @@ fleetpull/
   orchestrator/    # run executor + request drivers + roster refresh + fan-out coordinators (§14); concurrency executors (§7)
     outcome.py     # RunOutcome: Executed | CaughtUp — the run result carrier (§14)
     drivers.py     # RequestDriver Protocol + SingleRequestDriver + FanOutRequestDriver — yields FetchedPage per batch (§14)
+    bisection.py   # BisectingWindowDriver — capped, unsortable Gets fetched whole via adaptive window halving (§14)
     runner.py      # EndpointRunner — one endpoint's run transaction; snapshot arm built (§14)
     batch.py       # process_batch: per-batch validate/frame/window + fold (§14)
     streaming.py   # stream_processed_batches: a driver's pages, validated and framed per batch (§14)
@@ -2021,8 +2022,14 @@ orchestration splits into three nested layers, by concern:
   `FanOutRequestDriver` issues one request chain per member
   (`path_values={path_placeholder: member}`), yielding each member's pages — the
   member list the caller's, one member per backfill unit, the whole roster per
-  incremental run. Both drivers yield one page per batch; the runner consumes
-  batches uniformly. A driver touches only the client (from the registry) and the
+  incremental run. `BisectingWindowDriver` (`orchestrator/bisection.py`, added
+  2026-07-15) serves capped, unsortable Gets declaring a `WindowBisection`:
+  it fetches the unit window whole, halves on the exactly-full overflow
+  signal down to the declared floor (then fails loudly), and filters each
+  leaf's page to the records anchored in that leaf — one owner per record
+  under overlap-matched retrieval, so write-time dedup stays hygiene. Every
+  driver yields one page per batch; the runner consumes batches uniformly. A
+  driver touches only the client (from the registry) and the
   endpoint's `SpecBuilder`, and yields whole fetched pages; it does no validation,
   framing, or writing. **`path_values` live only in the driver** — the runner never
   writes them and the coordinator never supplies them.
@@ -2298,8 +2305,10 @@ resolution (item 1, done).
    (2026-07-15): `driving_periods` and `idle_events` shipped as the
    fleet-wide event pair per their §8 decision block, on a shared
    fleet-date-range spec builder; the remaining legacy Motive endpoints
-   (`groups`, `users`, the rollup pair) are deliberately unported.
-   Second half (the feed vertical) remains.*
+   (`groups`, `users`, the rollup pair) are deliberately unported. GeoTab
+   `exception_events` shipped 2026-07-15 per its §8 decision block — the
+   first bisected endpoint (`WindowBisection` + `BisectingWindowDriver`,
+   §14). Second half (the feed vertical) remains.*
 8. **Polish phase, gated on a stable public surface:** full-tree ceremony
    audit, test-coverage audit, documentation audit, the real usage-driven
    README, multi-platform CI (a Windows leg would have caught the

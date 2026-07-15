@@ -327,6 +327,19 @@ table and the two decision blocks). Status per probe:
   the driver-variant shape is captured in chat, earmarked for the User
   modeling conversation (list-of-nested-object fields present).
 
+**Fixture provenance (2026-07-15):** `tests/geotab_exception_events_capture.py`
+— the Captured 2026-07-13 idling trio plus the 2026-07-15 sort-discrimination
+error envelopes, scrubbed through the established mapping extended, never
+restarted (the `a`-prefix arm's first images, counters 1–3; device `b5` →
+`b105`, the devices set's own image; versions ordinally remapped
+`0x209`–`0x20b`; error-envelope GUIDs → zero-GUID counters 9–10; timestamps,
+durations, distances, and the sentinel/state vocabulary VERBATIM — the
+`duration = activeTo − activeFrom` arithmetic, fractional-second case
+included, is under test). The committed set: the three-record response
+envelope, the silent-empty response, the deterministic `GenericException`
+envelope, and the `ArgumentException` envelope whose message names
+version/date as the sortable fields.
+
 **Fixture earmarks (2026-07-15)** — the 2026-07-13 ExceptionEvent captures,
 transferred and held in chat (earmarked only; the `exception_events` build
 prompt commits them, scrubbed per this section's convention including the
