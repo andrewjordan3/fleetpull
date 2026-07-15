@@ -1,11 +1,11 @@
 """Tests for fleetpull.models.geotab.device.
 
-The shared fixtures in ``tests/geotab_devices_capture.py`` model the
-provider wire shape with deterministic synthetic values: GO7-era,
-GO9-era (with and without ``deviceFlags``/``devicePlans``), and trailer
-entry shapes drive validation and the mixed-shape frame. The one
-constructed variant uses the provider year-one ``ignoreDownloadsUntil``
-edge value to prove the exclusion holds.
+Every fixture is the committed 2026-07-09 capture set
+(``tests/geotab_devices_capture.py``): the three observed shapes --
+GO7-era, GO9-era (with and without ``deviceFlags``/``devicePlans``),
+and the trailer entry -- drive validation and the mixed-shape frame;
+the one CONSTRUCTED variant plants the live-observed year-one
+``ignoreDownloadsUntil`` to prove the exclusion holds.
 """
 
 from datetime import UTC, datetime
@@ -21,7 +21,7 @@ _ALL_SHAPES: list[JsonObject] = [*DEVICE_RECORDS, TRAILER_DEVICE_RECORD]
 
 
 class TestDeviceValidation:
-    def test_every_fixture_shape_validates(self) -> None:
+    def test_every_captured_shape_validates(self) -> None:
         validated = [Device.model_validate(record) for record in _ALL_SHAPES]
         assert [device.id for device in validated] == [
             'b101',
@@ -44,7 +44,7 @@ class TestDeviceValidation:
         assert isinstance(rich.device_flags, DeviceFlags)
 
     def test_present_device_flags_populates_every_field(self) -> None:
-        # The acronym-alias trap, closed mechanically: every fixture
+        # The acronym-alias trap, closed mechanically: every captured
         # deviceFlags block carries every key, so a typo'd alias on ANY
         # field (to_camel's isHosAllowed vs the wire's isHOSAllowed kind)
         # would land that field as None under extra='ignore' and fail
@@ -72,7 +72,7 @@ class TestDeviceValidation:
         # The VIN sentinels: "" and the literal "?", never interpreted.
         assert trailer.vehicle_identification_number == ''
         assert trailer.engine_vehicle_identification_number == '?'
-        # The trailer fixture carries neither nested block.
+        # The captured trailer carries neither nested block.
         assert trailer.device_flags is None
         assert trailer.custom_features is None
 
@@ -120,7 +120,7 @@ class TestDeviceFrame:
         assert empty.schema == populated.schema
 
     def test_year_one_ignore_downloads_until_is_never_modeled(self) -> None:
-        # Constructed variant of a fixture record: the provider edge case uses
+        # CONSTRUCTED variant of a captured record: the live probe observed
         # ignoreDownloadsUntil at 0001-01-01 (which overflows ns-precision
         # timestamp columns); the field is excluded from the model, so the
         # frame builds clean because it is never a column.

@@ -5,10 +5,9 @@ stays as close to the raw API responses as is reasonable. No cross-endpoint
 merging, no unified schema, no assumed end use.
 
 The public data API: ``fetch(Endpoints.Motive.vehicles, auth=...)`` returns
-an eager typed DataFrame, and ``Sync(config_path).run()`` executes a
-configuration-driven parquet/state sync. Consumers catch ``FleetpullError``
-or its public subclasses, all importable here; every other exception type is
-internal.
+an eager typed DataFrame. Consumers catch ``FleetpullError`` or its four
+public subclasses, all importable here; every other exception type is
+internal. ``sync``, the config-driven verb, joins at roadmap item 6.
 """
 
 from fleetpull.api import Endpoints, Sync, fetch

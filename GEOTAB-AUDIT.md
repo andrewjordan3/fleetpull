@@ -5,7 +5,7 @@ cites `file:line` against the current tree (branch
 `claude/per-provider-executor-og4n1o`, after the unit-loop vertical).
 
 **Verification legend.** *Captured* = verified against live GeoTab responses
-(the June 2026 normalized captures; provenance markers appear in the source and
+(the June 2026 scrubbed captures; provenance markers appear in the source and
 fixtures themselves). *Documented-only* = modeled from provider docs or
 inference, never observed on the wire. The house rule already demands the
 distinction: "encode probed provider behavior, never documented behavior
@@ -173,7 +173,7 @@ Snapshot total beyond the shared foundation: **S**.
 **Update (2026-07-09) — G10 REVERSED.** `SinglePageDecoder` does **not** fit
 GeoTab `Get`: the probe found a silent hard cap at 5,000 records with no
 continuation signal of any kind (a single-page decode would silently truncate
-a fleet above the provider cap — GTA-11). Replaced by two gaps, per the probe-settled
+a 5,666-device fleet — GTA-11). Replaced by two gaps, per the probe-settled
 decisions (DESIGN §8, 2026-07-09): a **seek-paging Get decoder** —
 `sort.sortBy: "id"` ascending, `offset` = last returned id, terminal on the
 empty page, `lastId` never sent (**S–M**) — and the **`GetCountOf`
@@ -211,7 +211,7 @@ Feed total beyond the shared foundation: **L**.
 
 ## 3. Postman probe checklist
 
-**Fixture normalization convention — apply before any capture is shared or committed**
+**Scrubbing convention — apply before any capture is shared or committed**
 (the June pattern, test_geotab.py:13-54, plus CLAUDE.md Data Hygiene): session
 ids → `SyntheticSessionId000001`-style; database → `exampledb`; usernames →
 `user@example.com`; GUIDs → zero-GUIDs with a counter suffix
@@ -249,7 +249,7 @@ decisions). Status per probe:
 - **P1 ✓** — `path: "ThisServer"` re-captured; envelope byte-shape matches
   the June fixture. The redirect case remains documented-only.
 - **P2 ✓** — closed by the cap discovery: `Get` hard-caps at 5,000
-  silently; `GetCountOf` returned an entity count above the cap (GTA-11).
+  silently; `GetCountOf` captured 5,666 against it (GTA-11).
 - **P3 ✓** — `resultsLimit` honored exactly at/under the cap; above it,
   still exactly 5,000; no continuation signal exists on plain `Get`.
 - **P4 ✓** — data-bearing `search.fromDate` bootstrap captured (LogRecord,
@@ -274,7 +274,7 @@ decisions). Status per probe:
 
 **Fixture earmarks (2026-07-09)** — captures earmarked to become committed
 test fixtures in the build prompts (earmarked only; the build prompts commit
-them, normalized per this section's convention): the terminal empty feed page;
+them, scrubbed per this section's convention): the terminal empty feed page;
 a seek page boundary (last id of page N + first id of page N+1); the
 `MissingMethodException` and `JsonSerializerException` envelopes; the
 data-bearing bootstrap LogRecord page; a trailer-shape Device record
@@ -391,7 +391,7 @@ vertical:**
 
 | # | Finding (added 2026-07-09) | Where |
 |---|---|---|
-| GTA-11 | `Get` silently hard-caps at 5,000 records — no continuation signal or metadata; `GetCountOf` is the truth instrument (captured entity count above the capped 5,000, proving records beyond the cap are invisible to a bare `Get`). Any uncursored `Get` harvest is silent-truncation-by-construction on large fleets | DESIGN §8 observed table (2026-07-09 rows); decisions 1–2 |
+| GTA-11 | `Get` silently hard-caps at 5,000 records — no continuation signal or metadata; `GetCountOf` is the truth instrument (captured 5,666 vs the capped 5,000: 666 records invisible to a bare `Get`). Any uncursored `Get` harvest is silent-truncation-by-construction on large fleets | DESIGN §8 observed table (2026-07-09 rows); decisions 1–2 |
 | GTA-12 | The feed is version-ordered, not event-time-ordered: `dateTime` non-monotonic within a page and dipping before the requested `fromDate`; bootstrap semantics are *ingested-since*, not *occurred-since*. Date watermarks must never derive from feed `dateTime`s — the empirical justification for `FeedToken` opacity | DESIGN §8 observed table; decision 4 |
 | GTA-13 | Device schema polymorphism and the sentinel set: at least three record shapes (GO7-era, GO9-era, trailer with `deviceType: "None"` / `productId: -1` / `tmpTrailerId`); `activeTo: 2050-01-01` = active; VIN fields carry `""` and `"?"`; `ignoreDownloadsUntil` at `0001-01-01` overflows nanosecond timestamp columns (microsecond precision or exclusion required) | DESIGN §8 observed table |
 | GTA-14 | Rate budgets are per method class, advertised in `X-Rate-Limit-*` headers on every response (GetFeed class ~60/min, multiple windows; Get class ~650/min, single datum; June's 10/min OverLimit consistent with an Authenticate-class budget) — with the docs' caveat that headers may precede enforcement ("Coming Soon"). Config defaults cite the captured values; no ramp probe needed | DESIGN §8 observed table; decision 3 |
@@ -415,12 +415,15 @@ end passed verbatim, no completeness check — a `GetCountOf` compares
 only against a complete listing); and `scripts/run_geotab_trips.py` as
 the live-run driver.
 
-**Fixture provenance:** `tests/geotab_trips_capture.py` — deterministic
-provider-shaped test data with `resultsLimit: 3` (production 5000). The
-purpose-built values preserve the arithmetic properties under test. The
-committed set: the windowed seek page pair (six Trips, both driver
-variants, `b106` on both sides of the boundary), the
-day-prefixed-TimeSpan record, and the zero-distance degenerate
+**Fixture provenance:** `tests/geotab_trips_capture.py` — Captured
+2026-07-13 live probe session, `resultsLimit: 3` (production 5000),
+scrubbed through the established mapping extended, never restarted
+(insert-1-after-`b` ids; version tokens ordinally remapped preserving
+order; synthetic distinct coordinates; timestamps, durations, distances,
+odometer, and engine-hours values verbatim — they carry the arithmetic
+properties under test). The committed set: the windowed seek page pair
+(six Trips, both driver variants, `b106` on both sides of the boundary),
+the day-prefixed-TimeSpan record, and the zero-distance degenerate
 record.
 
 **Findings (all Captured 2026-07-13; details in DESIGN §8's new rows):**
@@ -439,9 +442,9 @@ record.
   returns an EMPTY result, never an error (the silent-empty hazard);
   `sort` composed with `ExceptionEventSearch.ruleSearch` returned
   `-32000 GenericException` (open — under discrimination probes).
-- Scale datum: `GetCountOf` `Trip` returned an entity count far above the
-  provider cap — the windowed walk and the 5,000-cap seek paging are
-  load-bearing at this scale, not precautionary.
+- Scale datum: `GetCountOf` `Trip` returned **456,822** — the windowed
+  walk and the 5,000-cap seek paging are load-bearing at this size, not
+  precautionary.
 - Observed unattributed-short-trip pattern: six of the twelve captured
   trips carry the `UnknownDriverId` sentinel, and all six are sub-0.2 km
   yard-scale moves — driver attribution appears to drop exactly on

@@ -1,5 +1,5 @@
 # src/fleetpull/network/classifiers/motive.py
-"""Motive response classifier (sources: normalized provider-behavior
+"""Motive response classifier (sources: scrubbed provider-behavior
 verification, June 2026; rate limiting probed and never observed —
 generic HTTP posture).
 

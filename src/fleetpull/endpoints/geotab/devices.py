@@ -15,8 +15,8 @@ never built here; the strategy also retargets each prepared request to
 the session's resolved host, so the host this module writes is a
 pre-auth placeholder that never reaches the wire on its own (DESIGN
 section 8). Plain ``Get`` silently hard-caps at 5,000 records with no
-continuation signal; a captured ``GetCountOf`` above the cap proved records
-beyond 5,000 are invisible to bare ``Get``. That shapes both strategies composed here: the seek
+continuation signal (captured 2026-07-09: ``GetCountOf`` 5,666 vs the
+capped 5,000), which shapes both strategies composed here: the seek
 walk (``sort`` by ``id`` ascending, offset carried by the decoder) and
 the ``GetCountOfCheck`` truth instrument fired beside every harvest.
 """

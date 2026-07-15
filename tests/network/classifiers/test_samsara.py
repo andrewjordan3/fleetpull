@@ -1,4 +1,4 @@
-"""Tests for the Samsara response classifier (fixtures: normalized
+"""Tests for the Samsara response classifier (fixtures: scrubbed
 provider-behavior verification, June 2026; rate-limit contract from
 official documentation)."""
 

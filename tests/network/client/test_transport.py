@@ -552,13 +552,13 @@ class TestParsedBodyCompletion:
 
         assert pages[0].records == [{'id': 1}]
 
-    def test_success_with_non_json_body_raises_truncated_excerpt(
+    def test_success_with_non_json_body_raises_sanitized(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # AUD-01: a 200 serving non-JSON (a TLS-intercepting proxy's block
         # page) raises a named ProviderResponseError -- never a raw
         # JSONDecodeError escape -- and the detail carries at most a short
-        # truncated excerpt, never the full body.
+        # sanitized excerpt, never the full body.
         registry = RecordingRegistry()
         profile = ProviderProfile(
             auth=StubAuth(), classifier=StubClassifier([success()])

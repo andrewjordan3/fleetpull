@@ -333,7 +333,7 @@ class TransportClient:
                 # A 200 serving non-JSON (a TLS-intercepting proxy's block
                 # page, a base_url pointing at a web page) is sustained, not
                 # transient: name it rather than burn the retry budget. The
-                # detail carries a truncated excerpt only -- a block page may
+                # detail carries a sanitized excerpt only -- a block page may
                 # contain environment details that must never reach logs.
                 raise ProviderResponseError(
                     detail=(
