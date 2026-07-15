@@ -14,11 +14,18 @@ unchanged: its advance spreads the sent params when rewriting
 strictly-ascending ids across the boundary with every record inside the
 window).
 
-The half-open window end passes to ``toDate`` verbatim: a boundary
-over-return is harmless because the runner's per-batch window filter
-(``orchestrator/batch.py``, applying ``storage.in_window`` over the
-``start`` event-time column) routes each row by event time to exactly
-one work unit.
+``TripSearch`` matches trips by their STOP time (captured 2026-07-06
+via a discriminating window pair; prediction-confirmed 2026-07-15,
+DESIGN §8): a trip whose start precedes ``fromDate`` returns when its
+stop falls inside, and a trip stopping past ``toDate`` never returns.
+The event-time column is therefore ``stop`` — retrieval (stop in
+window) and routing (the runner's per-batch window filter over the
+event-time column) coincide, so every completed trip belongs to exactly
+one chunk: its stop's day. The watermark advances on stop, which
+matches record-materialization order — a Trip exists only once it has
+stopped. Anchoring on ``start`` instead would drop every
+chunk-boundary-crossing trip: the chunk owning its start never receives
+it, and the chunk that fetches it filters it out.
 
 Every request here is a JSON-RPC POST whose ``params.credentials`` and
 resolved host are the session strategy's injections (the devices-leaf
@@ -211,5 +218,5 @@ def build_endpoint(config: GeotabConfig) -> EndpointDefinition[Trip]:
             lookback=timedelta(days=config.lookback_days),
             cutoff=timedelta(days=config.cutoff_days),
         ),
-        event_time_column='start',
+        event_time_column='stop',
     )

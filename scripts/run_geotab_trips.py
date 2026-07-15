@@ -10,8 +10,8 @@ advance, and the date-partitioned writer replaces each covered
 ``date=YYYY-MM-DD`` partition wholesale. The diagnostic reporting is
 reads over the results: per-partition row counts and the frame dtypes
 for ``driving_duration`` (the Duration column), ``driver__id`` (the
-sentinel flattening), and ``start`` (the event-time column), plus the
-run-ledger rows.
+sentinel flattening), and ``stop`` (the event-time column — trips match
+and route by their stop time, DESIGN §8), plus the run-ledger rows.
 
 Because trips is windowed, this script drives the sync path over a short
 recent window (the ``run_vehicle_locations.py`` pattern: the generated
@@ -133,7 +133,7 @@ def _print_dtype_proof(combined: pl.DataFrame) -> None:
         print('No rows to type-check yet.')
         return
     print('\nDtype proof (Duration column, sentinel flattening, event time):')
-    for column in ('driving_duration', 'driver__id', 'start'):
+    for column in ('driving_duration', 'driver__id', 'stop'):
         print(f'  {column}: {combined.schema[column]}')
     sentinel_share = (
         combined.get_column('driver__id') == 'UnknownDriverId'
