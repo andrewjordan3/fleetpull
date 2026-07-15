@@ -1036,6 +1036,65 @@ observed-behaviors table below); the build prompts implement them.
    `GetFeed` per sync. Accepted, not open; recorded in §13 with this
    rationale.
 
+### GeoTab `exception_events` design decisions (2026-07-15)
+
+Settled conversationally from the 2026-07-13 ExceptionEvent capture set
+(earmarked in GEOTAB-AUDIT §3); the build prompt implements them once the
+banked probes (GEOTAB-AUDIT §3, P11) select the paging arm.
+
+1. **`exception_events` ships as the second windowed GeoTab endpoint on the
+   trips template** — windowed watermark, date-partitioned, the shared
+   provider `lookback_days`/`cutoff_days` knobs. The captured
+   mutation-after-creation envelope (observed-behaviors row below) sits
+   well inside a one-day lookback. The paging mechanism is deliberately
+   unsettled until the banked discrimination probes run: seek paging if
+   `sort` composes with a dates-only `ExceptionEventSearch`, otherwise the
+   bisection fallback (decision 3).
+2. **Version one ships the unfiltered stream — no rule-filter config
+   knob.** Three reasons, in force order: the captured silent-empty hazard
+   means a typo'd rule id reads as a permanently empty dataset, never an
+   error; validating a filter without an extra API call reduces to a
+   closed proven-set (one rule today), which serves nobody; and rule
+   selection on the delivered stream is a one-expression consumer-side
+   operation, which is where selection belongs (§1's no-presumption
+   stance). If server-side filtering later shows real need, the knob
+   arrives with proven-set config validation — fail-fast at config load,
+   no referent-validation API call.
+3. **The bisection fallback, designed and banked.** If sort is unusable
+   for this type: fetch the unit's window at the endpoint's
+   `resultsLimit`; a page of exactly the requested limit is the overflow
+   signal (a return-type condition) — discard it, halve the window,
+   recurse left-to-right; a minimum-width window still returning a full
+   page raises `ProviderResponseError`. Placement: a
+   `BisectingWindowDriver` beside the single-fetch driver at the
+   request-driver seam (§14) — fetch grain decouples from write grain, so
+   work units and the delete-by-window merge stay whole-day and
+   storage/state are untouched. Rejected placements: a bisecting page
+   decoder (decoders are stateless; the recursion's pending-halves stack
+   has nowhere to live) and work-unit splitting (breaks the
+   FIFO-by-unit-id watermark-truth invariant and the midnight-alignment
+   guard).
+4. **Bisection is cap-gated per entity type.** The silent `Get` cap is
+   Captured on Device only and appears in no GeoTab documentation. Seek
+   paging never depends on the cap — it terminates on the empty page, so
+   the requested limit is merely a page-size preference — but bisection's
+   overflow signal is sound only where the endpoint honors requests up to
+   the asked size: a lower silent cap would make every page look partial
+   and overflow undetectable. Bisection therefore ships for a type only
+   after that type's cap behavior is captured (GEOTAB-AUDIT §3, P13).
+   Corollary: `resultsLimit` values stay per-leaf constants carrying
+   per-type provenance comments — two leaves declaring 5,000 are two
+   per-type facts that currently coincide, not one fact stated twice —
+   and the value is flagged in-code as a strong candidate for a user
+   config knob.
+5. **The event-time column is probe-gated.** A discriminating trips
+   capture falsified start-matching for that type (the positive rule is
+   under confirmation probes — GEOTAB-AUDIT §3, P10), so which timestamp
+   an ExceptionEvent window matches is never assumed: the banked
+   window-matching pair (P12) discriminates `activeFrom`, `activeTo`,
+   overlap, and containment, and the column follows that result so
+   retrieval matching and partition routing coincide.
+
 ### The exception hierarchy (implemented: `exceptions.py`)
 
 The operational errors consumers catch, mirroring the classification
@@ -1104,6 +1163,8 @@ budgets → `RetriesExhaustedError`, failed auth paths →
 | GeoTab | `sort` and `search` compose on `Get`/`TripSearch`: a windowed, sorted, seeked page pair returned strictly-ascending ids across the boundary with every record inside the window — windowed seek paging works (captured 2026-07-13). |
 | GeoTab | An unmatched `search` referent returns an EMPTY result, never an error — the silent-empty hazard: a typo'd search filter reads as "no data", not as a failure (captured 2026-07-13). |
 | GeoTab | `Get` `sort` composed with `ExceptionEventSearch.ruleSearch` returned `-32000 GenericException` — open, under discrimination probes; do not assume sort composes with every search type (captured 2026-07-13). |
+| GeoTab | `ExceptionEventSearch` composes cleanly with `ruleSearch` + `fromDate`/`toDate` when `sort` is absent — the identical body that crashes with sort succeeds without it, a one-member delta; this is the request shape window bisection needs, so bisection's feasibility is Captured while seek paging's remains open (captured 2026-07-13). |
+| GeoTab | ExceptionEvent records mutate after creation (`lastModifiedDateTime` observed ~17 min past `createdDateTime`; creation observed up to ~1 h after the interval begins — the basis for the one-day lookback), and `duration = activeTo − activeFrom` holds exactly on every captured record, including a fractional-second span reproducing a fractional `activeFrom` (captured 2026-07-13). |
 | Samsara | 429 with fractional `Retry-After` (e.g. `0.40235`); 401 body is `{"message": ...}`; 5xx bodies are plain strings, never JSON. |
 | Motive | 401 body is `{"error_message": ...}`; the documented /vehicle_locations limit was not observed to enforce — generic 429 posture. |
 | Motive | `/v3/vehicle_locations/{vehicle_id}` verified live: envelope `{"vehicle_locations": [{"vehicle_location": {...}}]}`, `located_at` is UTC ISO-8601 (`Z`-suffixed), one non-paginated page per fetch (so `SinglePageDecoder` fits), and a single per-vehicle fetch spans multiple calendar dates (the sample crossed two) — confirming `split_by_date`'s multi-partition output is load-bearing in production, not a theoretical edge: one fetch genuinely fans into several partitions. |
@@ -2181,7 +2242,10 @@ resolution (item 1, done).
    decisions 1 and 2), the union-of-shapes `Device` model, `Endpoints.Geotab`,
    and both verbs; `scripts/run_geotab_devices.py` is the live-proof driver.
    The abstractions held — no driver, runner, or entry change carried a
-   provider branch. Second half (the feed vertical) remains.*
+   provider branch. The `trips` windowed vertical followed (2026-07-13),
+   proving the watermark arm crosses providers, and the `exception_events`
+   design is settled (2026-07-15; the §8 decision block, probe-gated
+   build). Second half (the feed vertical) remains.*
 8. **Polish phase, gated on a stable public surface:** full-tree ceremony
    audit, test-coverage audit, documentation audit, the real usage-driven
    README, multi-platform CI (a Windows leg would have caught the
