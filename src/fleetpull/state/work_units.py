@@ -381,7 +381,7 @@ class WorkUnitStore:
             raise ValueError(f'max_attempts must be at least 1, got {max_attempts}')
         claimed_at: str = to_iso8601(self._clock.now_utc())
         with self._database.connect() as connection:
-            row: tuple[SqliteScalar, ...] | None = connection.execute(
+            row = connection.execute(
                 _CLAIM_NEXT_SQL,
                 (
                     WorkUnitStatus.CLAIMED.value,
@@ -495,7 +495,7 @@ class WorkUnitStore:
             Opens a connection and reads the grouped counts.
         """
         with self._database.connect() as connection:
-            grouped_rows: list[tuple[SqliteScalar, SqliteScalar]] = connection.execute(
+            grouped_rows = connection.execute(
                 _PROGRESS_SQL, (provider.value, endpoint)
             ).fetchall()
         counts: dict[str, int] = {}

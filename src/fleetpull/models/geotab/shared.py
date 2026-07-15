@@ -80,13 +80,13 @@ def parse_timespan(value: str) -> timedelta:
     match = _TIMESPAN_PATTERN.match(value)
     if match is None:
         raise ValueError(f'not a .NET TimeSpan string: {value!r}')
-    hours: int = int(match['hours'])
-    minutes: int = int(match['minutes'])
-    seconds: int = int(match['seconds'])
+    hours = int(match['hours'])
+    minutes = int(match['minutes'])
+    seconds = int(match['seconds'])
     if hours > _MAX_HOURS or minutes > _MAX_MINUTES or seconds > _MAX_SECONDS:
         raise ValueError(f'TimeSpan field out of range: {value!r}')
-    ticks_text: str | None = match['ticks']
-    microseconds: int = (
+    ticks_text = match['ticks']
+    microseconds = (
         int(ticks_text.ljust(_TICK_DIGITS, '0')) // _TICKS_PER_MICROSECOND
         if ticks_text is not None
         else 0

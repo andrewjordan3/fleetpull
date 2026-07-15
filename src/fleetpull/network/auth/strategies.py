@@ -16,7 +16,7 @@ strategies; the client and everything downstream is provider-blind.
 import threading
 from collections.abc import Mapping
 from dataclasses import replace
-from urllib.parse import SplitResult, urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import SecretStr
 
@@ -138,7 +138,7 @@ class GeotabSessionAuth:
 
         # Authenticate may have redirected the session to a different
         # server; every subsequent call must target it.
-        url_parts: SplitResult = urlsplit(spec.url)
+        url_parts = urlsplit(spec.url)
         retargeted_url: str = urlunsplit(
             url_parts._replace(netloc=session.resolved_host)
         )

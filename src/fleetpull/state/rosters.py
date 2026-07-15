@@ -96,13 +96,11 @@ def reconcile(
     Side Effects:
         None -- pure function.
     """
-    listed_set: set[str] = set(listed)
-    current_set: set[str] = set(current)
-    new: set[str] = listed_set - current_set
-    reappeared: set[str] = {
-        member for member in listed_set & current_set if current[member]
-    }
-    absent: set[str] = current_set - listed_set
+    listed_set = set(listed)
+    current_set = set(current)
+    new = listed_set - current_set
+    reappeared = {member for member in listed_set & current_set if current[member]}
+    absent = current_set - listed_set
     to_increment: set[str]
     to_evict: set[str]
     if eviction_threshold is None:
@@ -212,7 +210,7 @@ class RosterStore:
             Opens a connection and reads.
         """
         with self._database.connect() as connection:
-            rows: list[tuple[SqliteScalar, ...]] = connection.execute(
+            rows = connection.execute(
                 _READ_COUNTS_SQL, (key.provider.value, key.name)
             ).fetchall()
         counts: dict[str, int] = {}
@@ -246,7 +244,7 @@ class RosterStore:
             Opens a connection and reads.
         """
         with self._database.connect() as connection:
-            rows: list[tuple[SqliteScalar, ...]] = connection.execute(
+            rows = connection.execute(
                 _READ_MEMBERS_SQL, (key.provider.value, key.name)
             ).fetchall()
         members: list[str] = []
@@ -271,7 +269,7 @@ class RosterStore:
         Side Effects:
             Opens a connection, writes up to three statement batches, and commits.
         """
-        scope: tuple[str, str] = (key.provider.value, key.name)
+        scope = (key.provider.value, key.name)
         with self._database.connect() as connection:
             connection.executemany(
                 _UPSERT_ZERO_SQL, [(*scope, member) for member in delta.to_zero]

@@ -70,9 +70,9 @@ def window_dates(window: DateWindow) -> list[date]:
     Side Effects:
         None -- pure function.
     """
-    first: date = window.start.date()
-    last: date = (window.end - timedelta(microseconds=1)).date()
-    span_days: int = (last - first).days + 1
+    first = window.start.date()
+    last = (window.end - timedelta(microseconds=1)).date()
+    span_days = (last - first).days + 1
     return [first + timedelta(days=offset) for offset in range(span_days)]
 
 
@@ -163,9 +163,9 @@ def prune_window_partitions(
     Raises:
         OSError: A stale partition directory could not be removed.
     """
-    covered: list[date] = window_dates(window)
-    present: set[date] = existing_partition_dates(endpoint_dir, covered)
-    stale: list[date] = sorted(present - set(written_dates))
+    covered = window_dates(window)
+    present = existing_partition_dates(endpoint_dir, covered)
+    stale = sorted(present - set(written_dates))
     for stale_date in stale:
         delete_partition(endpoint_dir, stale_date)
     return stale

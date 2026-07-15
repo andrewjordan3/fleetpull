@@ -127,17 +127,15 @@ def compact_partition(
         Writes ``part.parquet``. Leaves the staging shards in place for the caller
         to clear.
     """
-    staging_dir: Path = partition_staging_dir(endpoint_dir, partition_date)
-    shard_frames: list[pl.DataFrame] = [
+    staging_dir = partition_staging_dir(endpoint_dir, partition_date)
+    shard_frames = [
         pl.read_parquet(shard) for shard in sorted(staging_dir.glob('*.shard'))
     ]
     if existing is not None:
         shard_frames.append(existing)
-    combined: pl.DataFrame = pl.concat(shard_frames)
-    before: int = combined.height
-    written: pl.DataFrame = (
-        drop_exact_duplicates(combined) if drop_duplicates else combined
-    )
+    combined = pl.concat(shard_frames)
+    before = combined.height
+    written = drop_exact_duplicates(combined) if drop_duplicates else combined
     atomic_write_parquet(written, partition_part_file(endpoint_dir, partition_date))
     return CompactionResult(
         rows_written=written.height, duplicates_dropped=before - written.height
@@ -171,10 +169,10 @@ def clear_partition_staging(
         directory left empty by that removal.
     """
     for partition_date in partition_dates:
-        staging_dir: Path = partition_staging_dir(endpoint_dir, partition_date)
+        staging_dir = partition_staging_dir(endpoint_dir, partition_date)
         if not staging_dir.exists():
             continue
         shutil.rmtree(staging_dir)
-        date_dir: Path = partition_dir(endpoint_dir, partition_date)
+        date_dir = partition_dir(endpoint_dir, partition_date)
         if not any(date_dir.iterdir()):
             date_dir.rmdir()

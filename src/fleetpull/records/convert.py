@@ -16,7 +16,7 @@ import polars as pl
 
 from fleetpull.model_contract import ResponseModel
 from fleetpull.records.dataframe import build_dataframe, normalize_empty_strings
-from fleetpull.records.fields import FlatField, iter_flat_fields
+from fleetpull.records.fields import iter_flat_fields
 from fleetpull.records.flatten import flatten_record
 from fleetpull.records.schema import derive_schema
 
@@ -44,7 +44,7 @@ def models_to_dataframe(
         TypeError: If any field annotation cannot be mapped to a dtype.
     """
     schema: dict[str, pl.DataType] = derive_schema(model_class)
-    flat_fields: tuple[FlatField, ...] = tuple(iter_flat_fields(model_class))
+    flat_fields = tuple(iter_flat_fields(model_class))
     # typing-justified: flattened rows carry heterogeneous model-field values
     rows: list[dict[str, Any]] = [
         flatten_record(record=record, flat_fields=flat_fields) for record in records

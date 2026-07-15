@@ -93,12 +93,12 @@ def require_record_list(envelope: JsonValue, key: str) -> list[JsonObject]:
             ``key`` is absent, its value is not a list, or an element is
             not a JSON object — each with a message naming the failure.
     """
-    response: JsonObject = _require_json_object(envelope)
+    response = _require_json_object(envelope)
     if key not in response:
         raise ProviderResponseError(
             detail=f'response envelope is missing the record key {key!r}'
         )
-    records: JsonValue = response[key]
+    records = response[key]
     if not isinstance(records, list):
         raise ProviderResponseError(detail=f'record key {key!r} is not a list')
     for record in records:
@@ -136,7 +136,7 @@ def unwrap_record_objects(
             raise ProviderResponseError(
                 detail=f'record wrapper is missing the item key {item_key!r}'
             )
-        inner: JsonValue = wrapper[item_key]
+        inner = wrapper[item_key]
         if not isinstance(inner, dict):
             raise ProviderResponseError(
                 detail=f'record under {item_key!r} is not a JSON object'
