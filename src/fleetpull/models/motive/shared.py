@@ -1,20 +1,22 @@
 """Motive embedded shapes shared across more than one endpoint.
 
-This module holds the per-record building blocks that the source documents
-as appearing on multiple Motive responses — ``EldDeviceInfo`` and
-``DriverSummary`` both appear on the vehicle record and the vehicle-location
-record. Endpoint-private sub-shapes live in their endpoint module, not here;
-a shape is promoted into this module only once a second endpoint actually
+This module holds the per-record building blocks that appear on multiple
+Motive responses — ``DriverSummary`` and ``EldDeviceInfo`` on the vehicle
+and vehicle-location records (and the driving-period and idle-event
+records), ``VehicleSummary`` on the driving-period and idle-event records.
+Endpoint-private sub-shapes live in their endpoint module, not here; a
+shape is promoted into this module only once a second endpoint actually
 uses it.
 """
 
 from pydantic import Field
 
-from fleetpull.model_contract import ResponseModel
+from fleetpull.model_contract import EmptyStrIsNone, ResponseModel
 
 __all__: list[str] = [
     'DriverSummary',
     'EldDeviceInfo',
+    'VehicleSummary',
 ]
 
 
@@ -50,6 +52,39 @@ class DriverSummary(ResponseModel):
     driver_company_id: str | None = None
     status: str | None = None
     role: str | None = None
+
+
+class VehicleSummary(ResponseModel):
+    """Abbreviated vehicle reference embedded in other Motive records.
+
+    The compact vehicle shape that appears when a vehicle is referenced
+    from an event record (captured 2026-07-15 on the driving-period and
+    idle-event records). The full vehicle record comes from the vehicles
+    endpoint.
+
+    ``year`` arrives as a quoted integer (``"2022"``); lax coercion types
+    it, and the captured ``"0"`` not-configured sentinel mirrors as ``0``,
+    never interpreted. ``make`` and ``model`` arrive as empty strings
+    where the provider has no value — the empty-string wire error lifts
+    to null per the coercion boundary rule.
+
+    Attributes:
+        vehicle_id: Motive's internal vehicle identifier (wire key ``id``).
+        number: Company-assigned unit number.
+        year: Model year; ``0`` is the provider's not-configured sentinel.
+        make: Manufacturer; null when the provider sends an empty string.
+        model: Model name; null when the provider sends an empty string.
+        vin: Vehicle identification number.
+        metric_units: Whether the vehicle's Motive profile reports metric.
+    """
+
+    vehicle_id: int = Field(alias='id')
+    number: str
+    year: int
+    make: EmptyStrIsNone = None
+    model: EmptyStrIsNone = None
+    vin: str
+    metric_units: bool
 
 
 class EldDeviceInfo(ResponseModel):
