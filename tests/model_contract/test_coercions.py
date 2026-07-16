@@ -1,14 +1,11 @@
-"""Tests for fleetpull.model_contract.coercions."""
+"""Tests for fleetpull.model_contract.coercions.
 
-from fleetpull.model_contract import (
-    EmptyStrIsNone,
-    ResponseModel,
-    empty_str_to_none,
-)
+The function is composed per field at its use site (Motive
+``VehicleSummary.year`` -- the type-recovery case); the composition is
+exercised against the real model in ``tests/models/motive/test_shared``.
+"""
 
-
-class _Annotated(ResponseModel):
-    value: EmptyStrIsNone = None
+from fleetpull.model_contract import empty_str_to_none
 
 
 class TestEmptyStrToNone:
@@ -25,14 +22,3 @@ class TestEmptyStrToNone:
         # 0 and False compare unequal to '' -- neither is lifted.
         assert empty_str_to_none(0) == 0
         assert empty_str_to_none(False) is False
-
-
-class TestEmptyStrIsNoneAnnotation:
-    def test_wire_empty_string_validates_to_none(self) -> None:
-        assert _Annotated.model_validate({'value': ''}).value is None
-
-    def test_wire_value_survives(self) -> None:
-        assert _Annotated.model_validate({'value': 'Box'}).value == 'Box'
-
-    def test_wire_null_stays_none(self) -> None:
-        assert _Annotated.model_validate({'value': None}).value is None

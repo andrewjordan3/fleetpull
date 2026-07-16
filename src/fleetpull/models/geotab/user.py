@@ -28,12 +28,12 @@ model it"):
   connection name, two provisioning flags), present on only 42/157
   swept records.
 
-Empty strings lift to null on the contact/bookkeeping string fields
-captured empty (``""`` is these fields' no-value shape, the
-coercion-boundary rule); every other sentinel mirrors verbatim:
-``activeTo`` of ``2050-01-01`` is GeoTab's still-active sentinel, and
-``hosRuleSet`` carries the literal string ``"None"`` on non-driving
-accounts -- the provider's vocabulary, never interpreted.
+Every value mirrors verbatim, empty strings included -- the model
+preserves ``""`` faithfully from the wire, and empty strings normalize
+to null once, at the DataFrame boundary (DESIGN section 9). Sentinels
+likewise: ``activeTo`` of ``2050-01-01`` is GeoTab's still-active
+sentinel, and ``hosRuleSet`` carries the literal string ``"None"`` on
+non-driving accounts -- the provider's vocabulary, never interpreted.
 
 Wire keys are camelCase; fields are snake_case via the ``to_camel``
 alias generator. The five acronym keys the generator cannot produce
@@ -48,7 +48,7 @@ from datetime import datetime
 from pydantic import ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
-from fleetpull.model_contract import EmptyStrIsNone, ResponseModel
+from fleetpull.model_contract import ResponseModel
 
 __all__: list[str] = ['User', 'UserAccessGroupFilterRef']
 
@@ -102,8 +102,8 @@ class User(ResponseModel):
             with the driver split).
         hos_rule_set: HOS ruleset name; the literal string ``"None"``
             on non-driving accounts, mirrored verbatim.
-        carrier_number: Motor-carrier number; captured on driver
-            accounts, empty (lifted to null) elsewhere.
+        carrier_number: Motor-carrier number; captured populated on
+            driver accounts, ``""`` elsewhere, mirrored verbatim.
     """
 
     model_config = ConfigDict(alias_generator=to_camel)
@@ -122,11 +122,11 @@ class User(ResponseModel):
     # Person and contact.
     first_name: str
     last_name: str
-    designation: EmptyStrIsNone
-    employee_no: EmptyStrIsNone
-    phone_number: EmptyStrIsNone
-    phone_number_extension: EmptyStrIsNone
-    comment: EmptyStrIsNone
+    designation: str
+    employee_no: str
+    phone_number: str
+    phone_number_extension: str
+    comment: str
 
     # Driver-only block (absent, not null, on non-driver accounts).
     is_driver: bool
@@ -139,7 +139,7 @@ class User(ResponseModel):
     company_address: str
     authority_name: str
     authority_address: str
-    carrier_number: EmptyStrIsNone
+    carrier_number: str
 
     # Locale and display preferences.
     language: str
@@ -152,12 +152,12 @@ class User(ResponseModel):
     fuel_economy_unit: str
     electric_energy_economy_unit: str
     default_page: str
-    default_map_engine: EmptyStrIsNone
+    default_map_engine: str
     default_google_map_style: str
     default_here_map_style: str
     default_open_street_map_style: str
     zone_display_mode: str
-    feature_preview: EmptyStrIsNone
+    feature_preview: str
 
     # HOS and driving flags.
     hos_rule_set: str

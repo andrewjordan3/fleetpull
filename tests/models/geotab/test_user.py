@@ -131,16 +131,22 @@ class TestUserValidation:
         assert any(login.endswith('@example.com') for login in logins)
 
 
-class TestEmptyStringLifts:
-    def test_empty_contact_fields_lift_to_none(self) -> None:
-        user = User.model_validate(USER_RECORDS[0])
-        assert user.phone_number is None
-        assert user.employee_no is None
-        assert user.comment is None
-        assert user.feature_preview is None
-        assert user.default_map_engine is None
+class TestEmptyStringsMirrorVerbatim:
+    """Models preserve ``""`` faithfully from the wire (DESIGN section 9).
 
-    def test_populated_values_survive_the_lift(self) -> None:
+    Empty strings become null once, at the DataFrame boundary
+    (``records.normalize_empty_strings``) -- never on the model.
+    """
+
+    def test_empty_contact_fields_mirror_verbatim(self) -> None:
+        user = User.model_validate(USER_RECORDS[0])
+        assert user.phone_number == ''
+        assert user.employee_no == ''
+        assert user.comment == ''
+        assert user.feature_preview == ''
+        assert user.default_map_engine == ''
+
+    def test_populated_values_mirror_verbatim(self) -> None:
         populated = [
             User.model_validate(record)
             for record in USER_RECORDS
@@ -148,18 +154,17 @@ class TestEmptyStringLifts:
         ]
         assert populated
         for user in populated:
-            assert user.phone_number is not None
             assert user.phone_number.startswith('+1 ')
         designations = {User.model_validate(r).designation for r in USER_RECORDS}
         assert 'Corp' in designations
 
-    def test_empty_carrier_number_lifts_on_non_drivers(self) -> None:
+    def test_carrier_number_mirrors_both_shapes(self) -> None:
         for record in USER_RECORDS:
             user = User.model_validate(record)
             if record['isDriver']:
                 assert user.carrier_number == '1000001'
             else:
-                assert user.carrier_number is None
+                assert user.carrier_number == ''
 
 
 class TestSweepObservedOptionality:
