@@ -13,11 +13,7 @@ from typing import Annotated
 
 from pydantic import BeforeValidator, Field
 
-from fleetpull.model_contract import (
-    EmptyStrIsNone,
-    ResponseModel,
-    empty_str_to_none,
-)
+from fleetpull.model_contract import ResponseModel, empty_str_to_none
 
 __all__: list[str] = [
     'DriverSummary',
@@ -69,12 +65,14 @@ class VehicleSummary(ResponseModel):
     endpoint.
 
     ``year`` arrives as a quoted integer (``"2022"``); lax coercion types
-    it, the captured ``"0"`` not-configured sentinel mirrors as ``0``,
-    never interpreted, and the empty-string wire error lifts to null
-    (live-observed 2026-07-16: a first-page fleet record failed
-    ``int_parsing`` on ``year`` — the same wire error the capture showed
-    on ``make``/``model``). ``make`` and ``model`` arrive as empty
-    strings where the provider has no value — the same lift.
+    it, and the captured ``"0"`` not-configured sentinel mirrors as
+    ``0``, never interpreted. The empty-string wire shape (live-observed
+    2026-07-16, failing ``int_parsing``) is lifted by a before-validator
+    — the type-recovery case DESIGN section 9 allows on a mirror, since
+    ``""`` cannot validate as an integer at all. ``make`` and ``model``
+    arrive as empty strings where the provider has no value and mirror
+    verbatim: empty strings normalize to null at the DataFrame boundary,
+    never on a string field of the model.
 
     Attributes:
         vehicle_id: Motive's internal vehicle identifier (wire key ``id``).
@@ -82,8 +80,10 @@ class VehicleSummary(ResponseModel):
         year: Model year; ``0`` is the provider's not-configured
             sentinel; null when the provider sends an empty string or
             nothing.
-        make: Manufacturer; null when the provider sends an empty string.
-        model: Model name; null when the provider sends an empty string.
+        make: Manufacturer; the captured empty string mirrors verbatim;
+            null when absent.
+        model: Model name; the captured empty string mirrors verbatim;
+            null when absent.
         vin: Vehicle identification number.
         metric_units: Whether the vehicle's Motive profile reports metric.
     """
@@ -91,8 +91,8 @@ class VehicleSummary(ResponseModel):
     vehicle_id: int = Field(alias='id')
     number: str
     year: Annotated[int | None, BeforeValidator(empty_str_to_none)] = None
-    make: EmptyStrIsNone = None
-    model: EmptyStrIsNone = None
+    make: str | None = None
+    model: str | None = None
     vin: str
     metric_units: bool
 
