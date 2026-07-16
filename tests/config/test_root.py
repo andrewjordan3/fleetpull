@@ -72,9 +72,15 @@ class TestFromYamlDefaults:
         assert config.state.database_path == expected
 
     def test_explicit_state_path_stands(self, tmp_path: Path) -> None:
-        text = _minimal_yaml(tmp_path) + 'state:\n  database_path: /el/state.sqlite3\n'
+        # A real absolute path, not a POSIX literal: on Windows, resolution
+        # anchors '/el/...' to the drive and the literal never round-trips.
+        explicit = tmp_path / 'el' / 'state.sqlite3'
+        text = (
+            _minimal_yaml(tmp_path)
+            + f'state:\n  database_path: {explicit.as_posix()}\n'
+        )
         config = FleetpullConfig.from_yaml(_write(tmp_path, text))
-        assert config.state.database_path == Path('/el/state.sqlite3')
+        assert config.state.database_path == resolve_path(explicit)
 
     def test_provider_defaults_stand_without_sync_knobs(self, tmp_path: Path) -> None:
         config = FleetpullConfig.from_yaml(_write(tmp_path, _minimal_yaml(tmp_path)))
@@ -170,9 +176,12 @@ class TestLoggingEitherKey:
         assert config.logging.file_level == logging.INFO
 
     def test_file_path_alone_defaults_the_level(self, tmp_path: Path) -> None:
-        text = _minimal_yaml(tmp_path) + 'logging:\n  file_path: /var/log/fp.log\n'
+        explicit = tmp_path / 'log' / 'fp.log'
+        text = (
+            _minimal_yaml(tmp_path) + f'logging:\n  file_path: {explicit.as_posix()}\n'
+        )
         config = FleetpullConfig.from_yaml(_write(tmp_path, text))
-        assert config.logging.file_path == Path('/var/log/fp.log')
+        assert config.logging.file_path == resolve_path(explicit)
         assert config.logging.file_level == logging.DEBUG
 
     def test_neither_key_leaves_file_logging_off(self, tmp_path: Path) -> None:
