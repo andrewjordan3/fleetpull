@@ -1,35 +1,20 @@
 """Tests for fleetpull.logger.setup.
 
-setup_logger mutates global state (the 'fleetpull' logger), so an
-autouse fixture snapshots and restores that logger's handlers, level,
-and propagate flag around every test — otherwise these tests would
-poison the logging behavior of every other test module.
+setup_logger mutates global state (the 'fleetpull' logger); the
+suite-wide autouse fixture in ``tests/conftest.py`` snapshots and
+restores that logger's handlers, level, and propagate flag around
+every test (promoted from this module once other modules -- any test
+driving ``Sync.run()`` -- proved to carry the same hazard).
 """
 
 import logging
 import time
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from fleetpull.config.logger import LoggerConfig
 from fleetpull.logger.setup import _DATE_FORMAT, setup_logger
-
-
-@pytest.fixture(autouse=True)
-def restore_package_logger() -> Iterator[None]:
-    package_logger = logging.getLogger('fleetpull')
-    saved_handlers = list(package_logger.handlers)
-    saved_level = package_logger.level
-    saved_propagate = package_logger.propagate
-    yield
-    for attached_handler in package_logger.handlers:
-        if attached_handler not in saved_handlers:
-            attached_handler.close()
-    package_logger.handlers = saved_handlers
-    package_logger.setLevel(saved_level)
-    package_logger.propagate = saved_propagate
 
 
 def package_logger() -> logging.Logger:
