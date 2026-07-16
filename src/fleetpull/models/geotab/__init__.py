@@ -20,6 +20,7 @@ from fleetpull.models.geotab.trip import (
     TripDriverRef,
     TripStopPoint,
 )
+from fleetpull.models.geotab.user import User, UserAccessGroupFilterRef
 
 __all__: list[str] = [
     'CustomFeatures',
@@ -35,6 +36,8 @@ __all__: list[str] = [
     'TripDeviceRef',
     'TripDriverRef',
     'TripStopPoint',
+    'User',
+    'UserAccessGroupFilterRef',
     'bare_id_to_reference',
     'parse_timespan',
 ]
