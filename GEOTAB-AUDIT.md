@@ -340,6 +340,46 @@ envelope, the silent-empty response, the deterministic `GenericException`
 envelope, and the `ArgumentException` envelope whose message names
 version/date as the sortable fields.
 
+**Update (2026-07-16) — the users probe battery** (Andrew, live MyGeotab;
+findings in DESIGN §8's two 2026-07-16 rows; the `users` snapshot vertical
+ships with this update):
+
+- **P14 ✓ — User id-sort composition + boundary advance.** A
+  `resultsLimit: 3` first page (`sortBy: id`, ascending, explicit null
+  `offset`) returned ascending ids; the offset advance from the last id
+  continued past the boundary with no overlap or loss. Seek paging holds
+  for this type — the third per-type sortability datum (Device yes,
+  ExceptionEvent no, User yes).
+- **P15 ✓ — full-population shape sweep.** Bare `Get` returned all 157
+  records with a PII-free summary script over them: no null values, no
+  type variance, optionality absence-shaped; the driver-only key block at
+  exactly the 129-driver count; one previously unseen key
+  (`accessGroupFilter`, 1/157); `iAMMetadata` 42/157;
+  `maxPCDistancePerDay` 126/157, not aligned with the driver split.
+- **P16 ✓ — count control.** `GetCountOf User` = 157, equal to the sweep's
+  record count exactly, same session.
+
+**Fixture provenance (2026-07-16):** `tests/geotab_users_capture.py` — seven
+of the 157 swept User records (the four captured driver variants and the
+three non-driver variants, ascending id order preserved) plus the
+`GetCountOf` envelope, scrubbed through the established mapping extended,
+never restarted: user ids → a fresh `bA01`–`bA07` block; person names →
+`Synthetic` + `User001`–`User007`; logins → `userNNN@example.com` (one
+bare-username raw → `synthuser001`); phone numbers → `+1 555000000N` (new
+arm); license numbers → `L000000N` (new arm; provinces VERBATIM,
+categorical); the carrier number → `1000001` (the raw is a real DOT
+number); company/authority name and address → one synthetic image each
+(the authorityName==companyName and address equality classes preserved by
+construction); IAM GUIDs → zero-GUID counters 11–17; the
+`accessGroupFilter` id → the `a`-prefix arm, counter 4; dashboard-report
+ids → `bB01`–`bB06` plus two system-shaped huge-hex images; the
+`reportGroups` ref → `bC01`. Timestamps (2050 still-active sentinel
+included), locale fields, `hosRuleSet`/`jobPriorities`/`Group*`/
+`**Security**` vocabulary, and every empty string VERBATIM. Load-bearing
+properties under test: the driver-only block present on exactly the
+`isDriver: true` records (absent, not null, elsewhere), exactly one
+`accessGroupFilter`, the authority/company equality classes.
+
 **Fixture earmarks (2026-07-15)** — the 2026-07-13 ExceptionEvent captures,
 transferred and held in chat (earmarked only; the `exception_events` build
 prompt commits them, scrubbed per this section's convention including the

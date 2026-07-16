@@ -1,6 +1,6 @@
 # fleetpull — Design Document
 
-**Status:** Design settled through the two-verb public API (§10) and config-driven sync. Shipped end-to-end: the `fetch` API; `Sync(config_path).run()`; work-unit planning with crash resume and the per-provider fan-out executor; Motive `vehicles` (snapshot), `vehicle_locations` (date-partitioned watermark, live-run), and the fleet-wide event pair `driving_periods` / `idle_events` (windowed watermark); GeoTab `devices` (snapshot, live-run), `trips` (windowed watermark, stop-anchored), and `exception_events` (windowed watermark, bisected). The GeoTab feed arm (`GetFeed` runner, storage cells, token commit) remains unbuilt — trips ships windowed until it lands (§8). See §15 for run status and the build roadmap.
+**Status:** Design settled through the two-verb public API (§10) and config-driven sync. Shipped end-to-end: the `fetch` API; `Sync(config_path).run()`; work-unit planning with crash resume and the per-provider fan-out executor; Motive `vehicles` (snapshot), `vehicle_locations` (date-partitioned watermark, live-run), and the fleet-wide event pair `driving_periods` / `idle_events` (windowed watermark); GeoTab `devices` (snapshot, live-run), `users` (snapshot), `trips` (windowed watermark, stop-anchored), and `exception_events` (windowed watermark, bisected). The GeoTab feed arm (`GetFeed` runner, storage cells, token commit) remains unbuilt — trips ships windowed until it lands (§8). See §15 for run status and the build roadmap.
 **Name:** `fleetpull` — final. Describes exactly what the package does and nothing more (PyPI availability confirmed 2026-06-10).
 **Relationship to fleet-telemetry-hub:** New package, not a rewrite. fleet-telemetry-hub remains in production untouched while fleetpull is built.
 
@@ -1209,7 +1209,9 @@ budgets → `RetriesExhaustedError`, failed auth paths →
 | GeoTab | ExceptionEvent does not support id-sort at all: `sort.sortBy: "id"` with no search returns `ArgumentException` — "Can not sort by id. Supported sortable fields are version, date." Composed with any search (rule or dates-only) the same request degrades to the `-32000 GenericException`, reproduced deterministically on exact retry. The trips seek template is structurally unavailable for this type; version/date sortability is a feed-design datum, unprobed for seek composition (captured 2026-07-15). |
 | GeoTab | `ExceptionEventSearch` window matching is OVERLAP-anchored: a window catching only an event's activeTo returned it, and a window catching only an event's activeFrom returned it too — both discriminating bodies agree; activeFrom-, activeTo-, and containment-matching are all falsified. Third distinct window-matching rule observed across providers (Trip: stop; Motive driving_periods: start; this: overlap) — never assume the rule, per type, ever. Overlap retrieval supersets start-anchored ownership, so `active_from` routing needs no fetch pad (captured 2026-07-15). |
 | GeoTab | The silent 5,000 `Get` cap is confirmed on ExceptionEvent: `GetCountOf` returned 304,716 against a bare `Get` returning exactly 5,000 — the bisection overflow signal's per-type precondition, now Captured for this type (captured 2026-07-15). |
-| GeoTab | The User visibility anomaly was scope, not nonexistence: after the account fix, `GetCountOf User` returned 157 (previously 2), `isDriver: true` search returns driver records, and a by-id fetch of a trip-referenced driver succeeds. The driver-variant User shape is captured (60+ fields; carries list-of-nested-object fields like `mapViews` — the list-of-structs derivation vertical is load-bearing for any User model) (captured 2026-07-15). |
+| GeoTab | The User visibility anomaly was scope, not nonexistence: after the account fix, `GetCountOf User` returned 157 (previously 2), `isDriver: true` search returns driver records, and a by-id fetch of a trip-referenced driver succeeds. The driver-variant User shape is captured (60+ fields; carries list-of-nested-object fields like `mapViews`, excluded from the shipped model per the Device exclusion precedent) (captured 2026-07-15). |
+| GeoTab | User supports id-sort seek paging — proven live, never assumed from Device: a `resultsLimit: 3` first page returned ascending ids, and the offset advance continued past the boundary with no overlap or loss. Third per-type sortability datum (Device yes, ExceptionEvent no, User yes) — sortability is probed per type, every time (captured 2026-07-16). |
+| GeoTab | The full User population sweep (bare `Get`): 157 records, equal to `GetCountOf` exactly; no null value and no type variance on any of the 75 observed keys — GeoTab omits keys rather than sending nulls, so User optionality is absence-shaped. The driver-only block (`licenseNumber`, `licenseProvince`, `viewDriversOwnDataOnly`, plus the `driverGroups`/`keys` lists) sits at exactly the 129-driver count; `maxPCDistancePerDay` (126/157) does NOT align with the driver split; `accessGroupFilter` appears on exactly one record; `iAMMetadata` on 42/157 (captured 2026-07-16). |
 | Samsara | 429 with fractional `Retry-After` (e.g. `0.40235`); 401 body is `{"message": ...}`; 5xx bodies are plain strings, never JSON. |
 | Motive | 401 body is `{"error_message": ...}`; the documented /vehicle_locations limit was not observed to enforce — generic 429 posture. |
 | Motive | `/v3/vehicle_locations/{vehicle_id}` verified live: envelope `{"vehicle_locations": [{"vehicle_location": {...}}]}`, `located_at` is UTC ISO-8601 (`Z`-suffixed), one non-paginated page per fetch (so `SinglePageDecoder` fits), and a single per-vehicle fetch spans multiple calendar dates (the sample crossed two) — confirming `split_by_date`'s multi-partition output is load-bearing in production, not a theoretical edge: one fetch genuinely fans into several partitions. |
@@ -1548,11 +1550,16 @@ fleetpull/
       vehicle_locations.py  # MotiveVehicleLocationsSpecBuilder + build_endpoint — the watermark binding
     samsara/       # net-new when its endpoints land
     geotab/
-      devices.py   # build_endpoint — the devices seek-paged snapshot factory, its
-                   #   JSON-RPC spec-builder, and GetCountOfCheck (the completeness
-                   #   guard's GeoTab implementation, §8 probe-settled decision 2)
+      _seek_walk.py  # GeotabGetSpecBuilder + GetCountOfCheck — the shared snapshot
+                   #   seek-walk machinery (promoted from the devices leaf when the
+                   #   users leaf became its second consumer; underscore-prefixed so
+                   #   the registry walk skips it)
+      devices.py   # build_endpoint — the devices seek-paged snapshot factory
+      users.py     # build_endpoint — the users seek-paged snapshot factory
       trips.py     # build_endpoint — the trips windowed (watermark) factory; the
                    #   TripSearch date bounds ride the seek walk (§4's amendment)
+      exception_events.py  # build_endpoint — the bisected windowed factory; the
+                   #   unsorted windowed spec builder (id-sort rejected per-type, §8)
     registry.py  # EndpointRegistry + build_endpoint_registry — the (provider, name) catalog; discovers leaves by walking endpoints.<provider>
   polars_typing/   # quarantined re-export boundary for Polars type aliases with no public
                    #   equivalent (e.g. ParquetCompression) — the sole importer of polars._typing
@@ -1577,6 +1584,11 @@ fleetpull/
       trip.py      # Trip — the movement-interval record (Duration columns, the
                    #   driver sentinel flattening, the seconds-despite-the-name
                    #   engine_hours trap)
+      exception_event.py  # ExceptionEvent — the rule-violation interval record
+                   #   (nested refs, GeotabTimeSpan duration)
+      user.py      # User + UserAccessGroupFilterRef — the account/driver record
+                   #   (scalar mirror; list and IAM blocks excluded per the Device
+                   #   precedent)
   records/         # the records stage: models -> typed Polars DataFrame
     fields.py      # the shared field walk: classify + enumerate flat leaf columns
     schema.py      # Pydantic model -> {column: Polars dtype}
@@ -2308,7 +2320,11 @@ resolution (item 1, done).
    (`groups`, `users`, the rollup pair) are deliberately unported. GeoTab
    `exception_events` shipped 2026-07-15 per its §8 decision block — the
    first bisected endpoint (`WindowBisection` + `BisectingWindowDriver`,
-   §14). Second half (the feed vertical) remains.*
+   §14). The GeoTab `users` snapshot followed (2026-07-16, id-sort and the
+   full-population shape proven live per §8's rows): the second seek-walk
+   consumer, so the walk's spec builder and `GetCountOfCheck` promoted out
+   of the devices leaf into the shared `_seek_walk` module. Second half
+   (the feed vertical) remains.*
 8. **Polish phase, gated on a stable public surface:** full-tree ceremony
    audit, test-coverage audit, documentation audit, the real usage-driven
    README, multi-platform CI (a Windows leg would have caught the
