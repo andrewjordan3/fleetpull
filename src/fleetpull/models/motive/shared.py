@@ -9,9 +9,15 @@ shape is promoted into this module only once a second endpoint actually
 uses it.
 """
 
-from pydantic import Field
+from typing import Annotated
 
-from fleetpull.model_contract import EmptyStrIsNone, ResponseModel
+from pydantic import BeforeValidator, Field
+
+from fleetpull.model_contract import (
+    EmptyStrIsNone,
+    ResponseModel,
+    empty_str_to_none,
+)
 
 __all__: list[str] = [
     'DriverSummary',
@@ -63,15 +69,19 @@ class VehicleSummary(ResponseModel):
     endpoint.
 
     ``year`` arrives as a quoted integer (``"2022"``); lax coercion types
-    it, and the captured ``"0"`` not-configured sentinel mirrors as ``0``,
-    never interpreted. ``make`` and ``model`` arrive as empty strings
-    where the provider has no value — the empty-string wire error lifts
-    to null per the coercion boundary rule.
+    it, the captured ``"0"`` not-configured sentinel mirrors as ``0``,
+    never interpreted, and the empty-string wire error lifts to null
+    (live-observed 2026-07-16: a first-page fleet record failed
+    ``int_parsing`` on ``year`` — the same wire error the capture showed
+    on ``make``/``model``). ``make`` and ``model`` arrive as empty
+    strings where the provider has no value — the same lift.
 
     Attributes:
         vehicle_id: Motive's internal vehicle identifier (wire key ``id``).
         number: Company-assigned unit number.
-        year: Model year; ``0`` is the provider's not-configured sentinel.
+        year: Model year; ``0`` is the provider's not-configured
+            sentinel; null when the provider sends an empty string or
+            nothing.
         make: Manufacturer; null when the provider sends an empty string.
         model: Model name; null when the provider sends an empty string.
         vin: Vehicle identification number.
@@ -80,7 +90,7 @@ class VehicleSummary(ResponseModel):
 
     vehicle_id: int = Field(alias='id')
     number: str
-    year: int
+    year: Annotated[int | None, BeforeValidator(empty_str_to_none)] = None
     make: EmptyStrIsNone = None
     model: EmptyStrIsNone = None
     vin: str
