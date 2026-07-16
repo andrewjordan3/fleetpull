@@ -5,9 +5,11 @@ from pathlib import Path
 from fleetpull.paths import endpoint_directory
 
 
-def test_joins_root_provider_endpoint() -> None:
-    result = endpoint_directory('/data', 'motive', 'vehicles')
-    assert result == Path('/data/motive/vehicles')
+def test_joins_root_provider_endpoint(tmp_path: Path) -> None:
+    # A real absolute root, not a POSIX literal: on Windows, resolution
+    # anchors '/data' to the drive and the literal never round-trips.
+    result = endpoint_directory(str(tmp_path), 'motive', 'vehicles')
+    assert result == tmp_path / 'motive' / 'vehicles'
 
 
 def test_normalizes_relative_root_to_absolute() -> None:
