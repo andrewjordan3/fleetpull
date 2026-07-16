@@ -22,7 +22,7 @@ from datetime import datetime
 
 from pydantic import Field
 
-from fleetpull.model_contract import EmptyStrIsNone, ResponseModel
+from fleetpull.model_contract import ResponseModel
 from fleetpull.models.motive.shared import DriverSummary, VehicleSummary
 
 __all__: list[str] = ['DrivingPeriod']
@@ -47,14 +47,16 @@ class DrivingPeriod(ResponseModel):
         end_kilometers: Odometer at span end; null while in progress.
         driver: Attributed driver; null when the span is unattributed.
         vehicle: The vehicle the span belongs to.
-        origin: Provider-formatted start address; empty string lifts to
-            null.
+        origin: Provider-formatted start address, mirrored verbatim
+            (empty strings normalize to null at the DataFrame boundary);
+            null when absent.
         origin_lat: Start latitude; null when the provider has none.
         origin_lon: Start longitude; null when the provider has none.
         destination_lat: End latitude; null while in progress.
         destination_lon: End longitude; null while in progress.
-        destination: Provider-formatted end address; the in-progress
-            record's empty string lifts to null.
+        destination: Provider-formatted end address, mirrored verbatim —
+            the captured in-progress record carries ``""`` here (nulled
+            at the DataFrame boundary); null when absent.
         distance: Provider-formatted distance string (``"42.2 mi"``),
             mirrored verbatim; null while in progress.
     """
@@ -71,10 +73,10 @@ class DrivingPeriod(ResponseModel):
     end_kilometers: float | None = None
     driver: DriverSummary | None = None
     vehicle: VehicleSummary
-    origin: EmptyStrIsNone = None
+    origin: str | None = None
     origin_lat: float | None = None
     origin_lon: float | None = None
     destination_lat: float | None = None
     destination_lon: float | None = None
-    destination: EmptyStrIsNone = None
+    destination: str | None = None
     distance: str | None = None

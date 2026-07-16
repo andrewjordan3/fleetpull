@@ -1,21 +1,18 @@
 # src/fleetpull/model_contract/coercions.py
-"""Wire-error coercions response models opt into per field.
+"""Type-recovery coercion for stringly wire values.
 
-The coercion boundary rule: fix what is obviously a wire error, keep what
-is merely ugly. An empty string standing where a value is absent is the
-error class handled here — providers emit ``""`` where ``null`` belongs,
-and consumers lose hours to the difference. A formatted value someone
-chose (``"22.3 mi"``) is never touched: parsing it would presume a use
-case. Nothing applies globally — fields opt in via the ``Annotated``
-alias, so shipped models that deliberately mirror empty-string sentinels
-(the GeoTab Device VIN fields) are unaffected.
+Value-level wire-cleaning on a model is allowed only where recovering
+the declared type is structural (DESIGN section 9): a field typed
+``int`` receiving ``""`` cannot validate at all, so a before-validator
+lifts the empty string ahead of parsing (Motive ``VehicleSummary.year``
+is the shipped case). String fields never use this — models preserve
+``""`` faithfully from the wire, and empty strings normalize to null
+once, at the DataFrame boundary (``records.normalize_empty_strings``).
+A formatted value someone chose (``"22.3 mi"``) is never touched
+anywhere: parsing it would presume a use case.
 """
 
-from typing import Annotated
-
-from pydantic import BeforeValidator
-
-__all__: list[str] = ['EmptyStrIsNone', 'empty_str_to_none']
+__all__: list[str] = ['empty_str_to_none']
 
 
 # A BeforeValidator receives the raw wire value, and the layering
@@ -34,6 +31,3 @@ def empty_str_to_none(value: object) -> object:
     if value == '':
         return None
     return value
-
-
-EmptyStrIsNone = Annotated[str | None, BeforeValidator(empty_str_to_none)]

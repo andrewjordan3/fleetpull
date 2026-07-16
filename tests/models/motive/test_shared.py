@@ -91,10 +91,12 @@ class TestVehicleSummary:
         vehicle = VehicleSummary.model_validate(block)
         assert vehicle.year is None
 
-    def test_empty_make_and_model_lift_to_none(self) -> None:
+    def test_empty_make_and_model_mirror_verbatim(self) -> None:
+        # Models preserve "" faithfully from the wire; empty strings
+        # become null at the DataFrame boundary, never here.
         vehicle = VehicleSummary.model_validate(_vehicle_block(make='', model=''))
-        assert vehicle.make is None
-        assert vehicle.model is None
+        assert vehicle.make == ''
+        assert vehicle.model == ''
 
     def test_real_make_and_model_survive(self) -> None:
         vehicle = VehicleSummary.model_validate(_vehicle_block())
