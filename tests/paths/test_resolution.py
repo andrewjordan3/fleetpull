@@ -8,23 +8,30 @@ import pytest
 from fleetpull.paths import resolve_path
 
 
+def _point_home_at(monkeypatch: pytest.MonkeyPatch, home: Path) -> None:
+    # expanduser reads HOME on POSIX but USERPROFILE on Windows (HOME is
+    # ignored there since Python 3.8) -- patch both to stay portable.
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.setenv('USERPROFILE', str(home))
+
+
 class TestExpansion:
     def test_expands_bare_home(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        monkeypatch.setenv('HOME', str(tmp_path))
+        _point_home_at(monkeypatch, tmp_path)
         assert resolve_path('~') == tmp_path
 
     def test_expands_home_with_subpath(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        monkeypatch.setenv('HOME', str(tmp_path))
+        _point_home_at(monkeypatch, tmp_path)
         assert resolve_path('~/data/raw') == tmp_path / 'data' / 'raw'
 
     def test_expands_home_from_path_input(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        monkeypatch.setenv('HOME', str(tmp_path))
+        _point_home_at(monkeypatch, tmp_path)
         assert resolve_path(Path('~/data')) == tmp_path / 'data'
 
 
@@ -59,7 +66,13 @@ class TestNormalization:
         real_directory = tmp_path / 'real'
         real_directory.mkdir()
         link = tmp_path / 'link'
-        link.symlink_to(real_directory)
+        try:
+            link.symlink_to(real_directory)
+        except OSError:
+            # Windows without Developer Mode / elevation cannot create
+            # symlinks (WinError 1314) -- a machine capability, not a
+            # resolve_path behavior; the test still runs everywhere else.
+            pytest.skip('symlink creation not permitted on this machine')
         assert resolve_path(link / 'file.txt') == link / 'file.txt'
 
     def test_does_not_require_existence(self, tmp_path: Path) -> None:
