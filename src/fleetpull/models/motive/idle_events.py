@@ -36,8 +36,11 @@ class IdleEvent(ResponseModel):
         event_id: Motive's internal event identifier (wire key ``id``).
         start_time: UTC start of the idle interval; the routing anchor.
         end_time: UTC end of the idle interval.
-        veh_fuel_start: ELD cumulative fuel counter at interval start.
-        veh_fuel_end: ELD cumulative fuel counter at interval end.
+        veh_fuel_start: ELD cumulative fuel counter at interval start;
+            null when the vehicle reports no fuel counters
+            (live-observed 2026-07-16).
+        veh_fuel_end: ELD cumulative fuel counter at interval end; null
+            when the vehicle reports no fuel counters.
         lat: Event latitude.
         lon: Event longitude.
         city: Reverse-geocoded place name.
@@ -58,8 +61,8 @@ class IdleEvent(ResponseModel):
     event_id: int = Field(alias='id')
     start_time: datetime
     end_time: datetime
-    veh_fuel_start: float
-    veh_fuel_end: float
+    veh_fuel_start: float | None = None
+    veh_fuel_end: float | None = None
     lat: float
     lon: float
     city: str
