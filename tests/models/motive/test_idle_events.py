@@ -100,3 +100,14 @@ class TestIdleEventValidation:
         event = IdleEvent.model_validate(IDLE_EVENT_RECORDS[5])
         assert event.rg_match is False
         assert event.location.startswith('2.6 mi NW of Synthetic City ')
+
+    def test_null_fuel_counters_land_null(self) -> None:
+        # Constructed variant of a captured record: the 2026-07-16 live
+        # run observed an event failing float_type on both fuel counters
+        # -- a vehicle reporting no ELD fuel data sends nulls.
+        record = dict(IDLE_EVENT_RECORDS[0])
+        record['veh_fuel_start'] = None
+        record['veh_fuel_end'] = None
+        event = IdleEvent.model_validate(record)
+        assert event.veh_fuel_start is None
+        assert event.veh_fuel_end is None
