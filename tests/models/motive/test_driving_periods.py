@@ -107,18 +107,19 @@ class TestDrivingPeriodValidation:
 
     def test_the_coercion_exhibit_vehicle(self) -> None:
         # The captured year-"0" / empty-make/model vehicle: the quoted
-        # sentinel mirrors as 0; the empty strings lift to null.
+        # sentinel mirrors as 0; the empty strings mirror verbatim (the
+        # DataFrame boundary nulls them, never the model).
         period = DrivingPeriod.model_validate(DRIVING_PERIOD_RECORDS[3])
         assert period.vehicle.year == 0
-        assert period.vehicle.make is None
-        assert period.vehicle.model is None
+        assert period.vehicle.make == ''
+        assert period.vehicle.model == ''
 
     def test_the_annotated_record_carries_its_note(self) -> None:
         period = DrivingPeriod.model_validate(DRIVING_PERIOD_RECORDS[4])
         assert period.annotation_status == 1
         assert period.notes == 'synthetic note 001'
 
-    def test_in_progress_nulls_every_end_side_field(self) -> None:
+    def test_the_in_progress_end_side_shape(self) -> None:
         period = DrivingPeriod.model_validate(DRIVING_PERIOD_IN_PROGRESS_RECORD)
         assert period.status == 'in_progress'
         assert period.end_time is None
@@ -126,8 +127,9 @@ class TestDrivingPeriodValidation:
         assert period.distance is None
         assert period.destination_lat is None
         assert period.destination_lon is None
-        # The wire carries an empty string; the coercion rule lifts it.
-        assert period.destination is None
+        # The wire carries an empty string, mirrored verbatim; the
+        # DataFrame boundary is where it becomes null.
+        assert period.destination == ''
         # The routing anchor is present even mid-span.
         assert period.start_time == datetime(2026, 7, 15, 19, 9, 51, tzinfo=UTC)
 

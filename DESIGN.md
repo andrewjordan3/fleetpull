@@ -1566,6 +1566,9 @@ fleetpull/
     __init__.py    # re-exports ParquetCompression
   model_contract/  # pure dependency-free leaf: the response-model config policy
     response.py    # ResponseModel config-policy base (frozen, extra=ignore, populate_by_name, strip)
+    coercions.py   # empty_str_to_none — the type-recovery before-validator (composed
+                   #   per field where "" cannot validate as the declared type, e.g.
+                   #   an int; string fields mirror "" — the DataFrame boundary nulls it)
   roster/          # the fan-out roster leaf: identity, declaration, catalog (imports only vocabulary/exceptions)
     key.py         # RosterKey: the opaque (provider, name) handle a consumer references
     definition.py  # RosterDefinition: a key's source endpoint + column + refresh policy
