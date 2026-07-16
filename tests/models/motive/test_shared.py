@@ -77,6 +77,20 @@ class TestVehicleSummary:
         vehicle = VehicleSummary.model_validate(_vehicle_block(year='0'))
         assert vehicle.year == 0
 
+    def test_empty_year_lifts_to_none(self) -> None:
+        # Constructed variant of a captured record: the 2026-07-16 live
+        # run observed a fleet vehicle failing int_parsing on year --
+        # the empty-string wire error, on the field the capture only
+        # showed populated.
+        vehicle = VehicleSummary.model_validate(_vehicle_block(year=''))
+        assert vehicle.year is None
+
+    def test_missing_year_lands_null(self) -> None:
+        block = _vehicle_block()
+        del block['year']
+        vehicle = VehicleSummary.model_validate(block)
+        assert vehicle.year is None
+
     def test_empty_make_and_model_lift_to_none(self) -> None:
         vehicle = VehicleSummary.model_validate(_vehicle_block(make='', model=''))
         assert vehicle.make is None
