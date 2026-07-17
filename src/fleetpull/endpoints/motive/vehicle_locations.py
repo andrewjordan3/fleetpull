@@ -50,8 +50,8 @@ from fleetpull.endpoints.shared import (
     StorageKind,
     WatermarkMode,
     render_url_path_template,
+    require_date_window,
 )
-from fleetpull.incremental import DateWindow
 from fleetpull.models.motive import VehicleLocation
 from fleetpull.network.contract import HttpMethod, RequestSpec
 from fleetpull.network.decoders import MotiveWrappedSinglePageDecoder
@@ -112,15 +112,11 @@ class MotiveVehicleLocationsSpecBuilder:
         Side Effects:
             None.
         """
-        if not isinstance(resume, DateWindow):
-            raise TypeError(
-                'MotiveVehicleLocationsSpecBuilder requires a DateWindow resume, '
-                f'got {type(resume).__name__}.'
-            )
+        resume_window = require_date_window(resume, type(self).__name__)
         rendered_path = render_url_path_template(self.path_template, path_values)
         url = f'{self.base_url}{rendered_path}'
-        start_date = to_utc_date_string(resume.start)
-        end_date = to_utc_date_string(resume.end - timedelta(microseconds=1))
+        start_date = to_utc_date_string(resume_window.start)
+        end_date = to_utc_date_string(resume_window.end - timedelta(microseconds=1))
         params = {'start_date': start_date, 'end_date': end_date}
         return RequestSpec(method=HttpMethod.GET, url=url, params=params)
 
