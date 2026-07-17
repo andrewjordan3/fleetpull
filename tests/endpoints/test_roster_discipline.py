@@ -15,7 +15,7 @@ resolves each ``source_endpoint`` against the discovered endpoint catalog.
 import importlib
 from datetime import timedelta
 
-from fleetpull.config import GeotabConfig, MotiveConfig
+from fleetpull.config import GeotabConfig, MotiveConfig, SamsaraConfig
 from fleetpull.endpoints import EndpointRegistry, build_endpoint_registry
 from fleetpull.endpoints.registry import _iter_endpoint_leaf_modules
 from fleetpull.endpoints.shared import SnapshotMode
@@ -55,14 +55,18 @@ def _snapshot_violations(
 def test_every_declared_roster_sources_a_snapshot_feeder() -> None:
     rosters = _declared_rosters()
     assert rosters, 'discovery found no roster declarations'
-    registry = build_endpoint_registry([MotiveConfig(), GeotabConfig()])
+    registry = build_endpoint_registry(
+        [MotiveConfig(), GeotabConfig(), SamsaraConfig()]
+    )
     assert _snapshot_violations(rosters, registry) == []
 
 
 def test_the_discipline_flags_a_watermark_sourced_roster() -> None:
     # The permanent negative shape (plant-and-fire kept as a test): a roster
     # declaring a watermark-mode feeder must be flagged.
-    registry = build_endpoint_registry([MotiveConfig(), GeotabConfig()])
+    registry = build_endpoint_registry(
+        [MotiveConfig(), GeotabConfig(), SamsaraConfig()]
+    )
     watermark_sourced = RosterDefinition(
         key=RosterKey(Provider.MOTIVE, 'bad_roster'),
         source_endpoint='vehicle_locations',
