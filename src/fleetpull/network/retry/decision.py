@@ -14,7 +14,6 @@ the 429 penalized the shared quota scope, and the next
 TRANSIENT backoff, computed here, slept by the client.
 """
 
-import logging
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -26,8 +25,6 @@ __all__: list[str] = [
     'RetryDecision',
     'decide_retry',
 ]
-
-logger = logging.getLogger(__name__)
 
 
 class RandomFractionGenerator(Protocol):

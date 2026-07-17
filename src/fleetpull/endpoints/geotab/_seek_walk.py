@@ -18,7 +18,6 @@ decoder) and the ``GetCountOfCheck`` truth instrument fired beside
 every harvest.
 """
 
-import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Final
@@ -35,8 +34,6 @@ from fleetpull.network.contract import (
 from fleetpull.vocabulary import JsonValue
 
 __all__: list[str] = ['GeotabGetSpecBuilder', 'GetCountOfCheck']
-
-logger = logging.getLogger(__name__)
 
 # The JSON-RPC ingress path every GeoTab method POSTs to.
 _API_PATH: Final[str] = '/apiv1'

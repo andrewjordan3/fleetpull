@@ -14,7 +14,6 @@ config enforces at validation: endpoints listed with no credential is a
 ``ConfigurationError``).
 """
 
-import logging
 from collections.abc import Mapping
 from typing import ClassVar
 
@@ -35,8 +34,6 @@ __all__: list[str] = [
     'SamsaraConfig',
     'require_provider_credentials',
 ]
-
-logger = logging.getLogger(__name__)
 
 # The conventional credential environment variable per provider -- the
 # fallback the loading step merges when the YAML key is absent (a YAML

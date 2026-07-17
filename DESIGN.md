@@ -1870,7 +1870,7 @@ lives in `state/`). The per-chunk DataFrame is a value, not a stateful component
 - Annotated locals; explicit type hints everywhere
 - No real VINs / internal fleet identifiers in committed files
 - Docstrings with Args/Returns/Raises/Side Effects
-- `logging.getLogger(__name__)`; no `print` in production code
+- `logging.getLogger(__name__)` in modules that log (INFO milestones/progress, DEBUG developer detail, WARNING degraded-but-continuing, ERROR failures — settled 2026-07-17); no `print` in production code
 - Explicit timeouts on all network calls; specific exception handling
 - Blast-radius minimization over DRY where coupling risk is real
 - `StrEnum` for enums
@@ -1995,6 +1995,14 @@ tzinfo-construction rules mechanically.
     completed, pages fetched, penalties waited out) is the open surface; the
     concurrency vertical added no narration pending this policy (its one new
     log call is the error-path record of a discarded in-flight failure).
+
+  *Update (2026-07-17): the level semantics are settled — INFO for
+  milestones and progress updates, DEBUG for movement and detail geared
+  toward a developer, WARNING for degraded-but-continuing, ERROR for
+  failures — and a logger is bound only in modules that log (§12,
+  CLAUDE.md). Progress narration therefore belongs at INFO when it is
+  built; its content and cadence, plus the timestamp and handler-scope
+  bullets above, remain the open half.*
 
 ---
 
