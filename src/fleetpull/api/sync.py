@@ -86,7 +86,7 @@ __all__: list[str] = ['Sync']
 
 logger = logging.getLogger(__name__)
 
-# The concrete provider-section union: Samsara widens it as it ports.
+# The concrete provider-section union: new providers widen it as they port.
 type _ProviderSection = MotiveConfig | GeotabConfig | SamsaraConfig
 
 # The catalog as a lookup table: every public identity by registry key.
@@ -247,18 +247,8 @@ class Sync:
         """
         return [
             (provider, section)
-            for provider, section in self._provider_sections()
+            for provider, section in _provider_sections(self._config)
             if section is not None and section.endpoints
-        ]
-
-    def _provider_sections(
-        self,
-    ) -> list[tuple[Provider, _ProviderSection | None]]:
-        """Every provider section, present or not, in the fixed provider order."""
-        return [
-            (Provider.MOTIVE, self._config.providers.motive),
-            (Provider.GEOTAB, self._config.providers.geotab),
-            (Provider.SAMSARA, self._config.providers.samsara),
         ]
 
     def _discovery_provider_configs(self) -> list[_ProviderSection]:
@@ -279,7 +269,7 @@ class Sync:
         }
         return [
             section if section is not None else defaults[provider]
-            for provider, section in self._provider_sections()
+            for provider, section in _provider_sections(self._config)
         ]
 
     def _provider_profiles(
@@ -292,6 +282,21 @@ class Sync:
             credential = _required_credential(provider, provider_config)
             profiles[provider] = build_provider_profile(identity, credential, context)
         return profiles
+
+
+def _provider_sections(
+    config: FleetpullConfig,
+) -> list[tuple[Provider, _ProviderSection | None]]:
+    """Every provider section, present or not, in the fixed provider order.
+
+    The single provider roll-call in this module: adding a provider means
+    extending this list and nothing else here.
+    """
+    return [
+        (Provider.MOTIVE, config.providers.motive),
+        (Provider.GEOTAB, config.providers.geotab),
+        (Provider.SAMSARA, config.providers.samsara),
+    ]
 
 
 def _validated_selection(config: FleetpullConfig) -> list[tuple[Provider, str]]:
@@ -308,13 +313,8 @@ def _validated_selection(config: FleetpullConfig) -> list[tuple[Provider, str]]:
         ConfigurationError: A selected name is not in the public catalog, or
             zero providers are enabled.
     """
-    sections: list[tuple[Provider, _ProviderSection | None]] = [
-        (Provider.MOTIVE, config.providers.motive),
-        (Provider.GEOTAB, config.providers.geotab),
-        (Provider.SAMSARA, config.providers.samsara),
-    ]
     selection: list[tuple[Provider, str]] = []
-    for provider, section in sections:
+    for provider, section in _provider_sections(config):
         if section is None or not section.endpoints:
             continue
         for name in section.endpoints:

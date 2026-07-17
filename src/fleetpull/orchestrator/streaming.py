@@ -2,7 +2,8 @@
 """The fetch-and-frame pipe: a driver's pages, validated and framed per batch.
 
 ``stream_processed_batches`` is the shared step the run executor's snapshot and
-watermark arms drive, and the roster refresh will drive as well: it walks the
+watermark arms drive, and the roster harvest (``harvest_roster_members``) drives
+as well: it walks the
 request driver's fetched pages and runs each through ``process_batch``, yielding
 one ``ProcessedBatch`` per page. It is a lazy generator -- each page is framed and
 handed to the caller before the next is fetched, so the per-page memory bound the

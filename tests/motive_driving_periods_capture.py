@@ -23,11 +23,10 @@ the boundary); the in-progress record nulls every end-side field while
 ``destination`` and the ``year: "0"`` / empty ``make``/``model`` vehicle
 are the coercion-rule exhibits, kept verbatim on the wire side.
 
-Shared by the DrivingPeriod model tests, the endpoint-binding tests, and
-any future e2e consumers -- a multi-consumer capture set, so it lives in
-one helper module under ``tests/`` (the ``geotab_trips_capture``
-precedent). The JSON literals are the captures; the parsed objects beside
-them are what tests consume.
+Consumed by the DrivingPeriod model tests -- kept as a helper module
+under ``tests/`` so future consumers share one capture set (the
+``geotab_trips_capture`` precedent). The JSON literals are the captures;
+the parsed objects beside them are what tests consume.
 """
 
 import json

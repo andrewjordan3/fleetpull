@@ -22,11 +22,10 @@ type). The ArgumentException message text is the capture that killed
 seek paging for this type -- fixture material, never matched on by the
 classifier (the read-the-type-never-the-message rule).
 
-Shared by the ExceptionEvent model tests, the endpoint-binding tests,
-and any future e2e consumers -- a multi-consumer capture set in one
-helper module under ``tests/`` (the ``geotab_trips_capture``
-precedent). The JSON literals are the captures; the parsed objects
-beside them are what tests consume.
+Consumed by the ExceptionEvent model tests -- kept as a helper module
+under ``tests/`` so future consumers share one capture set (the
+``geotab_trips_capture`` precedent). The JSON literals are the
+captures; the parsed objects beside them are what tests consume.
 """
 
 import json

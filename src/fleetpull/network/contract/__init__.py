@@ -1,8 +1,8 @@
 # src/fleetpull/network/contract/__init__.py
 """The request/response contract: the shared vocabulary and protocols
 every network layer speaks. Provider implementations (classifiers,
-paginators, auth strategies) live in sibling packages and import this
-surface through this face."""
+page decoders, auth strategies) live in sibling packages and import
+this surface through this face."""
 
 from fleetpull.network.contract.auth import AuthStrategy
 from fleetpull.network.contract.classifier import (

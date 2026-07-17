@@ -13,8 +13,8 @@ from fleetpull.state.run_ledger import RunLedger, RunMode, RunStatus
 from fleetpull.timing.clock import FrozenClock
 from fleetpull.timing.codec import to_iso8601
 from fleetpull.vocabulary import Provider
+from tests.state.conftest import FROZEN_INSTANT
 
-FROZEN_INSTANT: datetime = datetime(2026, 6, 16, 9, 30, 0, tzinfo=UTC)
 WINDOW_START: datetime = datetime(2026, 6, 1, 0, 0, 0, tzinfo=UTC)
 WINDOW_END: datetime = datetime(2026, 6, 2, 0, 0, 0, tzinfo=UTC)
 
@@ -35,10 +35,6 @@ _RUN_COLUMNS: tuple[str, ...] = (
     'ended_at',
     'error_detail',
 )
-
-
-def _database_path(directory: Path) -> Path:
-    return directory / 'state.sqlite3'
 
 
 def _read_run(
@@ -152,15 +148,9 @@ def _insert_raw_succeeded_snapshot_run(
 
 
 @pytest.fixture
-def frozen_clock() -> FrozenClock:
-    """A clock fixed at FROZEN_INSTANT, shared with the run_ledger fixture."""
-    return FrozenClock(start_time_utc=FROZEN_INSTANT)
-
-
-@pytest.fixture
-def run_ledger(tmp_path: Path, frozen_clock: FrozenClock) -> RunLedger:
+def run_ledger(database_path: Path, frozen_clock: FrozenClock) -> RunLedger:
     """A RunLedger over a freshly initialized, migrated state database."""
-    database = StateDatabase(_database_path(tmp_path))
+    database = StateDatabase(database_path)
     database.initialize()
     migrate_to_head(database)
     return RunLedger(database, frozen_clock)
@@ -168,13 +158,13 @@ def run_ledger(tmp_path: Path, frozen_clock: FrozenClock) -> RunLedger:
 
 class TestStartWindowRun:
     def test_inserts_a_running_watermark_row(
-        self, run_ledger: RunLedger, tmp_path: Path
+        self, run_ledger: RunLedger, database_path: Path
     ) -> None:
         run_id = run_ledger.start_window_run(
             Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
         )
         assert isinstance(run_id, int)
-        run = _read_run(_database_path(tmp_path), run_id)
+        run = _read_run(database_path, run_id)
         assert run['status'] == RunStatus.RUNNING
         assert run['mode'] == RunMode.WATERMARK
         assert run['started_at'] == to_iso8601(FROZEN_INSTANT)
@@ -201,12 +191,12 @@ class TestStartWindowRun:
 
 class TestStartFeedRun:
     def test_inserts_a_running_feed_row(
-        self, run_ledger: RunLedger, tmp_path: Path
+        self, run_ledger: RunLedger, database_path: Path
     ) -> None:
         run_id = run_ledger.start_feed_run(
             Provider.GEOTAB, 'log_records', from_version='v0'
         )
-        run = _read_run(_database_path(tmp_path), run_id)
+        run = _read_run(database_path, run_id)
         assert run['status'] == RunStatus.RUNNING
         assert run['mode'] == RunMode.FEED
         assert run['from_version'] == 'v0'
@@ -217,10 +207,10 @@ class TestStartFeedRun:
 
 class TestStartSnapshotRun:
     def test_inserts_a_running_snapshot_row_with_no_range(
-        self, run_ledger: RunLedger, tmp_path: Path
+        self, run_ledger: RunLedger, database_path: Path
     ) -> None:
         run_id = run_ledger.start_snapshot_run(Provider.MOTIVE, 'vehicles')
-        run = _read_run(_database_path(tmp_path), run_id)
+        run = _read_run(database_path, run_id)
         assert run['status'] == RunStatus.RUNNING
         assert run['mode'] == RunMode.SNAPSHOT
         assert run['window_start'] is None
@@ -231,14 +221,14 @@ class TestStartSnapshotRun:
 
 class TestCompleteRun:
     def test_watermark_completion_succeeds_and_stamps_the_advanced_clock(
-        self, run_ledger: RunLedger, frozen_clock: FrozenClock, tmp_path: Path
+        self, run_ledger: RunLedger, frozen_clock: FrozenClock, database_path: Path
     ) -> None:
         run_id = run_ledger.start_window_run(
             Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
         )
         frozen_clock.advance(timedelta(hours=2))
         run_ledger.complete_run(run_id, row_count=42)
-        run = _read_run(_database_path(tmp_path), run_id)
+        run = _read_run(database_path, run_id)
         assert run['status'] == RunStatus.SUCCEEDED
         assert run['mode'] == RunMode.WATERMARK
         assert run['row_count'] == 42
@@ -255,11 +245,11 @@ class TestCompleteRun:
             run_ledger.complete_run(run_id, row_count=1, to_version='nope')
 
     def test_feed_completion_records_the_to_version(
-        self, run_ledger: RunLedger, tmp_path: Path
+        self, run_ledger: RunLedger, database_path: Path
     ) -> None:
         run_id = run_ledger.start_feed_run(Provider.GEOTAB, 'trips', from_version='v0')
         run_ledger.complete_run(run_id, row_count=5, to_version='v9')
-        run = _read_run(_database_path(tmp_path), run_id)
+        run = _read_run(database_path, run_id)
         assert run['status'] == RunStatus.SUCCEEDED
         assert run['mode'] == RunMode.FEED
         assert run['row_count'] == 5
@@ -273,11 +263,11 @@ class TestCompleteRun:
             run_ledger.complete_run(run_id, row_count=5)
 
     def test_snapshot_completion_succeeds_with_row_count(
-        self, run_ledger: RunLedger, tmp_path: Path
+        self, run_ledger: RunLedger, database_path: Path
     ) -> None:
         run_id = run_ledger.start_snapshot_run(Provider.MOTIVE, 'vehicles')
         run_ledger.complete_run(run_id, row_count=1300)
-        run = _read_run(_database_path(tmp_path), run_id)
+        run = _read_run(database_path, run_id)
         assert run['status'] == RunStatus.SUCCEEDED
         assert run['row_count'] == 1300
         assert run['to_version'] is None
@@ -303,14 +293,14 @@ class TestCompleteRun:
 
 class TestFailRun:
     def test_marks_failed_with_detail_and_advanced_clock(
-        self, run_ledger: RunLedger, frozen_clock: FrozenClock, tmp_path: Path
+        self, run_ledger: RunLedger, frozen_clock: FrozenClock, database_path: Path
     ) -> None:
         run_id = run_ledger.start_window_run(
             Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
         )
         frozen_clock.advance(timedelta(minutes=5))
         run_ledger.fail_run(run_id, error_detail='boom: read timeout')
-        run = _read_run(_database_path(tmp_path), run_id)
+        run = _read_run(database_path, run_id)
         assert run['status'] == RunStatus.FAILED
         assert run['error_detail'] == 'boom: read timeout'
         assert run['ended_at'] == to_iso8601(FROZEN_INSTANT + timedelta(minutes=5))
@@ -379,12 +369,12 @@ class TestCoverageFrontier:
         assert run_ledger.coverage_frontier(Provider.GEOTAB, 'trips') is None
 
     def test_corrupt_window_end_raises(
-        self, run_ledger: RunLedger, tmp_path: Path
+        self, run_ledger: RunLedger, database_path: Path
     ) -> None:
         # window_start='2000-...' is lexically < 'not-a-datetime' ('2' < 'n'), so
         # the window-order CHECK passes; the value is unparseable on read.
         _insert_raw_succeeded_window_run(
-            _database_path(tmp_path),
+            database_path,
             Provider.SAMSARA.value,
             'trips',
             '2000-01-01T00:00:00Z',
@@ -458,10 +448,10 @@ class TestLastSuccessAt:
         assert run_ledger.last_success_at(Provider.GEOTAB, 'devices') is None
 
     def test_corrupt_ended_at_raises(
-        self, run_ledger: RunLedger, tmp_path: Path
+        self, run_ledger: RunLedger, database_path: Path
     ) -> None:
         _insert_raw_succeeded_snapshot_run(
-            _database_path(tmp_path),
+            database_path,
             Provider.SAMSARA.value,
             'trips',
             'not-a-datetime',
@@ -472,44 +462,44 @@ class TestLastSuccessAt:
 
 class TestModeKeyedCheck:
     def test_snapshot_row_with_a_window_is_rejected(
-        self, run_ledger: RunLedger, tmp_path: Path
+        self, run_ledger: RunLedger, database_path: Path
     ) -> None:
         with pytest.raises(sqlite3.IntegrityError):
             _insert_raw_run(
-                _database_path(tmp_path),
+                database_path,
                 mode='snapshot',
                 window_start='2026-06-01T00:00:00Z',
                 window_end='2026-06-02T00:00:00Z',
             )
 
     def test_watermark_row_without_a_window_is_rejected(
-        self, run_ledger: RunLedger, tmp_path: Path
+        self, run_ledger: RunLedger, database_path: Path
     ) -> None:
         with pytest.raises(sqlite3.IntegrityError):
-            _insert_raw_run(_database_path(tmp_path), mode='watermark')
+            _insert_raw_run(database_path, mode='watermark')
 
     def test_feed_row_without_a_version_is_rejected(
-        self, run_ledger: RunLedger, tmp_path: Path
+        self, run_ledger: RunLedger, database_path: Path
     ) -> None:
         with pytest.raises(sqlite3.IntegrityError):
-            _insert_raw_run(_database_path(tmp_path), mode='feed')
+            _insert_raw_run(database_path, mode='feed')
 
     def test_unknown_mode_value_is_rejected(
-        self, run_ledger: RunLedger, tmp_path: Path
+        self, run_ledger: RunLedger, database_path: Path
     ) -> None:
         with pytest.raises(sqlite3.IntegrityError):
-            _insert_raw_run(_database_path(tmp_path), mode='teleport')
+            _insert_raw_run(database_path, mode='teleport')
 
 
 class TestDurability:
     def test_a_separate_ledger_reads_back_a_started_run(
-        self, run_ledger: RunLedger, tmp_path: Path
+        self, run_ledger: RunLedger, database_path: Path
     ) -> None:
         run_id = run_ledger.start_window_run(
             Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
         )
         reopened = RunLedger(
-            StateDatabase(_database_path(tmp_path)),
+            StateDatabase(database_path),
             FrozenClock(start_time_utc=FROZEN_INSTANT),
         )
         # Completing through a fresh ledger proves the started row committed (its

@@ -19,7 +19,6 @@ live in the shared ``_seek_walk`` module (promoted when the users leaf
 became their second consumer); this leaf binds them to ``Device``.
 """
 
-import logging
 from typing import Final
 
 from fleetpull.config import GeotabConfig
@@ -34,8 +33,6 @@ from fleetpull.network.decoders import GeotabGetPageDecoder
 from fleetpull.vocabulary import Provider, QuotaScope
 
 __all__: list[str] = ['build_endpoint']
-
-logger = logging.getLogger(__name__)
 
 # Pre-auth placeholder host for a default-constructed (credential-less)
 # config -- mirrors GeotabAuthConfig's server default; the session

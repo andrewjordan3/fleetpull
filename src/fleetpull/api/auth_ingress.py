@@ -28,7 +28,6 @@ manager's clock). The context grows only when a provider's auth
 machinery demands a new collaborator -- it is not a general-purpose bag.
 """
 
-import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -54,8 +53,6 @@ from fleetpull.timing import Clock
 from fleetpull.vocabulary import Provider, QuotaScope
 
 __all__: list[str] = ['AuthInput', 'ProviderProfileContext', 'build_provider_profile']
-
-logger = logging.getLogger(__name__)
 
 # The §10 auth union. SecretStr is accepted alongside the bare string so
 # the config path (Sync) hands its already-wrapped credential straight

@@ -10,7 +10,6 @@ per category within an attempt sequence; a RATE_LIMITED failure
 neither resets nor advances the TRANSIENT count.
 """
 
-import logging
 from typing import Self
 
 from pydantic import Field, model_validator
@@ -18,8 +17,6 @@ from pydantic import Field, model_validator
 from fleetpull.config.base import ConfigModel
 
 __all__: list[str] = ['RetryConfig']
-
-logger = logging.getLogger(__name__)
 
 
 class RetryConfig(ConfigModel):

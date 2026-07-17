@@ -14,11 +14,10 @@ null -- elsewhere; exactly one ``accessGroupFilter``; the
 authority/company equality classes; the 2050 still-active sentinel; all
 timestamps, locale fields, and GeoTab vocabulary verbatim).
 
-Shared by the User model tests and the users endpoint tests -- a
-multi-consumer capture set, so it lives in one helper module under
-``tests/`` (the ``geotab_devices_capture`` precedent). The raw JSON
-literal is the capture verbatim; the parsed objects beside it are what
-tests consume.
+Consumed by the User model tests -- kept as a helper module under
+``tests/`` so future consumers share one capture set (the
+``geotab_devices_capture`` precedent). The raw JSON literal is the
+capture verbatim; the parsed objects beside it are what tests consume.
 """
 
 import json

@@ -1,15 +1,14 @@
 # src/fleetpull/network/contract/envelopes.py
 """Validate-or-raise for provider response envelopes.
 
-Relocated here from ``pagination.py`` at its second consumer (the
+Relocated here from ``page_decoder.py`` at its second consumer (the
 GeoTab authenticator): the composition — ``model_validate`` and, on
 failure, raise ``ProviderResponseError`` carrying Pydantic's complaint
-— is contract-layer semantics, not pagination semantics, so it is named
-and homed neutrally where both consumers can reach it without a name
-lie.
+— is contract-layer semantics, not page-decoding semantics, so it is
+named and homed neutrally where both consumers can reach it without a
+name lie.
 """
 
-import logging
 from typing import cast
 
 from pydantic import BaseModel, ValidationError
@@ -22,8 +21,6 @@ __all__: list[str] = [
     'unwrap_record_objects',
     'validated_envelope_slice',
 ]
-
-logger = logging.getLogger(__name__)
 
 
 def validated_envelope_slice[ModelT: BaseModel](
