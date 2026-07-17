@@ -45,6 +45,7 @@ def _no_ambient_credential(monkeypatch: pytest.MonkeyPatch) -> None:
     """Strip the credential variables so a developer's shell never leaks in."""
     monkeypatch.delenv('MOTIVE_API_KEY', raising=False)
     monkeypatch.delenv('GEOTAB_PASSWORD', raising=False)
+    monkeypatch.delenv('SAMSARA_API_KEY', raising=False)
 
 
 def _install_transport(monkeypatch: pytest.MonkeyPatch, handler: _Handler) -> None:
@@ -221,6 +222,27 @@ class TestConstruction:
         assert 'motive' in message
         assert 'vehiclez' in message
         assert 'vehicle_locations, vehicles' in message
+
+    def test_samsara_selection_fails_loudly_while_its_catalog_is_empty(
+        self, tmp_path: Path
+    ) -> None:
+        # The provider is fully wired (config, ingress, sync dispatch)
+        # ahead of its first endpoint; a selected name must fail catalog
+        # validation loudly, never skip silently.
+        config_path = tmp_path / 'config.yaml'
+        config_path.write_text(
+            'sync:\n  default_start_date: 2026-06-01\n'
+            f'storage:\n  dataset_root: {tmp_path / "data"}\n'
+            'providers:\n'
+            '  samsara:\n'
+            "    api_key: 'synthetic-samsara-token-000'\n"
+            '    endpoints: [vehicles]\n'
+        )
+        with pytest.raises(ConfigurationError) as raised:
+            Sync(config_path)
+        message = str(raised.value)
+        assert 'samsara' in message
+        assert 'vehicles' in message
 
     def test_zero_enabled_providers_is_an_error(self, tmp_path: Path) -> None:
         config_path = tmp_path / 'config.yaml'

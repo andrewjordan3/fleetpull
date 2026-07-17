@@ -46,6 +46,7 @@ from fleetpull.network.auth import (
 from fleetpull.network.classifiers import (
     GeotabResponseClassifier,
     MotiveResponseClassifier,
+    SamsaraResponseClassifier,
 )
 from fleetpull.network.client import ProviderProfile
 from fleetpull.network.limits import RateLimiterRegistry
@@ -65,6 +66,13 @@ type AuthInput = str | SecretStr | Mapping[str, str] | GeotabAuthConfig
 # Provider knowledge no consumer should type (AUDIT row 20): the header
 # a Motive static key travels in.
 _MOTIVE_AUTH_HEADER: str = 'X-API-Key'
+
+# Samsara's bearer credential: the header and the value prefix. The
+# ingress pre-formats 'Bearer <token>' before wrapping in SecretStr --
+# StaticHeaderAuth documents pre-formatting as the composition root's
+# job, and this is that site.
+_SAMSARA_AUTH_HEADER: str = 'Authorization'
+_SAMSARA_BEARER_PREFIX: str = 'Bearer '
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,12 +106,12 @@ def build_provider_profile(
         endpoint: The identity whose provider selects the credential
             shape and classifier; the auth value's own shape never
             drives dispatch.
-        auth: The public credential value. Motive requires a bare
-            API-key string; GeoTab requires a ``GeotabAuthConfig`` or a
-            mapping with its named fields.
+        auth: The public credential value. Motive and Samsara each
+            require a bare API-key/token string; GeoTab requires a
+            ``GeotabAuthConfig`` or a mapping with its named fields.
         context: The composition-root collaborators (HTTP posture,
             limiter registry, clock) a provider's auth machinery draws
-            on; Motive ignores it, GeoTab consumes it.
+            on; the static-key providers ignore it, GeoTab consumes it.
 
     Returns:
         The ``ProviderProfile`` (``SecretStr``-carrying auth strategy
@@ -112,7 +120,7 @@ def build_provider_profile(
     Raises:
         ConfigurationError: ``auth``'s shape mismatches the endpoint's
             provider (naming the expected shape and the provider, never
-            the value), or the provider has no exposed endpoints yet.
+            the value).
     """
     match endpoint.provider:
         case Provider.MOTIVE:
@@ -144,14 +152,21 @@ def build_provider_profile(
                 classifier=GeotabResponseClassifier(),
             )
         case Provider.SAMSARA:
-            # Signature-ready, unreachable through the catalog today: no
-            # Samsara identity exists, so construction code here would be
-            # dead. The arm fills in as its endpoints port.
-            raise ConfigurationError(
-                'provider has no exposed endpoints',
-                provider=endpoint.provider.value,
-                endpoint=endpoint.name,
-                detail='no catalog identity exists for this provider yet',
+            if not isinstance(auth, str | SecretStr):
+                raise ConfigurationError(
+                    'auth shape mismatch',
+                    provider=endpoint.provider.value,
+                    endpoint=endpoint.name,
+                    detail=(
+                        f'Samsara auth is a bare API-token string (or SecretStr); '
+                        f'got {type(auth).__name__}'
+                    ),
+                )
+            raw_token = auth.get_secret_value() if isinstance(auth, SecretStr) else auth
+            bearer = SecretStr(f'{_SAMSARA_BEARER_PREFIX}{raw_token}')
+            return ProviderProfile(
+                auth=StaticHeaderAuth(_SAMSARA_AUTH_HEADER, bearer),
+                classifier=SamsaraResponseClassifier(),
             )
 
 

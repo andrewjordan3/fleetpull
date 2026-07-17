@@ -2,9 +2,9 @@
 """The provider config family: the shared base, the sections, the container.
 
 One model family per file (house rule): ``ProviderConfig`` (the
-per-provider contract), the concrete provider sections (``MotiveConfig``
-today; Samsara and GeoTab join as they port), and ``ProvidersConfig``
-(the ``providers:`` YAML container) evolve together.
+per-provider contract), the concrete provider sections (``MotiveConfig``,
+``GeotabConfig``, ``SamsaraConfig``), and ``ProvidersConfig`` (the
+``providers:`` YAML container) evolve together.
 
 The family also owns two provider facts consumed above the models:
 ``PROVIDER_CREDENTIAL_ENV_VARS`` (the conventional per-provider
@@ -32,6 +32,7 @@ __all__: list[str] = [
     'MotiveConfig',
     'ProviderConfig',
     'ProvidersConfig',
+    'SamsaraConfig',
     'require_provider_credentials',
 ]
 
@@ -47,7 +48,30 @@ logger = logging.getLogger(__name__)
 PROVIDER_CREDENTIAL_ENV_VARS: Mapping[str, str] = {
     'motive': 'MOTIVE_API_KEY',
     'geotab': 'GEOTAB_PASSWORD',
+    'samsara': 'SAMSARA_API_KEY',
 }
+
+
+def _validated_base_url(value: str) -> str:
+    """Reject a schemeless URL and drop any trailing slash.
+
+    The shared per-field check behind the ``base_url`` validators of the
+    static-key providers (Motive, Samsara) -- generic URL hygiene, not
+    provider semantics, so sharing it couples nothing.
+
+    Args:
+        value: The configured base URL.
+
+    Returns:
+        The base URL with no trailing slash.
+
+    Raises:
+        ValueError: When the URL carries no http(s) scheme.
+    """
+    if not value.startswith(('http://', 'https://')):
+        raise ValueError('base_url must start with http:// or https://')
+    return value.rstrip('/')
+
 
 _MOTIVE_DEFAULT_BASE_URL: str = 'https://api.gomotive.com'
 _MOTIVE_MAX_RECORDS_PER_PAGE: int = 100
@@ -148,20 +172,8 @@ class MotiveConfig(ProviderConfig):
     @field_validator('base_url')
     @classmethod
     def _require_scheme_and_strip_slash(cls, value: str) -> str:
-        """Reject a schemeless URL and drop any trailing slash.
-
-        Args:
-            value: The configured base URL.
-
-        Returns:
-            The base URL with no trailing slash.
-
-        Raises:
-            ValueError: When the URL carries no http(s) scheme.
-        """
-        if not value.startswith(('http://', 'https://')):
-            raise ValueError('base_url must start with http:// or https://')
-        return value.rstrip('/')
+        """Apply the shared base-URL hygiene check (see the module helper)."""
+        return _validated_base_url(value)
 
 
 # The Get method-class budget, from the captured rate headers
@@ -249,6 +261,78 @@ class GeotabConfig(ProviderConfig):
     cutoff_days: int = Field(default=_GEOTAB_DEFAULT_CUTOFF_DAYS, ge=0)
 
 
+_SAMSARA_DEFAULT_BASE_URL: str = 'https://api.samsara.com'
+_SAMSARA_DEFAULT_LOOKBACK_DAYS: int = 7
+_SAMSARA_DEFAULT_CUTOFF_DAYS: int = 0
+
+# Conservative default budget for the provider-wide Samsara scope.
+# Samsara's documented limits (developers.samsara.com/docs/rate-limits,
+# fetched 2026-07-17; documented, not captured) are 150 requests/second
+# per token and 200/second per organization, BUT individual endpoints
+# carry tiered limits down to 100 requests per MINUTE. Until the
+# per-endpoint scope split lands (DESIGN §7 anticipates it; each
+# endpoint's tier is pinned as it ports), the provider-wide scope
+# self-limits at that tightest documented tier so no endpoint can be
+# over-driven by a provider-level default. Raise in config for known
+# faster tiers; revisit as endpoints declare their own scopes.
+_SAMSARA_DEFAULT_RATE_LIMIT: RateLimitConfig = RateLimitConfig(
+    requests_per_period=100, period_seconds=60.0, burst=10, max_concurrency=2
+)
+
+
+class SamsaraConfig(ProviderConfig):
+    """
+    User-facing Samsara provider settings, one instance per run.
+
+    Attributes:
+        api_key: The Samsara API token for the config-driven sync path
+            (``fetch`` takes its credential as an argument instead).
+            Optional in YAML -- ``FleetpullConfig.from_yaml`` merges the
+            ``SAMSARA_API_KEY`` environment variable when the key is
+            absent. ``SecretStr`` from parse time on: masked in every
+            repr and never logged. Travels as a bearer token; the
+            ``Bearer`` prefix is the auth ingress's concern, never
+            configured here.
+        base_url: Root of the Samsara API. Optional; defaults to
+            Samsara's documented production host. Must carry an http(s)
+            scheme and is normalized to drop any trailing slash, so a
+            spec-builder joins a leading-slash request path to it
+            directly.
+        lookback_days: Late-arrival re-fetch margin in whole days for
+            watermark endpoints -- how far before the stored watermark
+            each resume re-fetches, so a record that landed after its
+            event-time day is recovered and its partitions replaced.
+            Optional per-provider YAML key; when absent, root-level
+            resolution fans in a declared ``sync.lookback_days``, else
+            this documented default stands (provider key > sync key >
+            default). Non-negative; zero means no margin beyond the
+            watermark's own date.
+        cutoff_days: Trailing-edge holdback in whole days for watermark
+            endpoints -- how far the resume window's end is held back from
+            the clock, so a still-arriving day is never frozen as a complete
+            partition. The complement of ``lookback_days``; same
+            precedence. Optional; defaults to 0.
+        rate_limit: The provider-wide Samsara scope's token-bucket
+            budget. Optional; defaults to the tightest documented
+            per-endpoint tier -- see ``_SAMSARA_DEFAULT_RATE_LIMIT`` for
+            the rationale and the per-endpoint-scope revisit note.
+    """
+
+    quota_scope: ClassVar[QuotaScope] = QuotaScope.SAMSARA
+
+    api_key: SecretStr | None = None
+    base_url: str = Field(default=_SAMSARA_DEFAULT_BASE_URL)
+    rate_limit: RateLimitConfig = Field(default=_SAMSARA_DEFAULT_RATE_LIMIT)
+    lookback_days: int = Field(default=_SAMSARA_DEFAULT_LOOKBACK_DAYS, ge=0)
+    cutoff_days: int = Field(default=_SAMSARA_DEFAULT_CUTOFF_DAYS, ge=0)
+
+    @field_validator('base_url')
+    @classmethod
+    def _require_scheme_and_strip_slash(cls, value: str) -> str:
+        """Apply the shared base-URL hygiene check (see the module helper)."""
+        return _validated_base_url(value)
+
+
 class ProvidersConfig(ConfigModel):
     """
     The per-provider configuration entries, one instance per run.
@@ -262,10 +346,13 @@ class ProvidersConfig(ConfigModel):
             does not configure Motive.
         geotab: The GeoTab provider section, or ``None`` when the YAML
             does not configure GeoTab.
+        samsara: The Samsara provider section, or ``None`` when the YAML
+            does not configure Samsara.
     """
 
     motive: MotiveConfig | None = None
     geotab: GeotabConfig | None = None
+    samsara: SamsaraConfig | None = None
 
 
 def require_provider_credentials(providers: ProvidersConfig) -> None:
@@ -313,5 +400,17 @@ def require_provider_credentials(providers: ProvidersConfig) -> None:
                 f"'providers.geotab.auth' (username, database, and optional "
                 f'server in the YAML; the password from the YAML or the '
                 f'{environment_variable} environment variable)'
+            ),
+        )
+    samsara = providers.samsara
+    if samsara is not None and samsara.endpoints and samsara.api_key is None:
+        environment_variable = PROVIDER_CREDENTIAL_ENV_VARS['samsara']
+        raise ConfigurationError(
+            'provider credential missing',
+            provider='samsara',
+            detail=(
+                'endpoints are configured but no credential resolves; set '
+                f"'providers.samsara.api_key' in the YAML or the "
+                f'{environment_variable} environment variable'
             ),
         )

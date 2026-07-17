@@ -33,6 +33,7 @@ def _no_ambient_credential(monkeypatch: pytest.MonkeyPatch) -> None:
     """Strip credential variables so a developer's shell never leaks into tests."""
     monkeypatch.delenv('MOTIVE_API_KEY', raising=False)
     monkeypatch.delenv('GEOTAB_PASSWORD', raising=False)
+    monkeypatch.delenv('SAMSARA_API_KEY', raising=False)
 
 
 def _write(tmp_path: Path, text: str) -> Path:
@@ -256,6 +257,19 @@ def _geotab_yaml(tmp_path: Path, *, password_line: str) -> str:
     )
 
 
+def _samsara_yaml(tmp_path: Path) -> str:
+    """A samsara-only document with no YAML credential (the env is the test's variable)."""
+    return (
+        f'sync:\n'
+        f'  default_start_date: 2026-06-01\n'
+        f'storage:\n'
+        f'  dataset_root: {tmp_path / "data"}\n'
+        f'providers:\n'
+        f'  samsara:\n'
+        f'    endpoints: [vehicles]\n'
+    )
+
+
 class TestEnvironmentFallback:
     def test_absent_key_with_env_set_resolves(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -313,6 +327,22 @@ class TestEnvironmentFallback:
         assert geotab is not None
         assert geotab.auth is not None
         assert geotab.auth.password.get_secret_value() == 'yaml-synthetic-pass'
+
+    def test_samsara_absent_key_with_env_set_resolves(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv('SAMSARA_API_KEY', 'env-synthetic-token')
+        config = FleetpullConfig.from_yaml(_write(tmp_path, _samsara_yaml(tmp_path)))
+        samsara = config.providers.samsara
+        assert samsara is not None
+        assert samsara.api_key is not None
+        assert samsara.api_key.get_secret_value() == 'env-synthetic-token'
+
+    def test_samsara_endpoints_without_any_credential_raise(
+        self, tmp_path: Path
+    ) -> None:
+        with pytest.raises(ConfigurationError, match='SAMSARA_API_KEY'):
+            FleetpullConfig.from_yaml(_write(tmp_path, _samsara_yaml(tmp_path)))
 
     def test_geotab_endpoints_without_any_credential_raise(
         self, tmp_path: Path

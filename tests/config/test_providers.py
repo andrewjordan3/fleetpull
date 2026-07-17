@@ -8,6 +8,7 @@ from fleetpull.config import (
     GeotabConfig,
     MotiveConfig,
     ProvidersConfig,
+    SamsaraConfig,
 )
 from fleetpull.config.providers import (
     PROVIDER_CREDENTIAL_ENV_VARS,
@@ -84,8 +85,10 @@ class TestProvidersConfig:
         assert ProvidersConfig(motive=MotiveConfig()).motive is not None
 
     def test_rejects_unknown_providers(self) -> None:
+        # samsara was this test's unknown example until it became a real
+        # section (2026-07-17); any never-a-provider name serves.
         with pytest.raises(ValidationError):
-            ProvidersConfig(samsara={})  # type: ignore[call-arg]
+            ProvidersConfig(verizon_connect={})  # type: ignore[call-arg]
 
 
 class TestCredentialContract:
@@ -182,3 +185,75 @@ class TestGeotabCredentialContract:
             )
         )
         require_provider_credentials(ProvidersConfig(geotab=GeotabConfig()))
+
+
+class TestSamsaraConfig:
+    def test_defaults(self) -> None:
+        config = SamsaraConfig()
+        assert config.base_url == 'https://api.samsara.com'
+        assert config.lookback_days == 7
+        assert config.cutoff_days == 0
+        assert config.api_key is None
+        assert config.endpoints == ()
+
+    def test_default_rate_limit_is_the_tightest_documented_tier(self) -> None:
+        # 100 requests/minute -- the lowest documented per-endpoint tier;
+        # the provider-wide scope self-limits there until the per-endpoint
+        # scope split lands (see the default's comment in providers.py).
+        config = SamsaraConfig()
+        assert config.rate_limit.requests_per_period == 100
+        assert config.rate_limit.period_seconds == 60.0
+
+    def test_quota_scope_binds_the_provider_scope(self) -> None:
+        assert SamsaraConfig.quota_scope is QuotaScope.SAMSARA
+
+    def test_strips_a_trailing_slash(self) -> None:
+        config = SamsaraConfig(base_url='https://api.samsara.com/')
+        assert config.base_url == 'https://api.samsara.com'
+
+    def test_rejects_a_schemeless_base_url(self) -> None:
+        with pytest.raises(ValidationError):
+            SamsaraConfig(base_url='api.samsara.com')
+
+    def test_api_key_is_masked_in_reprs(self) -> None:
+        config = SamsaraConfig(api_key=SecretStr('synthetic-samsara-token-000'))
+        assert 'synthetic-samsara-token-000' not in repr(config)
+        assert 'synthetic-samsara-token-000' not in str(config)
+
+    @pytest.mark.parametrize('knob', ['lookback_days', 'cutoff_days'])
+    def test_rejects_negative_knobs(self, knob: str) -> None:
+        with pytest.raises(ValidationError):
+            SamsaraConfig(**{knob: -1})
+
+    def test_rejects_unknown_fields(self) -> None:
+        with pytest.raises(ValidationError):
+            SamsaraConfig(records_per_page=100)  # type: ignore[call-arg]
+
+    def test_is_frozen(self) -> None:
+        config = SamsaraConfig()
+        with pytest.raises(ValidationError):
+            config.endpoints = ('vehicles',)  # type: ignore[misc]
+
+
+class TestSamsaraCredentialContract:
+    def test_env_var_convention_names_samsara(self) -> None:
+        assert PROVIDER_CREDENTIAL_ENV_VARS['samsara'] == 'SAMSARA_API_KEY'
+
+    def test_endpoints_without_key_raise_naming_field_and_env_var(self) -> None:
+        providers = ProvidersConfig(samsara=SamsaraConfig(endpoints=('vehicles',)))
+        with pytest.raises(ConfigurationError) as raised:
+            require_provider_credentials(providers)
+        message = str(raised.value)
+        assert 'providers.samsara.api_key' in message
+        assert 'SAMSARA_API_KEY' in message
+
+    def test_credentialed_or_endpointless_samsara_passes(self) -> None:
+        require_provider_credentials(
+            ProvidersConfig(
+                samsara=SamsaraConfig(
+                    api_key=SecretStr('synthetic-samsara-token-000'),
+                    endpoints=('vehicles',),
+                )
+            )
+        )
+        require_provider_credentials(ProvidersConfig(samsara=SamsaraConfig()))
