@@ -30,6 +30,7 @@ from fleetpull.network.auth import GeotabSessionAuth
 from fleetpull.network.classifiers import (
     GeotabResponseClassifier,
     MotiveResponseClassifier,
+    SamsaraResponseClassifier,
 )
 from fleetpull.network.contract import HttpMethod, RequestSpec
 from fleetpull.network.limits import RateLimiterRegistry, rate_limits_from_configs
@@ -38,6 +39,7 @@ from fleetpull.vocabulary import Provider
 
 _SYNTHETIC_KEY = 'synthetic-motive-key-000'
 _SYNTHETIC_PASS = 'synthetic-geotab-pass-000'
+_SYNTHETIC_TOKEN = 'synthetic-samsara-token-000'
 
 # The genuine class, captured before any test monkeypatches httpx.Client
 # (the transport-test precedent).
@@ -130,12 +132,40 @@ def test_rejection_never_echoes_the_value() -> None:
     assert _SYNTHETIC_KEY not in repr(raised.value)
 
 
-def test_unexposed_provider_is_a_configuration_error() -> None:
-    # No Samsara catalog identity exists; a hand-built one exercises the arm.
-    samsara_identity = SnapshotEndpoint(Provider.SAMSARA, 'vehicles')
-    with pytest.raises(ConfigurationError) as raised:
-        build_provider_profile(samsara_identity, _SYNTHETIC_KEY, _context())
-    assert 'samsara' in str(raised.value)
+class TestSamsaraArm:
+    """No Samsara catalog identity exists yet; hand-built identities
+    exercise the arm (the provider is wired ahead of its first
+    endpoint, so the first vertical is purely endpoint work)."""
+
+    def test_bare_string_becomes_bearer_header_profile(self) -> None:
+        identity = SnapshotEndpoint(Provider.SAMSARA, 'vehicles')
+        profile = build_provider_profile(identity, _SYNTHETIC_TOKEN, _context())
+        prepared = profile.auth.prepare(_bare_spec())
+        assert prepared.headers['Authorization'] == f'Bearer {_SYNTHETIC_TOKEN}'
+        assert isinstance(profile.classifier, SamsaraResponseClassifier)
+
+    def test_secret_str_passes_through_to_the_same_header(self) -> None:
+        identity = SnapshotEndpoint(Provider.SAMSARA, 'vehicles')
+        profile = build_provider_profile(
+            identity, SecretStr(_SYNTHETIC_TOKEN), _context()
+        )
+        prepared = profile.auth.prepare(_bare_spec())
+        assert prepared.headers['Authorization'] == f'Bearer {_SYNTHETIC_TOKEN}'
+
+    def test_profile_never_reprs_the_token(self) -> None:
+        identity = SnapshotEndpoint(Provider.SAMSARA, 'vehicles')
+        profile = build_provider_profile(identity, _SYNTHETIC_TOKEN, _context())
+        for rendering in (repr(profile), str(profile), repr(profile.auth)):
+            assert _SYNTHETIC_TOKEN not in rendering
+
+    def test_wrong_shape_names_shape_and_provider_never_the_value(self) -> None:
+        identity = SnapshotEndpoint(Provider.SAMSARA, 'vehicles')
+        with pytest.raises(ConfigurationError) as raised:
+            build_provider_profile(identity, {'api_key': _SYNTHETIC_TOKEN}, _context())
+        message = str(raised.value)
+        assert 'samsara' in message
+        assert 'bare API-token string' in message
+        assert _SYNTHETIC_TOKEN not in message
 
 
 class TestGeotabArm:
