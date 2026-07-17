@@ -10,6 +10,7 @@ from fleetpull.config.providers import (
     MotiveConfig,
     ProviderConfig,
     ProvidersConfig,
+    SamsaraConfig,
 )
 from fleetpull.config.rate_limit import RateLimitConfig
 from fleetpull.config.retry import RetryConfig
@@ -28,6 +29,7 @@ __all__: list[str] = [
     'ProvidersConfig',
     'RateLimitConfig',
     'RetryConfig',
+    'SamsaraConfig',
     'StateConfig',
     'StorageConfig',
     'SyncConfig',
