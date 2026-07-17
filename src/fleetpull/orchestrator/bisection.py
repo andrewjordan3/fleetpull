@@ -29,6 +29,7 @@ seconds because fractional-second search bounds are unprobed on the
 wire.
 """
 
+import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -45,6 +46,27 @@ from fleetpull.network.client import FetchedPage, TransportClient
 from fleetpull.vocabulary import JsonObject
 
 __all__: list[str] = ['BisectingWindowDriver']
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class _BisectionTally:
+    """Mutable leaf/overflow counters threaded through one unit's recursion.
+
+    Narration state only -- the fetch and filter semantics never read it.
+    ``record_batches`` folds it into the unit-level INFO line so an
+    operator sees that (and how hard) bisection engaged, without a log
+    line per leaf.
+
+    Attributes:
+        leaves: Non-overflowing windows fetched and yielded.
+        overflows: Windows that returned exactly ``results_limit`` records
+            and were halved.
+    """
+
+    leaves: int = 0
+    overflows: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,13 +112,26 @@ class BisectingWindowDriver:
                 'BisectingWindowDriver requires a DateWindow resume, '
                 f'got {type(resume).__name__}.'
             )
-        yield from self._drive_window(definition, client, resume)
+        tally = _BisectionTally()
+        yield from self._drive_window(definition, client, resume, tally)
+        if tally.overflows:
+            logger.info(
+                'bisection complete: provider=%s endpoint=%s window_start=%s '
+                'window_end=%s leaves=%d overflows=%d',
+                definition.provider.value,
+                definition.name,
+                resume.start.isoformat(),
+                resume.end.isoformat(),
+                tally.leaves,
+                tally.overflows,
+            )
 
     def _drive_window(
         self,
         definition: EndpointDefinition[ResponseModel],
         client: TransportClient,
         window: DateWindow,
+        tally: _BisectionTally,
     ) -> Iterator[FetchedPage]:
         """Fetch one window; recurse on overflow, yield the leaf otherwise.
 
@@ -105,6 +140,8 @@ class BisectingWindowDriver:
             client: The transport client for this endpoint's provider.
             window: The window to fetch — the unit's resume window at the
                 top of the recursion, a half of a parent below it.
+            tally: The recursion's shared leaf/overflow counters, folded
+                into the unit-level narration by ``record_batches``.
 
         Yields:
             The leaf batches under this window, left-to-right.
@@ -122,6 +159,7 @@ class BisectingWindowDriver:
         # page), so the chain is exactly one page.
         records = [record for page in pages for record in page.records]
         if len(records) < self.bisection.results_limit:
+            tally.leaves += 1
             yield FetchedPage(
                 records=self._anchored_in(records, window, definition),
                 durable_progress=None,
@@ -140,12 +178,22 @@ class BisectingWindowDriver:
                     f'escape for this endpoint at this density.'
                 )
             )
+        tally.overflows += 1
+        logger.debug(
+            'window overflowed: provider=%s endpoint=%s window_start=%s '
+            'window_end=%s records=%d; halving',
+            definition.provider.value,
+            definition.name,
+            window.start.isoformat(),
+            window.end.isoformat(),
+            len(records),
+        )
         midpoint = _whole_second_midpoint(window.start, window.end)
         yield from self._drive_window(
-            definition, client, DateWindow(start=window.start, end=midpoint)
+            definition, client, DateWindow(start=window.start, end=midpoint), tally
         )
         yield from self._drive_window(
-            definition, client, DateWindow(start=midpoint, end=window.end)
+            definition, client, DateWindow(start=midpoint, end=window.end), tally
         )
 
     def _anchored_in(

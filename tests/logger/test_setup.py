@@ -37,6 +37,13 @@ class TestConsoleOnlySetup:
         setup_logger(LoggerConfig())
         assert package_logger().propagate is False
 
+    def test_root_logger_handlers_are_untouched(self) -> None:
+        # Handlers configure the 'fleetpull' package logger only (DESIGN
+        # section 13); the root logger is never a configuration target.
+        root_handlers_before = list(logging.getLogger().handlers)
+        setup_logger(LoggerConfig())
+        assert logging.getLogger().handlers == root_handlers_before
+
     def test_idempotent_handler_count(self) -> None:
         setup_logger(LoggerConfig())
         setup_logger(LoggerConfig())
@@ -110,6 +117,12 @@ class TestUtcTimestamps:
             assert handler_formatter is not None
             assert handler_formatter.converter is time.gmtime
             assert handler_formatter.datefmt == _DATE_FORMAT
+
+    def test_date_format_carries_the_z_suffix(self) -> None:
+        # The identity check above would pass even if the constant's value
+        # drifted; the UTC marker in every rendered timestamp is policy
+        # (DESIGN section 13), so its presence is pinned by value.
+        assert _DATE_FORMAT.endswith('Z')
 
 
 class TestConfirmationRecord:

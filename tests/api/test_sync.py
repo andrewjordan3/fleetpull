@@ -302,6 +302,51 @@ class TestRun:
         with pytest.raises(RuntimeError, match='planted bug'):
             Sync(_write_config(tmp_path)).run()
 
+    def test_run_narrates_start_and_finish_on_stderr(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # capsys, not caplog: setup_logger sets propagate=False on the
+        # package logger, so records never reach the root logger caplog
+        # listens on -- the configured stderr handler is the observable
+        # (the tests/logger/test_setup.py confirmation-record precedent).
+        install_transport(monkeypatch, _happy_handler)
+        Sync(_write_config(tmp_path)).run()
+        captured_stderr = capsys.readouterr().err
+        assert 'sync started:' in captured_stderr
+        assert 'providers=[motive]' in captured_stderr
+        assert 'endpoints=2' in captured_stderr
+        assert 'motive.vehicles' in captured_stderr
+        assert 'motive.vehicle_locations' in captured_stderr
+        assert str(tmp_path / 'data') in captured_stderr
+        assert 'sync finished:' in captured_stderr
+        assert 'succeeded=2' in captured_stderr
+        assert 'failed=0' in captured_stderr
+        assert 'elapsed_seconds=' in captured_stderr
+
+    def test_finish_narration_counts_a_failed_endpoint(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # The finish line lands before the failure aggregate raises, with
+        # the failed endpoint counted.
+        def locations_fail(request: httpx.Request) -> httpx.Response:
+            if request.url.path == '/v1/vehicles':
+                return _vehicles_response(1)
+            return httpx.Response(404, text='no route')
+
+        install_transport(monkeypatch, locations_fail)
+        with pytest.raises(SyncFailuresError):
+            Sync(_write_config(tmp_path)).run()
+        captured_stderr = capsys.readouterr().err
+        assert 'sync finished:' in captured_stderr
+        assert 'succeeded=1' in captured_stderr
+        assert 'failed=1' in captured_stderr
+
     def test_run_failures_never_leak_the_secret(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

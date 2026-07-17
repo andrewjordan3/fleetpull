@@ -216,6 +216,13 @@ class RosterRefreshCoordinator:
                 detail='a roster source must be a full-listing (snapshot) endpoint',
             )
         client = self._client_source.client_for(provider)
+        logger.info(
+            'roster refresh started: provider=%s roster=%s feeder=%s members_held=%d',
+            provider.value,
+            definition.key.name,
+            definition.source_endpoint,
+            len(current),
+        )
         run_id = self._ledger.start_snapshot_run(provider, definition.source_endpoint)
         try:
             listed = harvest_roster_members(
@@ -241,6 +248,12 @@ class RosterRefreshCoordinator:
         # A harvest run's row count is the distinct-member count of the
         # listing -- the rows this execution produced for its consumer.
         self._ledger.complete_run(run_id, row_count=len(listed))
+        logger.info(
+            'roster refreshed: provider=%s roster=%s members=%d',
+            provider.value,
+            definition.key.name,
+            len(listed),
+        )
 
     def apply_listing(self, definition: RosterDefinition, listed: set[str]) -> None:
         """Reconcile an executed feeder run's listed membership into the store.

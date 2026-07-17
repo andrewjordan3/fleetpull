@@ -228,6 +228,31 @@ class TestRefreshIfStale:
         assert ledger.completed == [(1, 2)]
         assert ledger.failed == []
 
+    def test_a_due_refresh_narrates_start_and_completion(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        coordinator, _, _ = _coordinator(
+            feeder=_snapshot_feeder(),
+            last_success=_NOW - timedelta(days=2),
+            current={'1': 0},
+            client=_CannedClient([_page([{'vehicle_id': '1'}, {'vehicle_id': '2'}])]),
+        )
+        with caplog.at_level('INFO', logger='fleetpull.orchestrator.roster_refresh'):
+            coordinator.refresh_if_stale(_roster_definition())
+        info_messages = [
+            record.getMessage()
+            for record in caplog.records
+            if record.levelname == 'INFO'
+        ]
+        assert any(
+            'roster refresh started:' in message and 'members_held=1' in message
+            for message in info_messages
+        )
+        assert any(
+            'roster refreshed:' in message and 'members=2' in message
+            for message in info_messages
+        )
+
     def test_consecutive_refreshes_harvest_once(self) -> None:
         # The regression that would have caught the freshness defect: the
         # first refresh_if_stale harvests AND records a run the staleness key

@@ -16,10 +16,11 @@ framing, and writing are the run executor's. The batch granularity is each drive
 own choice; the runner consumes batches uniformly.
 """
 
+import logging
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
-from typing import Protocol
+from typing import Final, Protocol
 
 from fleetpull.endpoints.shared import (
     CompletenessCheck,
@@ -32,6 +33,13 @@ from fleetpull.network.client import FetchedPage, TransportClient
 from fleetpull.orchestrator.fanout import FetchPool, stream_pieces
 
 __all__: list[str] = ['FanOutRequestDriver', 'RequestDriver', 'SingleRequestDriver']
+
+logger = logging.getLogger(__name__)
+
+# The fan-out progress heartbeat's cadence: a narration cadence, not a
+# correctness knob. A full-fleet fan-out of ~1,500 members narrates ~15
+# progress lines; a small fleet emits at most one.
+_MEMBER_PROGRESS_INTERVAL: Final[int] = 100
 
 
 class RequestDriver(Protocol):
@@ -247,6 +255,13 @@ class FanOutRequestDriver:
         members finish and are discarded (a discarded failure is logged, never
         raised over the first).
 
+        Progress narrates on this consuming side of the channel -- the one
+        seam that sees every member exactly once, in member order, on the
+        serial and threaded paths alike: one DEBUG per member, an INFO
+        heartbeat every ``_MEMBER_PROGRESS_INTERVAL`` members, and one INFO
+        when the fan-out drains. Never per page or per record -- that is
+        flood, not progress.
+
         Args:
             definition: The endpoint being run.
             client: The transport client for this endpoint's provider (safe to
@@ -258,11 +273,37 @@ class FanOutRequestDriver:
             Each fetched page, member by member, in order. Each member drives at
             least one (possibly empty) page.
         """
+        member_total = len(self.members)
         piece_tasks = (
             partial(self._fetch_member_pages, definition, client, resume, member)
             for member in self.members
         )
-        yield from stream_pieces(piece_tasks, self.fetch_pool)
+        for member_ordinal, (member, member_pages) in enumerate(
+            stream_pieces(piece_tasks, self.fetch_pool), start=1
+        ):
+            logger.debug(
+                'fetched member: provider=%s endpoint=%s member=%s (%d/%d)',
+                definition.provider.value,
+                definition.name,
+                member,
+                member_ordinal,
+                member_total,
+            )
+            if member_ordinal % _MEMBER_PROGRESS_INTERVAL == 0:
+                logger.info(
+                    'fan-out progress: provider=%s endpoint=%s members=%d/%d',
+                    definition.provider.value,
+                    definition.name,
+                    member_ordinal,
+                    member_total,
+                )
+            yield from member_pages
+        logger.info(
+            'fan-out complete: provider=%s endpoint=%s members=%d',
+            definition.provider.value,
+            definition.name,
+            member_total,
+        )
 
     def _fetch_member_pages(
         self,
@@ -270,12 +311,16 @@ class FanOutRequestDriver:
         client: TransportClient,
         resume: ResumeValue,
         member: str,
-    ) -> list[FetchedPage]:
+    ) -> list[tuple[str, list[FetchedPage]]]:
         """Fetch one member's whole chain -- the piece a pool worker executes.
 
         Runs on a worker thread: it touches the transport (which owns the
         limiter consultation) and nothing else -- no validation, no framing,
-        no writing, per the single-writer invariant.
+        no logging, no writing, per the single-writer invariant. The
+        one-element return keeps the channel yielding each member whole, so
+        the consuming thread narrates member completions in member order;
+        memory stays bounded by one member's whole page list per in-flight
+        piece.
 
         Args:
             definition: The endpoint being run.
@@ -284,11 +329,12 @@ class FanOutRequestDriver:
             member: The fan-out key this piece fetches.
 
         Returns:
-            The member's pages, in chain order -- at least one (possibly
-            empty) page.
+            A one-element sequence pairing the member with its pages, in
+            chain order -- at least one (possibly empty) page.
         """
-        return list(
+        member_pages = list(
             _stream_chain_pages(
                 definition, client, resume, {self.path_placeholder: member}
             )
         )
+        return [(member, member_pages)]
