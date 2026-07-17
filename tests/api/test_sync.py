@@ -223,12 +223,11 @@ class TestConstruction:
         assert 'vehiclez' in message
         assert 'vehicle_locations, vehicles' in message
 
-    def test_samsara_selection_fails_loudly_while_its_catalog_is_empty(
+    def test_unknown_samsara_endpoint_names_the_samsara_valid_set(
         self, tmp_path: Path
     ) -> None:
-        # The provider is fully wired (config, ingress, sync dispatch)
-        # ahead of its first endpoint; a selected name must fail catalog
-        # validation loudly, never skip silently.
+        # Selection is validated per provider against the catalog; an
+        # unknown Samsara name fails loudly, never skips silently.
         config_path = tmp_path / 'config.yaml'
         config_path.write_text(
             'sync:\n  default_start_date: 2026-06-01\n'
@@ -236,12 +235,13 @@ class TestConstruction:
             'providers:\n'
             '  samsara:\n'
             "    api_key: 'synthetic-samsara-token-000'\n"
-            '    endpoints: [vehicles]\n'
+            '    endpoints: [vehiclez]\n'
         )
         with pytest.raises(ConfigurationError) as raised:
             Sync(config_path)
         message = str(raised.value)
         assert 'samsara' in message
+        assert 'vehiclez' in message
         assert 'vehicles' in message
 
     def test_zero_enabled_providers_is_an_error(self, tmp_path: Path) -> None:

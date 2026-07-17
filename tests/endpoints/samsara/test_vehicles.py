@@ -1,0 +1,63 @@
+"""Tests for fleetpull.endpoints.samsara.vehicles.
+
+The binding rides the shared snapshot spec-builder and the cursor
+decoder proven live 2026-07-17; no completeness check is declared
+because the cursor walk is complete by construction (continuation is
+explicit per page, and the decoder fails loudly on a promised
+continuation without a cursor).
+"""
+
+from fleetpull.config import SamsaraConfig
+from fleetpull.endpoints.samsara.vehicles import build_endpoint
+from fleetpull.endpoints.shared import (
+    EndpointDefinition,
+    SnapshotMode,
+    StaticGetSpecBuilder,
+    StorageKind,
+)
+from fleetpull.models.samsara import Vehicle
+from fleetpull.network.contract import HttpMethod
+from fleetpull.network.decoders import SamsaraCursorPageDecoder
+from fleetpull.vocabulary import Provider, QuotaScope
+
+
+def _build_endpoint() -> EndpointDefinition[Vehicle]:
+    return build_endpoint(SamsaraConfig())
+
+
+class TestVehiclesSpecBuilder:
+    def test_builds_the_static_get(self) -> None:
+        endpoint = _build_endpoint()
+        assert isinstance(endpoint.spec_builder, StaticGetSpecBuilder)
+        spec = endpoint.spec_builder.build_spec(resume=None, path_values={})
+        assert spec.method is HttpMethod.GET
+        assert spec.url == 'https://api.samsara.com/fleet/vehicles'
+
+    def test_configured_base_url_is_used(self) -> None:
+        config = SamsaraConfig(base_url='https://alt.example.test/')
+        spec = build_endpoint(config).spec_builder.build_spec(
+            resume=None, path_values={}
+        )
+        # The config strips the trailing slash so the path joins cleanly.
+        assert spec.url == 'https://alt.example.test/fleet/vehicles'
+
+
+class TestBuildVehiclesEndpoint:
+    def test_binds_the_static_facts(self) -> None:
+        endpoint = _build_endpoint()
+        assert endpoint.provider is Provider.SAMSARA
+        assert endpoint.name == 'vehicles'
+        assert endpoint.quota_scope is QuotaScope.SAMSARA
+        assert endpoint.storage_kind is StorageKind.SINGLE
+        assert endpoint.response_model is Vehicle
+        assert isinstance(endpoint.sync_mode, SnapshotMode)
+        assert endpoint.fan_out is None
+        assert endpoint.window_bisection is None
+        assert endpoint.completeness_check is None
+
+    def test_the_decoder_is_the_cursor_walk_at_the_documented_max(self) -> None:
+        endpoint = _build_endpoint()
+        decoder = endpoint.page_decoder
+        assert isinstance(decoder, SamsaraCursorPageDecoder)
+        assert decoder.records_key == 'data'
+        assert decoder.results_limit == 512

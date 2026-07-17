@@ -24,24 +24,30 @@ def build_spec() -> RequestSpec:
 
 class TestSamsaraCursorPageDecoder:
     def test_satisfies_page_decoder_protocol(self) -> None:
-        decoder: PageDecoder = SamsaraCursorPageDecoder(records_key='data')
+        decoder: PageDecoder = SamsaraCursorPageDecoder(
+            records_key='data', results_limit=512
+        )
         assert isinstance(decoder, SamsaraCursorPageDecoder)
 
-    def test_first_request_is_identity_without_after(self) -> None:
+    def test_first_request_carries_limit_and_no_after(self) -> None:
         spec = build_spec()
-        prepared = SamsaraCursorPageDecoder(records_key='data').first_request(spec)
-        assert prepared is spec
+        prepared = SamsaraCursorPageDecoder(
+            records_key='data', results_limit=512
+        ).first_request(spec)
         assert prepared.params is not None
+        assert prepared.params['limit'] == '512'
         assert 'after' not in prepared.params
+        # Pre-existing params survive the merge.
+        assert prepared.params['types'] == 'gps'
 
     def test_cursor_advance_merges_after(self) -> None:
         envelope: dict[str, JsonValue] = {
             'pagination': {'hasNextPage': True, 'endCursor': 'cursor-0001'},
             'data': [{'id': 'a'}],
         }
-        decoded = SamsaraCursorPageDecoder(records_key='data').decode_page(
-            build_spec(), envelope
-        )
+        decoded = SamsaraCursorPageDecoder(
+            records_key='data', results_limit=512
+        ).decode_page(build_spec(), envelope)
         assert decoded.advance.next_spec is not None
         assert decoded.advance.next_spec.params == {
             'types': 'gps',
@@ -57,9 +63,9 @@ class TestSamsaraCursorPageDecoder:
             'pagination': {'hasNextPage': False},
             'data': [{'id': 'a'}],
         }
-        decoded = SamsaraCursorPageDecoder(records_key='data').decode_page(
-            build_spec(), envelope
-        )
+        decoded = SamsaraCursorPageDecoder(
+            records_key='data', results_limit=512
+        ).decode_page(build_spec(), envelope)
         assert decoded.advance.next_spec is None
         assert decoded.advance.durable_progress is None
         assert decoded.records == [{'id': 'a'}]
@@ -70,7 +76,7 @@ class TestSamsaraCursorPageDecoder:
             'data': [{'id': 'a'}],
         }
         with pytest.raises(ProviderResponseError, match='endCursor'):
-            SamsaraCursorPageDecoder(records_key='data').decode_page(
+            SamsaraCursorPageDecoder(records_key='data', results_limit=512).decode_page(
                 build_spec(), envelope
             )
 
@@ -80,7 +86,7 @@ class TestSamsaraCursorPageDecoder:
             'data': [{'id': 'a'}],
         }
         with pytest.raises(ProviderResponseError, match='endCursor'):
-            SamsaraCursorPageDecoder(records_key='data').decode_page(
+            SamsaraCursorPageDecoder(records_key='data', results_limit=512).decode_page(
                 build_spec(), envelope
             )
 
@@ -99,6 +105,6 @@ class TestSamsaraCursorPageDecoder:
     )
     def test_malformed_metadata_raises(self, envelope: JsonValue) -> None:
         with pytest.raises(ProviderResponseError, match='malformed response envelope'):
-            SamsaraCursorPageDecoder(records_key='data').decode_page(
+            SamsaraCursorPageDecoder(records_key='data', results_limit=512).decode_page(
                 build_spec(), envelope
             )
