@@ -1,5 +1,7 @@
 """Tests for fleetpull.orchestrator.runner."""
 
+import json
+import logging
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -126,6 +128,16 @@ class _StubCursorAccess:
         self, provider: Provider, endpoint: str, cursor: IncrementalCursor
     ) -> None:
         self.set_calls.append((provider, endpoint, cursor))
+
+
+class _ApplyingCursorAccess(_StubCursorAccess):
+    """A CursorAccess whose writes apply, so a read-back sees the new cursor."""
+
+    def set_cursor(
+        self, provider: Provider, endpoint: str, cursor: IncrementalCursor
+    ) -> None:
+        super().set_cursor(provider, endpoint, cursor)
+        self._cursor = cursor
 
 
 def _snapshot_definition() -> EndpointDefinition[_SnapshotModel]:
@@ -633,3 +645,91 @@ class TestWatermarkRun:
         runner = _make_runner(recorder, tmp_path, default_start_date=date(2026, 6, 12))
         with pytest.raises(RuntimeError, match='fetch blew up'):
             runner.run(_watermark_definition(), FailingDriver())
+
+
+class TestMetadataProjection:
+    def test_snapshot_run_writes_metadata_json(self, tmp_path: Path) -> None:
+        recorder = _RecordingRecorder()
+        runner = _make_runner(recorder, tmp_path)
+        records: list[JsonObject] = [{'id': 1, 'name': 'a'}, {'id': 2, 'name': 'b'}]
+        runner.run(_snapshot_definition(), CannedDriver([records]))
+        metadata_file = tmp_path / 'motive' / 'vehicles' / 'metadata.json'
+        assert json.loads(metadata_file.read_text(encoding='utf-8')) == {
+            'schema_version': 1,
+            'provider': 'motive',
+            'endpoint': 'vehicles',
+            'sync_mode': 'snapshot',
+            'generated_at': '2026-06-16T00:00:00Z',
+            'last_run': {
+                'records_fetched': 2,
+                'rows_written': 2,
+                'duplicates_dropped': 0,
+                'files_written': 1,
+                'deleted_partitions': [],
+                'window_start': None,
+                'window_end': None,
+            },
+            'cursor': None,
+        }
+
+    def test_watermark_run_carries_the_window_and_the_advanced_cursor(
+        self, tmp_path: Path
+    ) -> None:
+        # The applying stub makes the post-run read-back see the advanced
+        # cursor, mirroring the real store's behavior.
+        recorder = _RecordingRecorder()
+        cursor = _ApplyingCursorAccess()
+        runner = _make_runner(
+            recorder,
+            tmp_path,
+            cursor_access=cursor,
+            default_start_date=date(2026, 6, 12),
+        )
+        batch = _wm_batch(datetime(2026, 6, 13, 9, tzinfo=UTC))
+        runner.run(_watermark_definition(), CannedDriver([batch]))
+        metadata_file = tmp_path / 'motive' / 'locations' / 'metadata.json'
+        document = json.loads(metadata_file.read_text(encoding='utf-8'))
+        assert document['sync_mode'] == 'watermark'
+        assert document['last_run']['window_start'] == '2026-06-12T00:00:00Z'
+        assert document['last_run']['window_end'] == '2026-06-15T00:00:00Z'
+        assert document['cursor'] == {
+            'kind': 'date_watermark',
+            'value': '2026-06-13T09:00:00Z',
+        }
+
+    def test_caught_up_writes_no_metadata(self, tmp_path: Path) -> None:
+        recorder = _RecordingRecorder()
+        cursor = _StubCursorAccess(
+            DateWatermark(watermark=datetime(2026, 6, 16, 8, tzinfo=UTC))
+        )
+        clock = FrozenClock(start_time_utc=datetime(2026, 6, 16, 12, tzinfo=UTC))
+        runner = _make_runner(recorder, tmp_path, clock=clock, cursor_access=cursor)
+        outcome = runner.run(_watermark_definition(), CannedDriver([[]]))
+        assert isinstance(outcome, CaughtUp)
+        assert not (tmp_path / 'motive' / 'locations' / 'metadata.json').exists()
+
+    def test_write_oserror_leaves_the_run_executed_and_logs_at_error(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        def failing_write(endpoint_directory: Path, text: str) -> None:
+            raise OSError('disk full')
+
+        monkeypatch.setattr(
+            'fleetpull.orchestrator.runner.write_metadata_json', failing_write
+        )
+        recorder = _RecordingRecorder()
+        runner = _make_runner(recorder, tmp_path)
+        records: list[JsonObject] = [{'id': 1, 'name': 'a'}]
+        with caplog.at_level(logging.ERROR, logger='fleetpull.orchestrator.runner'):
+            outcome = runner.run(_snapshot_definition(), CannedDriver([records]))
+        assert isinstance(outcome, Executed)
+        assert recorder.completed == [(1, 1)]
+        assert recorder.failed == []
+        error_records = [
+            record for record in caplog.records if record.levelno == logging.ERROR
+        ]
+        assert len(error_records) == 1
+        assert error_records[0].exc_info is not None

@@ -125,7 +125,9 @@ Every endpoint ships through the same probe-then-build vertical:
    `models/<provider>/`, the binding factory in `endpoints/<provider>/`
    (discovered — no registration), the catalog identity in `api/catalog.py`,
    and tests from the captured shapes (scrubbed; synthetic identifiers only).
-4. **Prove it end-to-end** with a live-run driver script (`scripts/run_*.py`)
-   before the endpoint is called done, and update this manifest.
+4. **Prove it end-to-end** with a live run — `fleetpull sync` against a
+   one-endpoint config, credentials from the environment — inspecting the
+   endpoint's `metadata.json` and log output, before the endpoint is called
+   done, and update this manifest.
 
 All five verification gates green before any of it merges.

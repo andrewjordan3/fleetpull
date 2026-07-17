@@ -93,6 +93,8 @@ providers:
     lookback_days: 7               # late-arrival refetch margin
 ```
 
+The same run is available from the shell: `fleetpull sync fleetpull_config.yaml`.
+
 Endpoints run and commit independently — one endpoint's failure never halts
 its siblings; a run with failures ends by raising `SyncFailuresError`
 carrying every failure in run order.
@@ -104,9 +106,11 @@ data/
   motive/
     vehicles/                    # snapshot: one file, replaced each run
       data.parquet
+      metadata.json              # human-readable run summary — never read by the program
     driving_periods/             # windowed: hive date partitions
       date=2026-07-15/part.parquet
       date=2026-07-16/part.parquet
+      metadata.json
 ```
 
 Hive `date=YYYY-MM-DD` layout is read natively by `pl.scan_parquet` and

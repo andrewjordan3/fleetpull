@@ -19,8 +19,8 @@ This AST walk covers those two rules:
 
 ``timing/`` is the allowlist: it owns the one wall-clock read
 (``SystemClock``) and the canonicalization surface itself. Tests are exempt
-(they legitimately construct foreign tzinfo to exercise rejection), as is
-``scripts/`` (outside the package tree this walks). The check is AST-based,
+(they legitimately construct foreign tzinfo to exercise rejection). The
+check is AST-based,
 not textual, so a docstring mentioning ``datetime.now`` never trips it.
 """
 

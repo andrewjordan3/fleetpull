@@ -14,7 +14,10 @@ observation, record the ledger row -- parquet -> cursor -> ledger in that
 crash order -- and mark the unit done. Serial ascending completion keeps
 completed units a contiguous prefix, so every persisted watermark is true at
 every instant; a crash resumes from the work-units ledger instead of
-refetching the window. The feed arm raises ``NotImplementedError`` until its
+refetching the window. After a successful run fully commits, either arm
+projects the run's facts into the endpoint's ``metadata.json`` (DESIGN
+section 3) -- post-commit and best-effort, never part of the transaction.
+The feed arm raises ``NotImplementedError`` until its
 prompt. The pure resume decisions live in ``orchestrator/resume.py``, the
 per-batch transform in ``orchestrator/batch.py``, and the claim choreography
 in ``orchestrator/unit_loop.py``, so the runner only orchestrates -- read
@@ -49,12 +52,14 @@ from fleetpull.endpoints.shared import (
     EndpointDefinition,
     FeedMode,
     SnapshotMode,
+    SyncMode,
     WatermarkMode,
 )
 from fleetpull.exceptions import ConfigurationError
 from fleetpull.incremental import (
     DateWatermark,
     DateWindow,
+    FeedToken,
     IncrementalCursor,
     resolve_resume_start,
     resolve_trailing_edge,
@@ -76,8 +81,16 @@ from fleetpull.orchestrator.resume import (
 )
 from fleetpull.orchestrator.streaming import stream_processed_batches
 from fleetpull.orchestrator.unit_loop import UnitQueue, drive_claimable_units
-from fleetpull.storage import DatasetWriter, WriteResult, select_writer
-from fleetpull.timing import Clock
+from fleetpull.paths import endpoint_directory
+from fleetpull.storage import (
+    DatasetWriter,
+    MetadataSnapshot,
+    WriteResult,
+    render_metadata_json,
+    select_writer,
+    write_metadata_json,
+)
+from fleetpull.timing import Clock, to_iso8601
 from fleetpull.vocabulary import Provider
 
 __all__: list[str] = [
@@ -251,6 +264,49 @@ def _window_context(
     return WindowContext(window=window, now=now, event_time_column=event_time_column)
 
 
+def _sync_mode_label(sync_mode: SyncMode) -> str:
+    """The sync mode's ``metadata.json`` label.
+
+    Args:
+        sync_mode: The endpoint's declared sync mode.
+
+    Returns:
+        ``'snapshot'``, ``'watermark'``, or ``'feed'``.
+    """
+    match sync_mode:
+        case SnapshotMode():
+            return 'snapshot'
+        case WatermarkMode():
+            return 'watermark'
+        case FeedMode():
+            return 'feed'
+
+
+def _serialize_cursor(
+    cursor: IncrementalCursor | None,
+) -> tuple[str | None, str | None]:
+    """Serialize a stored cursor to the metadata projection's plain pair.
+
+    The storage face never sees the cursor union (the §11 storage/state
+    boundary), so the runner flattens it here: the kind labels mirror the
+    cursor store's ``CursorKind`` discriminators.
+
+    Args:
+        cursor: The stored cursor, or ``None`` when none is persisted.
+
+    Returns:
+        ``(kind, value)`` -- ``('date_watermark', <iso8601>)``,
+        ``('feed_token', <token>)``, or ``(None, None)``.
+    """
+    match cursor:
+        case DateWatermark(watermark=watermark):
+            return ('date_watermark', to_iso8601(watermark))
+        case FeedToken(from_version=from_version):
+            return ('feed_token', from_version)
+        case None:
+            return (None, None)
+
+
 class EndpointRunner:
     """Runs one endpoint to completion, dispatching on its sync mode.
 
@@ -337,7 +393,9 @@ class EndpointRunner:
         watermark. The client is resolved before the run is opened, so an
         unconfigured provider opens no dangling run. ``complete_run`` runs inside the
         protected block: a failure to record completion marks the run failed rather
-        than leaving a zombie ``running`` row.
+        than leaving a zombie ``running`` row. The ``metadata.json`` projection
+        writes after the protected block -- the run is committed by then, and a
+        post-commit projection failure must never mark a succeeded run failed.
 
         Args:
             definition: The snapshot endpoint to run.
@@ -368,10 +426,12 @@ class EndpointRunner:
             )
             write = writer.finalize()
             self._state.recorder.complete_run(run_id, row_count=records_fetched)
-            return Executed(records_fetched=records_fetched, write=write)
         except Exception as error:
             self._fail_run_safely(run_id, error)
             raise
+        outcome = Executed(records_fetched=records_fetched, write=write)
+        self._write_metadata_snapshot(definition, outcome, window=None)
+        return outcome
 
     def _run_watermark(
         self,
@@ -395,7 +455,9 @@ class EndpointRunner:
         observation; a failing unit returns to a claimable state and fails the
         endpoint (fail-fast). An invocation that drove nothing is ``CaughtUp``
         -- the resume point had reached the trailing edge, or every planned
-        unit was already complete.
+        unit was already complete. After the last unit commits, the merged
+        outcome projects into ``metadata.json`` (post-commit, best-effort);
+        a ``CaughtUp`` invocation writes nothing.
 
         Args:
             definition: The watermark endpoint to run.
@@ -442,7 +504,12 @@ class EndpointRunner:
         if not outcomes:
             logger.info('caught up: provider=%s endpoint=%s', provider.value, name)
             return CaughtUp()
-        return _merge_executed(outcomes)
+        merged = _merge_executed(outcomes)
+        # The residual window is the run's resolved window; a run that only
+        # re-drove leftover units resolved none, and its projection carries a
+        # null window.
+        self._write_metadata_snapshot(definition, merged, window=residual)
+        return merged
 
     def _resolve_residual_window(
         self,
@@ -603,6 +670,68 @@ class EndpointRunner:
         except Exception:
             logger.exception(
                 'failed to record run %s as failed after an earlier error', run_id
+            )
+
+    def _write_metadata_snapshot(
+        self,
+        definition: EndpointDefinition[ResponseModel],
+        outcome: Executed,
+        *,
+        window: DateWindow | None,
+    ) -> None:
+        """Project a committed run's facts into the endpoint's ``metadata.json``.
+
+        Runs only after a successful run has fully committed (parquet,
+        cursor, ledger): the outcome's counts, the run's resolved window,
+        and a cursor read-back from the store flatten into a
+        ``MetadataSnapshot`` the storage face renders and atomically writes
+        (DESIGN §3).
+
+        Args:
+            definition: The endpoint that just ran.
+            outcome: The run's merged ``Executed`` outcome.
+            window: The run's resolved window, or ``None`` when it had none
+                (a snapshot run, or a watermark run that only re-drove
+                leftover units).
+
+        Side Effects:
+            Writes ``metadata.json`` in the endpoint's output directory; on
+            an ``OSError``, logs at ERROR and continues.
+        """
+        cursor_kind, cursor_value = _serialize_cursor(
+            self._state.cursors.get_cursor(definition.provider, definition.name)
+        )
+        snapshot = MetadataSnapshot(
+            provider=definition.provider.value,
+            endpoint=definition.name,
+            sync_mode=_sync_mode_label(definition.sync_mode),
+            generated_at=self._clock.now_utc(),
+            records_fetched=outcome.records_fetched,
+            rows_written=outcome.write.rows_written,
+            duplicates_dropped=outcome.write.duplicates_dropped,
+            files_written=outcome.write.files_written,
+            deleted_partitions=tuple(outcome.write.deleted_partitions),
+            window_start=None if window is None else window.start,
+            window_end=None if window is None else window.end,
+            cursor_kind=cursor_kind,
+            cursor_value=cursor_value,
+        )
+        directory = endpoint_directory(
+            self._dataset_root, definition.provider.value, definition.name
+        )
+        # Only the file write is guarded, and only for OSError: the run is
+        # already committed (parquet, cursor, ledger), and the file is a
+        # cosmetic projection the next successful run rewrites -- failing a
+        # committed run over it would be worse than a stale file. A render
+        # failure is a bug and propagates.
+        text = render_metadata_json(snapshot)
+        try:
+            write_metadata_json(directory, text)
+        except OSError:
+            logger.exception(
+                'metadata.json write failed: provider=%s endpoint=%s',
+                definition.provider.value,
+                definition.name,
             )
 
 
