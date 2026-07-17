@@ -1,5 +1,6 @@
 """Tests for fleetpull.orchestrator.drivers."""
 
+import logging
 from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime
 
@@ -23,7 +24,11 @@ from fleetpull.network.contract import (
     PageDecoder,
     RequestSpec,
 )
-from fleetpull.orchestrator.drivers import FanOutRequestDriver, SingleRequestDriver
+from fleetpull.orchestrator.drivers import (
+    _MEMBER_PROGRESS_INTERVAL,
+    FanOutRequestDriver,
+    SingleRequestDriver,
+)
 from fleetpull.orchestrator.fanout import FetchPool
 from fleetpull.vocabulary import JsonObject, Provider, QuotaScope
 from tests.orchestrator.doubles import StubPageDecoder
@@ -226,6 +231,76 @@ def test_fan_out_preserves_member_order() -> None:
         [{'id': 2, 'name': 'm2'}],
         [{'id': 3, 'name': 'm3'}],
     ]
+
+
+class TestFanOutNarration:
+    """The fan-out's progress narration on the consuming side of the channel.
+
+    Substring assertions on ``getMessage()`` only -- never whole formatted
+    lines -- so format tweaks do not break the pins.
+    """
+
+    @staticmethod
+    def _messages_at(caplog: pytest.LogCaptureFixture, level: int) -> list[str]:
+        return [
+            log_record.getMessage()
+            for log_record in caplog.records
+            if log_record.levelno == level
+        ]
+
+    def test_member_progress_interval_is_pinned(self) -> None:
+        # The heartbeat cadence is settled narration policy (~15 progress
+        # lines for a ~1,500-member fleet; DESIGN section 13) -- a silent
+        # change should be loud.
+        assert _MEMBER_PROGRESS_INTERVAL == 100
+
+    def test_small_fan_out_narrates_members_at_debug_and_completion_at_info(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        definition = _definition(_RecordingSpecBuilder())
+        client = _SequencedClient([[_page([])], [_page([])], [_page([])]])
+        driver = _fan_out(['v1', 'v2', 'v3'])
+        with caplog.at_level(logging.DEBUG, logger='fleetpull.orchestrator.drivers'):
+            list(driver.record_batches(definition, client, None))
+        member_lines = [
+            message
+            for message in self._messages_at(caplog, logging.DEBUG)
+            if 'fetched member:' in message
+        ]
+        assert len(member_lines) == 3
+        assert 'v1 (1/3)' in member_lines[0]
+        assert 'v2 (2/3)' in member_lines[1]
+        assert 'v3 (3/3)' in member_lines[2]
+        info_messages = self._messages_at(caplog, logging.INFO)
+        assert any('fan-out complete:' in m and 'members=3' in m for m in info_messages)
+        # Below one interval, no heartbeat fires -- a small fleet narrates
+        # at most one progress line, here none.
+        assert not any('fan-out progress' in m for m in info_messages)
+
+    def test_heartbeat_fires_every_interval_and_once_on_completion(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        member_total = 2 * _MEMBER_PROGRESS_INTERVAL + 5
+        definition = _definition(_RecordingSpecBuilder())
+        # The stub serves the same single empty page for every member's chain.
+        client = _StubClient([_page([])])
+        driver = _fan_out([f'veh-{index}' for index in range(member_total)])
+        with caplog.at_level(logging.INFO, logger='fleetpull.orchestrator.drivers'):
+            list(driver.record_batches(definition, client, None))
+        info_messages = self._messages_at(caplog, logging.INFO)
+        progress_lines = [m for m in info_messages if 'fan-out progress' in m]
+        assert len(progress_lines) == 2
+        assert (
+            f'members={_MEMBER_PROGRESS_INTERVAL}/{member_total}' in progress_lines[0]
+        )
+        assert (
+            f'members={2 * _MEMBER_PROGRESS_INTERVAL}/{member_total}'
+            in progress_lines[1]
+        )
+        assert any(
+            'fan-out complete:' in m and f'members={member_total}' in m
+            for m in info_messages
+        )
 
 
 class _ScriptedCheck:

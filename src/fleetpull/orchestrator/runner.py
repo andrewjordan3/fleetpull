@@ -265,7 +265,10 @@ def _window_context(
 
 
 def _sync_mode_label(sync_mode: SyncMode) -> str:
-    """The sync mode's ``metadata.json`` label.
+    """The sync mode's human-readable label.
+
+    Shared by the ``metadata.json`` projection and the endpoint-start
+    narration line -- renaming a label changes both surfaces.
 
     Args:
         sync_mode: The endpoint's declared sync mode.
@@ -353,6 +356,12 @@ class EndpointRunner:
     ) -> RunOutcome:
         """Run one endpoint to completion and report the outcome.
 
+        Narrates at INFO: one start line at entry (provider, endpoint, sync
+        mode) and, for an ``Executed`` outcome, one completion line with the
+        merged counts and the endpoint's elapsed seconds (a monotonic delta
+        captured at entry). A ``CaughtUp`` outcome narrates through the
+        watermark arm's own 'caught up' line instead.
+
         Args:
             definition: The endpoint to run.
             driver: The request driver supplying the run's record batches.
@@ -369,15 +378,25 @@ class EndpointRunner:
             FleetpullError: A fetch, validation, or write failure -- the run is
                 recorded failed and the error propagates.
         """
+        endpoint_started = self._clock.monotonic_seconds()
+        logger.info(
+            'endpoint started: provider=%s endpoint=%s mode=%s',
+            definition.provider.value,
+            definition.name,
+            _sync_mode_label(definition.sync_mode),
+        )
         match definition.sync_mode:
             case SnapshotMode():
-                return self._run_snapshot(definition, driver, observer)
+                outcome: RunOutcome = self._run_snapshot(definition, driver, observer)
             case WatermarkMode() as mode:
-                return self._run_watermark(definition, driver, mode, observer)
+                outcome = self._run_watermark(definition, driver, mode, observer)
             case FeedMode():
                 raise NotImplementedError(
                     f'{type(definition.sync_mode).__name__} is not yet executable'
                 )
+        if isinstance(outcome, Executed):
+            self._log_endpoint_complete(definition, outcome, endpoint_started)
+        return outcome
 
     def _run_snapshot(
         self,
@@ -495,8 +514,20 @@ class EndpointRunner:
         residual = self._resolve_residual_window(definition, mode)
         if residual is not None:
             chunk = timedelta(days=self._sync_config.backfill_chunk_days)
-            self._state.units.enqueue(
+            claimable_units = self._state.units.enqueue(
                 plan_backfill_units(provider, name, residual, chunk)
+            )
+            # The plan narrates here: the one moment the resolved window and
+            # its claimable-unit count (the idempotent enqueue's newly
+            # inserted rows -- leftovers were driven above) are both in hand.
+            logger.info(
+                'window planned: provider=%s endpoint=%s window_start=%s '
+                'window_end=%s claimable_units=%d',
+                provider.value,
+                name,
+                to_iso8601(residual.start),
+                to_iso8601(residual.end),
+                claimable_units,
             )
             outcomes.extend(
                 drive_claimable_units(self._state.units, provider, name, drive_unit)
@@ -650,6 +681,35 @@ class EndpointRunner:
         except Exception as error:
             self._fail_run_safely(run_id, error)
             raise
+
+    def _log_endpoint_complete(
+        self,
+        definition: EndpointDefinition[ResponseModel],
+        outcome: Executed,
+        endpoint_started: float,
+    ) -> None:
+        """Narrate a committed endpoint's counts and elapsed time at INFO.
+
+        Args:
+            definition: The endpoint that just ran.
+            outcome: The run's (merged) ``Executed`` outcome.
+            endpoint_started: The ``monotonic_seconds`` reading captured at
+                ``run()`` entry, so the elapsed value covers the whole
+                endpoint (both arms, metadata projection included).
+        """
+        logger.info(
+            'endpoint complete: provider=%s endpoint=%s records_fetched=%d '
+            'rows_written=%d duplicates_dropped=%d files_written=%d '
+            'deleted_partitions=%d elapsed_seconds=%.1f',
+            definition.provider.value,
+            definition.name,
+            outcome.records_fetched,
+            outcome.write.rows_written,
+            outcome.write.duplicates_dropped,
+            outcome.write.files_written,
+            len(outcome.write.deleted_partitions),
+            self._clock.monotonic_seconds() - endpoint_started,
+        )
 
     def _fail_run_safely(self, run_id: int, error: Exception) -> None:
         """Record the run failed without masking the original error.

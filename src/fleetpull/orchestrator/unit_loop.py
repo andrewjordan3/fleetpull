@@ -25,6 +25,7 @@ from typing import Final, Protocol
 from fleetpull.incremental import DateWindow
 from fleetpull.orchestrator.outcome import Executed
 from fleetpull.state import ClaimedWorkUnit, WorkUnitSpec
+from fleetpull.timing import to_iso8601
 from fleetpull.vocabulary import Provider
 
 __all__: list[str] = ['UnitQueue', 'drive_claimable_units']
@@ -97,9 +98,10 @@ def drive_claimable_units(
             after the unit is marked ``failed``.
 
     Side Effects:
-        Claims, completes, or fails units in the queue; whatever
-        ``drive_unit`` performs (network fetches, parquet writes, cursor and
-        ledger commits).
+        Claims, completes, or fails units in the queue; narrates one INFO
+        per completed unit (its id, window bounds, and fetched-record
+        count); whatever ``drive_unit`` performs (network fetches, parquet
+        writes, cursor and ledger commits).
     """
     outcomes: list[Executed] = []
     while (
@@ -107,11 +109,24 @@ def drive_claimable_units(
     ) is not None:
         window = DateWindow(start=claimed.spec.chunk_start, end=claimed.spec.chunk_end)
         try:
-            outcomes.append(drive_unit(window))
+            unit_outcome = drive_unit(window)
         except Exception as unit_failure:
             _mark_failed_safely(queue, claimed, unit_failure)
             raise
+        outcomes.append(unit_outcome)
         queue.mark_done(claimed.unit_id)
+        # The total planned count is not knowable here (the loop claims
+        # until the queue drains), so the unit narrates by its id.
+        logger.info(
+            'unit complete: provider=%s endpoint=%s unit_id=%d '
+            'window_start=%s window_end=%s records_fetched=%d',
+            provider.value,
+            endpoint,
+            claimed.unit_id,
+            to_iso8601(window.start),
+            to_iso8601(window.end),
+            unit_outcome.records_fetched,
+        )
     return outcomes
 
 
