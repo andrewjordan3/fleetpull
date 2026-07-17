@@ -5,15 +5,11 @@ Every network call in the package requires explicit timeouts (house
 rule); this model is their single YAML-facing source.
 """
 
-import logging
-
 from pydantic import Field
 
 from fleetpull.config.base import ConfigModel
 
 __all__: list[str] = ['HttpConfig']
-
-logger = logging.getLogger(__name__)
 
 
 class HttpConfig(ConfigModel):

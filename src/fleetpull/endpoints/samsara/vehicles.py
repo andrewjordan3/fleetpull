@@ -20,7 +20,6 @@ rate-limit headers (captured 2026-07-17), so the config's self-limiting
 default is the only budget signal.
 """
 
-import logging
 from typing import Final
 
 from fleetpull.config import SamsaraConfig
@@ -35,8 +34,6 @@ from fleetpull.network.decoders import SamsaraCursorPageDecoder
 from fleetpull.vocabulary import Provider, QuotaScope
 
 __all__: list[str] = ['build_endpoint']
-
-logger = logging.getLogger(__name__)
 
 _VEHICLES_PATH: Final[str] = '/fleet/vehicles'
 _RECORDS_KEY: Final[str] = 'data'

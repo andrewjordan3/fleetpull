@@ -29,7 +29,6 @@ mechanism, not a correctness one: it stops the fan-out paying for empty fetches 
 long-retired vehicles, so the threshold is generous.
 """
 
-import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -44,8 +43,6 @@ __all__: list[str] = [
     'is_roster_stale',
     'reconcile',
 ]
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)

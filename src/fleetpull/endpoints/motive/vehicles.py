@@ -24,7 +24,6 @@ a fan-out over this roster covers vehicles that were active during a
 historical window even if they are inactive today.
 """
 
-import logging
 from datetime import timedelta
 from typing import Final
 
@@ -41,8 +40,6 @@ from fleetpull.roster import RosterDefinition, RosterKey
 from fleetpull.vocabulary import Provider, QuotaScope
 
 __all__: list[str] = ['VEHICLE_IDS_ROSTER', 'build_endpoint']
-
-logger = logging.getLogger(__name__)
 
 _VEHICLES_PATH: Final[str] = '/v1/vehicles'
 _VEHICLES_LIST_KEY: Final[str] = 'vehicles'

@@ -164,7 +164,7 @@ uv run pytest
 
 - Vectorized polars expressions — no row-level loops or `map_elements` unless mathematically unavoidable.
 - All event timestamps are timezone-aware UTC (ruff DTZ enforces no naive datetimes). Limiter timing is monotonic, never wall clock — `time.perf_counter()` via `SystemClock`; the rationale is recorded at the decision point in `timing/clock.py`.
-- `logging.getLogger(__name__)` in every module. Levels: `DEBUG` for flow, `INFO` for milestones, `ERROR` with `exc_info=True`. No `print` in production code (ruff T20).
+- `logging.getLogger(__name__)` in modules that log — not every file does something worth logging, and an unused logger binding is dead code. Levels have clear jobs: `INFO` for milestones and progress updates; `DEBUG` for movement and detail geared toward a developer; `WARNING` for degraded-but-continuing conditions; `ERROR` with `exc_info=True` for failures. No `print` in production code (ruff T20).
 
 ## Documentation
 

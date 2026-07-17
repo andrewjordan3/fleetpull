@@ -16,7 +16,6 @@ framing, and writing are the run executor's. The batch granularity is each drive
 own choice; the runner consumes batches uniformly.
 """
 
-import logging
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -33,8 +32,6 @@ from fleetpull.network.client import FetchedPage, TransportClient
 from fleetpull.orchestrator.fanout import FetchPool, stream_pieces
 
 __all__: list[str] = ['FanOutRequestDriver', 'RequestDriver', 'SingleRequestDriver']
-
-logger = logging.getLogger(__name__)
 
 
 class RequestDriver(Protocol):
