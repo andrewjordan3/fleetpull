@@ -8,15 +8,14 @@ exactly one request chain (``path_values={}``) and yields its pages one at a tim
 (``path_values={path_placeholder: member}``), fetching members concurrently on its
 injected ``FetchPool`` and yielding each member's pages in member order -- the
 member list is the caller's (the whole roster, fanned once per work unit's
-window). ``path_values`` live only here -- the run executor
-never builds them and the coordinator never supplies them; only the driver does. A
+window). ``path_values`` live only here -- the run executor never builds them
+and the orchestration entry never supplies them; only the driver does. A
 driver touches just the endpoint's ``SpecBuilder`` and the transport client, and
 yields whole ``FetchedPage`` objects (records and durable progress); validation,
 framing, and writing are the run executor's. The batch granularity is each driver's
 own choice; the runner consumes batches uniformly.
 """
 
-import logging
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -33,8 +32,6 @@ from fleetpull.network.client import FetchedPage, TransportClient
 from fleetpull.orchestrator.fanout import FetchPool, stream_pieces
 
 __all__: list[str] = ['FanOutRequestDriver', 'RequestDriver', 'SingleRequestDriver']
-
-logger = logging.getLogger(__name__)
 
 
 class RequestDriver(Protocol):
@@ -213,9 +210,9 @@ class FanOutRequestDriver:
     ``submission_window + 1`` members' pages at once, a function of the pool
     size, never of the roster. The member list is the caller's: the whole
     roster, fanned once per work unit's window (units carry no member key).
-    ``path_values`` (and so the fan-out) live only here; the coordinator
-    supplies the members and the placeholder already extracted, never
-    ``path_values`` and never the endpoint's ``fan_out``.
+    ``path_values`` (and so the fan-out) live only here; the orchestration
+    entry (``entry.py``) supplies the members and the placeholder already
+    extracted, never ``path_values`` and never the endpoint's ``fan_out``.
 
     ``completeness_check`` is deliberately not consulted: a fan-out definition
     can never declare one (``EndpointDefinition`` rejects the pairing at

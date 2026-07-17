@@ -13,13 +13,13 @@ from fleetpull.endpoints.shared import (
 from fleetpull.exceptions import ProviderResponseError
 from fleetpull.incremental import DateWindow
 from fleetpull.model_contract import ResponseModel
-from fleetpull.network.contract import DecodedPage, PageAdvance, RequestSpec
 from fleetpull.orchestrator.batch import (
     WindowContext,
     combine_latest_event_time,
     process_batch,
 )
-from fleetpull.vocabulary import JsonObject, JsonValue, Provider, QuotaScope
+from fleetpull.vocabulary import JsonObject, Provider, QuotaScope
+from tests.orchestrator.doubles import StubPageDecoder
 
 _WINDOW = DateWindow(
     start=datetime(2026, 6, 1, tzinfo=UTC),
@@ -33,24 +33,12 @@ class _EventModel(ResponseModel):
     occurred_at: datetime
 
 
-class _StubPageDecoder:
-    """A PageDecoder double; process_batch never decodes, so it is never called."""
-
-    def first_request(self, spec: RequestSpec) -> RequestSpec:
-        return spec
-
-    def decode_page(self, sent: RequestSpec, envelope: JsonValue) -> DecodedPage:
-        return DecodedPage(
-            records=[], advance=PageAdvance(next_spec=None, durable_progress=None)
-        )
-
-
 def _definition() -> EndpointDefinition[_EventModel]:
     return EndpointDefinition(
         provider=Provider.MOTIVE,
         name='events',
         spec_builder=StaticGetSpecBuilder(base_url='https://x.test', path='/v1/e'),
-        page_decoder=_StubPageDecoder(),
+        page_decoder=StubPageDecoder(),
         response_model=_EventModel,
         quota_scope=QuotaScope.MOTIVE,
         storage_kind=StorageKind.SINGLE,

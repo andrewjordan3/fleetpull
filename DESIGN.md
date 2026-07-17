@@ -1870,7 +1870,7 @@ lives in `state/`). The per-chunk DataFrame is a value, not a stateful component
 - Annotated locals; explicit type hints everywhere
 - No real VINs / internal fleet identifiers in committed files
 - Docstrings with Args/Returns/Raises/Side Effects
-- `logging.getLogger(__name__)`; no `print` in production code
+- `logging.getLogger(__name__)` in modules that log (INFO milestones/progress, DEBUG developer detail, WARNING degraded-but-continuing, ERROR failures — settled 2026-07-17); no `print` in production code
 - Explicit timeouts on all network calls; specific exception handling
 - Blast-radius minimization over DRY where coupling risk is real
 - `StrEnum` for enums
@@ -1996,6 +1996,14 @@ tzinfo-construction rules mechanically.
     concurrency vertical added no narration pending this policy (its one new
     log call is the error-path record of a discarded in-flight failure).
 
+  *Update (2026-07-17): the level semantics are settled — INFO for
+  milestones and progress updates, DEBUG for movement and detail geared
+  toward a developer, WARNING for degraded-but-continuing, ERROR for
+  failures — and a logger is bound only in modules that log (§12,
+  CLAUDE.md). Progress narration therefore belongs at INFO when it is
+  built; its content and cadence, plus the timestamp and handler-scope
+  bullets above, remain the open half.*
+
 ---
 
 ## 14. Orchestration: the run executor, the request driver, and the client registry
@@ -2106,13 +2114,18 @@ chain's records — never a RAM buffer holding the fleet. Backfill chunk sizing 
 remains the one open piece.
 
 **The run is constructed, not self-assembling.** The `EndpointRunner` is injected
-with five collaborators — the `ProviderClientRegistry` (client source), the
-`RunLedger` (run recorder), the `Clock`, the `CursorStore` (cursor access), and the
-root `FleetpullConfig` — the container its composition root already holds, read for
-exactly two values: `sync.default_start_datetime` (the cold-start anchor) and
-`storage.dataset_root` (where the writers land). Passing the root keeps the
-constructor at five flat parameters without minting a bundle type for the pair
-(pass-the-container over field-threading). The `EndpointDefinition` and the driver are
+with four collaborators — the `ProviderClientRegistry` (client source), the
+`RunStateAccess` bundle (the `RunLedger` run recorder, the `CursorStore` cursor
+access, and the `WorkUnitStore` unit queue — the three state-database surfaces
+always travel together through the run's crash order, so they ride as one
+collaborator per the bundle rule), the `Clock`, and the root `FleetpullConfig` —
+the container its composition root already holds, read for exactly four values:
+`sync.default_start_datetime` (the cold-start anchor), `storage.dataset_root`
+(where the writers land), `sync.backfill_chunk_days` (the unit width newly planned
+windows tile into), and `storage.drop_exact_duplicates` (the writers' exact-dedup
+switch). Passing the root keeps the constructor at four flat parameters without
+threading the values individually (pass-the-container over field-threading). The
+`EndpointDefinition` and the driver are
 `run()` arguments, not constructor fields, so one runner instance runs `vehicles`,
 then `vehicle_locations`, each with the driver its caller built. The runner
 constructs no clients and reads no credentials. One `Clock` instance is shared by the
@@ -2199,7 +2212,8 @@ for logging. The watermark candidate is folded incrementally —
 None-tolerant `max` — never by retaining frames. `run()` returns a `RunOutcome`,
 never `None`: a frozen tagged union `Executed` (carrying `records_fetched` and the
 `WriteResult`) or `CaughtUp` (the window resolved to nothing — no fetch, no writer,
-no ledger row). The high-level surface dispatches on it.
+no ledger row). The orchestration entry (`run_endpoint`) dispatches on it; the
+user-facing surface (`api/sync.py`) discards the return.
 
 **Date-partition staging is crash-cleaned at writer construction.**
 `compact_partition` folds *every* `.shard` in a date's staging directory (§3), so a
