@@ -4,7 +4,9 @@ Guidelines for Claude Code. These bias toward correctness over speed. For trivia
 
 ## What This Package Is
 
-fleetpull pulls fleet telematics data from provider APIs (Motive, Samsara, GeoTab pending) and delivers typed, dtype-coerced, lightly normalized tabular output as close to the raw API responses as is reasonable.
+fleetpull pulls fleet telematics data from provider APIs (Motive, GeoTab, Samsara) and delivers typed, dtype-coerced, lightly normalized tabular output as close to the raw API responses as is reasonable.
+
+Endpoint coverage is deliberately broad: as many endpoints per provider as practical, built into a large default library. "No assumed end use" includes not assuming which endpoints are useful — an endpoint is deferred, never excluded for lacking a known consumer. fleet-telemetry-hub is a porting aid, not a scope ceiling.
 
 **`DESIGN.md` at the repo root is the design of record.** Read it before implementing any module — it carries the cross-module rationale (storage layout, incremental semantics, the rate-limiter protocol) that no single scoped task can see. It is a living document, not scripture. When implementation reveals a better idea, surface it (see Think Before Coding) instead of silently implementing it; once a divergence is settled, updating the affected DESIGN.md section is part of the same change. Stale design docs compound exactly like stale docstrings. A task prompt governs what to build; DESIGN.md governs how the pieces fit together — if they conflict, stop and say so rather than quietly reinterpreting either one.
 
