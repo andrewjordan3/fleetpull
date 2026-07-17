@@ -2,13 +2,12 @@
 """Dataset-layout path construction: locate an endpoint's directory under a
 dataset root.
 
-The shared, filesystem-neutral half of storage path-building. Both the storage
-layer (which writes ``data.parquet`` here) and the future metadata layer (which
-writes ``metadata.json`` here) locate an endpoint's directory the same way, so
-that construction lives in ``paths`` -- pure and shared -- rather than in
-``storage``, which would force the metadata layer to import the parquet layer for
-a structural utility. Like the rest of ``paths``, it never touches the
-filesystem; directory creation is the writing layer's concern.
+The shared, filesystem-neutral half of storage path-building. The parquet
+writers and the metadata projection's caller (the runner, which resolves the
+directory and hands it to ``storage.write_metadata_json``) locate an
+endpoint's directory through this one function, so the construction lives in
+``paths`` -- pure and shared. Like the rest of ``paths``, it never touches
+the filesystem; directory creation is the writing layer's concern.
 """
 
 from pathlib import Path

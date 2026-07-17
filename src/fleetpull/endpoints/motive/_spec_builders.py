@@ -21,8 +21,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 
-from fleetpull.endpoints.shared import ResumeValue
-from fleetpull.incremental import DateWindow
+from fleetpull.endpoints.shared import ResumeValue, require_date_window
 from fleetpull.network.contract import HttpMethod, RequestSpec
 from fleetpull.timing import to_utc_date_string
 
@@ -79,14 +78,12 @@ class MotiveFleetDateRangeSpecBuilder:
         Side Effects:
             None.
         """
-        if not isinstance(resume, DateWindow):
-            raise TypeError(
-                'MotiveFleetDateRangeSpecBuilder requires a DateWindow '
-                f'resume, got {type(resume).__name__}.'
-            )
+        resume_window = require_date_window(resume, type(self).__name__)
         pad = timedelta(days=self.window_pad_days)
-        start_date = to_utc_date_string(resume.start - pad)
-        end_date = to_utc_date_string(resume.end - timedelta(microseconds=1) + pad)
+        start_date = to_utc_date_string(resume_window.start - pad)
+        end_date = to_utc_date_string(
+            resume_window.end - timedelta(microseconds=1) + pad
+        )
         params = {'start_date': start_date, 'end_date': end_date}
         return RequestSpec(
             method=HttpMethod.GET,

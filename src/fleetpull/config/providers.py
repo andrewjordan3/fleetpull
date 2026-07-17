@@ -70,10 +70,17 @@ def _validated_base_url(value: str) -> str:
     return value.rstrip('/')
 
 
+# The watermark-window defaults every provider section shares: a week
+# of late-arrival margin, no trailing-edge holdback. Declared once here
+# because the knobs are part of the per-provider contract on
+# ``ProviderConfig``; per-provider YAML keys and a declared ``sync``
+# value still override (provider key > sync key > default; the
+# precedence lives in ``config/resolution.py``).
+_DEFAULT_LOOKBACK_DAYS: int = 7
+_DEFAULT_CUTOFF_DAYS: int = 0
+
 _MOTIVE_DEFAULT_BASE_URL: str = 'https://api.gomotive.com'
 _MOTIVE_MAX_RECORDS_PER_PAGE: int = 100
-_MOTIVE_DEFAULT_LOOKBACK_DAYS: int = 7
-_MOTIVE_DEFAULT_CUTOFF_DAYS: int = 0
 
 # Conservative default budget for the Motive scope. Motive's real published
 # per-key limits remain unverified (DESIGN §13 open question; the documented
@@ -91,8 +98,9 @@ class ProviderConfig(ConfigModel):
 
     Subclassed once per provider (``MotiveConfig``, ...). Carries the
     per-provider contract: each subclass binds its ``quota_scope`` and
-    defaults its ``rate_limit``; the model policy itself comes from
-    ``ConfigModel``.
+    defaults its ``rate_limit``; the shared watermark window knobs
+    (``lookback_days``, ``cutoff_days``) are declared here once for
+    every provider; the model policy itself comes from ``ConfigModel``.
 
     Attributes:
         quota_scope: The quota scope this provider's budget governs. A
@@ -106,12 +114,30 @@ class ProviderConfig(ConfigModel):
             endpoint catalog happens at ``Sync`` construction, above this
             tier, never in ``config``. Default empty; a provider with no
             endpoints is disabled regardless of its credential.
+        lookback_days: Late-arrival re-fetch margin in whole days for
+            watermark endpoints -- how far before the stored watermark
+            each resume re-fetches, so a record that landed after its
+            event-time day is recovered and its partitions replaced.
+            Optional per-provider YAML key; when absent, root-level
+            resolution fans in a declared ``sync.lookback_days``, else
+            this documented default stands (provider key > sync key >
+            default). Non-negative; zero means no margin beyond the
+            watermark's own date.
+        cutoff_days: Trailing-edge holdback in whole days for watermark
+            endpoints -- how far the resume window's end is held back
+            from the clock, so a still-arriving day is never frozen as a
+            complete partition. The complement of ``lookback_days``:
+            both express the same provider data-latency concern from
+            opposite ends, and both carry the same per-provider-key >
+            ``sync``-key > default precedence. Optional; defaults to 0.
     """
 
     quota_scope: ClassVar[QuotaScope]
 
     rate_limit: RateLimitConfig
     endpoints: tuple[str, ...] = ()
+    lookback_days: int = Field(default=_DEFAULT_LOOKBACK_DAYS, ge=0)
+    cutoff_days: int = Field(default=_DEFAULT_CUTOFF_DAYS, ge=0)
 
 
 class MotiveConfig(ProviderConfig):
@@ -133,22 +159,6 @@ class MotiveConfig(ProviderConfig):
             endpoints. Optional; defaults to Motive's documented maximum.
             Bounded to ``1..100`` (the documented ceiling) so a typo
             cannot silently request an out-of-range page.
-        lookback_days: Late-arrival re-fetch margin in whole days for
-            watermark endpoints -- how far before the stored watermark
-            each resume re-fetches, so a record that landed after its
-            event-time day is recovered and its partitions replaced.
-            Optional per-provider YAML key; when absent, root-level
-            resolution fans in a declared ``sync.lookback_days``, else
-            this documented default stands (provider key > sync key >
-            default). Non-negative; zero means no margin beyond the
-            watermark's own date.
-        cutoff_days: Trailing-edge holdback in whole days for watermark
-            endpoints -- how far the resume window's end is held back from
-            the clock, so a still-arriving day is never frozen as a complete
-            partition. The complement of ``lookback_days``: both express the
-            same provider data-latency concern from opposite ends, and both
-            carry the same per-provider-key > ``sync``-key > default
-            precedence. Optional; defaults to 0.
         rate_limit: The Motive scope's token-bucket budget. Optional;
             defaults to the conservative values the live diagnostic proved
             safe (Motive's real published limits are unverified -- DESIGN
@@ -163,8 +173,6 @@ class MotiveConfig(ProviderConfig):
     records_per_page: int = Field(
         default=_MOTIVE_MAX_RECORDS_PER_PAGE, ge=1, le=_MOTIVE_MAX_RECORDS_PER_PAGE
     )
-    lookback_days: int = Field(default=_MOTIVE_DEFAULT_LOOKBACK_DAYS, ge=0)
-    cutoff_days: int = Field(default=_MOTIVE_DEFAULT_CUTOFF_DAYS, ge=0)
 
     @field_validator('base_url')
     @classmethod
@@ -196,21 +204,20 @@ _GEOTAB_DEFAULT_AUTHENTICATE_RATE_LIMIT: RateLimitConfig = RateLimitConfig(
     requests_per_period=10, period_seconds=60.0, burst=2, max_concurrency=1
 )
 
-_GEOTAB_DEFAULT_LOOKBACK_DAYS: int = 7
-_GEOTAB_DEFAULT_CUTOFF_DAYS: int = 0
-
 
 class GeotabConfig(ProviderConfig):
     """
     User-facing GeoTab provider settings, one instance per run.
 
-    Carries the watermark window knobs since the ``trips`` vertical
-    (amended 2026-07-13; the earlier omission encoded a superseded
-    feeds-only view of GeoTab incrementality -- windowed ``Get`` is
-    GeoTab's history path today, and feeds remain the future incremental
-    mechanism; DESIGN §4's amendment). Deliberately no ``base_url``: the
-    API host is ``auth.server``, and the session strategy retargets
-    every call to the host ``Authenticate`` resolves (DESIGN §8).
+    The inherited watermark window knobs apply since the ``trips``
+    vertical (amended 2026-07-13; the earlier omission encoded a
+    superseded feeds-only view of GeoTab incrementality -- windowed
+    ``Get`` is GeoTab's history path today, and feeds remain the future
+    incremental mechanism; DESIGN §4's amendment). For ``trips``, the
+    ``lookback_days`` margin is also what absorbs GeoTab's Trip
+    recalculation. Deliberately no ``base_url``: the API host is
+    ``auth.server``, and the session strategy retargets every call to
+    the host ``Authenticate`` resolves (DESIGN §8).
 
     Attributes:
         auth: The four-field GeoTab credential (username, password,
@@ -228,23 +235,6 @@ class GeotabConfig(ProviderConfig):
         authenticate_rate_limit: The Authenticate method-class budget;
             default 10/min from the June 2026 capture -- see
             ``_GEOTAB_DEFAULT_AUTHENTICATE_RATE_LIMIT``.
-        lookback_days: Late-arrival re-fetch margin in whole days for
-            watermark endpoints -- how far before the stored watermark
-            each resume re-fetches, so a record that landed after its
-            event-time day is recovered and its partitions replaced
-            (for ``trips``, this margin is also what absorbs GeoTab's
-            Trip recalculation). Optional per-provider YAML key; when
-            absent, root-level resolution fans in a declared
-            ``sync.lookback_days``, else this documented default stands
-            (provider key > sync key > default). Non-negative; zero
-            means no margin beyond the watermark's own date.
-        cutoff_days: Trailing-edge holdback in whole days for watermark
-            endpoints -- how far the resume window's end is held back from
-            the clock, so a still-arriving day is never frozen as a complete
-            partition. The complement of ``lookback_days``: both express the
-            same provider data-latency concern from opposite ends, and both
-            carry the same per-provider-key > ``sync``-key > default
-            precedence. Optional; defaults to 0.
     """
 
     quota_scope: ClassVar[QuotaScope] = QuotaScope.GEOTAB_GET
@@ -254,13 +244,9 @@ class GeotabConfig(ProviderConfig):
     authenticate_rate_limit: RateLimitConfig = Field(
         default=_GEOTAB_DEFAULT_AUTHENTICATE_RATE_LIMIT
     )
-    lookback_days: int = Field(default=_GEOTAB_DEFAULT_LOOKBACK_DAYS, ge=0)
-    cutoff_days: int = Field(default=_GEOTAB_DEFAULT_CUTOFF_DAYS, ge=0)
 
 
 _SAMSARA_DEFAULT_BASE_URL: str = 'https://api.samsara.com'
-_SAMSARA_DEFAULT_LOOKBACK_DAYS: int = 7
-_SAMSARA_DEFAULT_CUTOFF_DAYS: int = 0
 
 # Conservative default budget for the provider-wide Samsara scope.
 # Samsara's documented limits (developers.samsara.com/docs/rate-limits,
@@ -295,20 +281,6 @@ class SamsaraConfig(ProviderConfig):
             scheme and is normalized to drop any trailing slash, so a
             spec-builder joins a leading-slash request path to it
             directly.
-        lookback_days: Late-arrival re-fetch margin in whole days for
-            watermark endpoints -- how far before the stored watermark
-            each resume re-fetches, so a record that landed after its
-            event-time day is recovered and its partitions replaced.
-            Optional per-provider YAML key; when absent, root-level
-            resolution fans in a declared ``sync.lookback_days``, else
-            this documented default stands (provider key > sync key >
-            default). Non-negative; zero means no margin beyond the
-            watermark's own date.
-        cutoff_days: Trailing-edge holdback in whole days for watermark
-            endpoints -- how far the resume window's end is held back from
-            the clock, so a still-arriving day is never frozen as a complete
-            partition. The complement of ``lookback_days``; same
-            precedence. Optional; defaults to 0.
         rate_limit: The provider-wide Samsara scope's token-bucket
             budget. Optional; defaults to the tightest documented
             per-endpoint tier -- see ``_SAMSARA_DEFAULT_RATE_LIMIT`` for
@@ -320,8 +292,6 @@ class SamsaraConfig(ProviderConfig):
     api_key: SecretStr | None = None
     base_url: str = Field(default=_SAMSARA_DEFAULT_BASE_URL)
     rate_limit: RateLimitConfig = Field(default=_SAMSARA_DEFAULT_RATE_LIMIT)
-    lookback_days: int = Field(default=_SAMSARA_DEFAULT_LOOKBACK_DAYS, ge=0)
-    cutoff_days: int = Field(default=_SAMSARA_DEFAULT_CUTOFF_DAYS, ge=0)
 
     @field_validator('base_url')
     @classmethod
