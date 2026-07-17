@@ -8,14 +8,12 @@ serial path, first-failure cancellation with clean staging, and the streaming
 property (the writer consumes while later pieces are not yet fetched).
 """
 
-import itertools
 import threading
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 
 import polars as pl
 import pytest
@@ -37,9 +35,7 @@ from fleetpull.incremental import DateWatermark, IncrementalCursor
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import FetchedPage, TransportClient
 from fleetpull.network.contract import (
-    DecodedPage,
     HttpMethod,
-    PageAdvance,
     PageDecoder,
     RequestSpec,
 )
@@ -48,9 +44,14 @@ from fleetpull.orchestrator.fanout import FetchPool
 from fleetpull.orchestrator.outcome import Executed
 from fleetpull.orchestrator.runner import EndpointRunner, RunStateAccess
 from fleetpull.paths import endpoint_directory
-from fleetpull.state import StateDatabase, WorkUnitStore, migrate_to_head
 from fleetpull.timing import FrozenClock
-from fleetpull.vocabulary import JsonObject, JsonValue, Provider, QuotaScope
+from fleetpull.vocabulary import JsonObject, Provider, QuotaScope
+from tests.orchestrator.doubles import (
+    StubPageDecoder,
+    open_work_unit_store,
+    partition_bytes,
+    pin_shard_names,
+)
 from tests.orchestrator.serial_executor import SerialExecutor
 
 _PLACEHOLDER = 'vehicle_id'
@@ -61,18 +62,6 @@ _GATE_TIMEOUT_SECONDS = 5.0
 class _WatermarkModel(ResponseModel):
     occurred_at: datetime
     label: str
-
-
-class _StubPageDecoder:
-    """A PageDecoder double; the routed client bypasses it entirely."""
-
-    def first_request(self, spec: RequestSpec) -> RequestSpec:
-        return spec
-
-    def decode_page(self, sent: RequestSpec, envelope: JsonValue) -> DecodedPage:
-        return DecodedPage(
-            records=[], advance=PageAdvance(next_spec=None, durable_progress=None)
-        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,7 +161,7 @@ def _definition() -> EndpointDefinition[_WatermarkModel]:
         provider=Provider.MOTIVE,
         name='locations',
         spec_builder=_MemberSpecBuilder(),
-        page_decoder=_StubPageDecoder(),
+        page_decoder=StubPageDecoder(),
         response_model=_WatermarkModel,
         quota_scope=QuotaScope.MOTIVE,
         storage_kind=StorageKind.DATE_PARTITIONED,
@@ -191,15 +180,12 @@ def _make_runner(
     # trailing edge one cutoff day before the frozen clock. Five days fits
     # one default chunk, so the run is the single-unit degenerate case.
     clock = FrozenClock(start_time_utc=_CLOCK_NOW)
-    database = StateDatabase(dataset_root / 'state.sqlite3')
-    database.initialize()
-    migrate_to_head(database)
     return EndpointRunner(
         _ClientSourceOf(client),
         RunStateAccess(
             recorder=recorder,
             cursors=cursor_access,
-            units=WorkUnitStore(database, clock),
+            units=open_work_unit_store(dataset_root, clock),
         ),
         clock,
         FleetpullConfig(
@@ -228,13 +214,6 @@ def _fleet_pages() -> dict[str, list[list[JsonObject]]]:
     }
 
 
-def _partition_bytes(endpoint_dir: Path) -> dict[str, bytes]:
-    return {
-        part_file.parent.name: part_file.read_bytes()
-        for part_file in sorted(endpoint_dir.glob('date=*/part.parquet'))
-    }
-
-
 def test_threaded_run_matches_the_serial_run_byte_for_byte(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -250,11 +229,7 @@ def test_threaded_run_matches_the_serial_run_byte_for_byte(
     def run_once(
         dataset_root: Path, pool: FetchPool
     ) -> tuple[dict[str, bytes], list[IncrementalCursor], int]:
-        counter = itertools.count()
-        monkeypatch.setattr(
-            'fleetpull.storage.files.uuid4',
-            lambda: SimpleNamespace(hex=f'{next(counter):08d}'),
-        )
+        pin_shard_names(monkeypatch)
         recorder = _RecordingRecorder()
         cursor_access = _StubCursorAccess()
         client = _RoutedClient(_fleet_pages())
@@ -268,7 +243,7 @@ def test_threaded_run_matches_the_serial_run_byte_for_byte(
         assert isinstance(outcome, Executed)
         endpoint_dir = endpoint_directory(dataset_root, 'motive', 'locations')
         return (
-            _partition_bytes(endpoint_dir),
+            partition_bytes(endpoint_dir),
             cursor_access.set_calls,
             (outcome.records_fetched),
         )

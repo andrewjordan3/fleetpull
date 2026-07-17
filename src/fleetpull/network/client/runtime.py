@@ -17,10 +17,10 @@ class ClientRuntime:
     """
     The process-global dependencies a transport client runs against.
 
-    Built once at the composition root and shared across every per-provider
-    client — only the ``ProviderProfile`` varies per provider. Bundled
-    because these always travel together at the one site that constructs
-    clients, and no module-level singletons are permitted.
+    Built once per composition root and shared across every per-provider
+    client that root constructs — only the ``ProviderProfile`` varies per
+    provider. Bundled because these always travel together at the sites
+    that construct clients, and no module-level singletons are permitted.
 
     Attributes:
         http_config: Connect/read timeouts and TLS posture (consumed once to

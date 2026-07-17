@@ -15,11 +15,13 @@ set, e.g.:
 Errors propagate with a traceback by design -- this is a debugging driver.
 """
 
+import os
+
 from fleetpull import Endpoints, fetch
 
 # Paste your Motive API key here for a quick run, or (preferred) set
 # MOTIVE_API_KEY in the environment so it never touches a tracked file.
-MOTIVE_API_KEY: str = ''
+MOTIVE_API_KEY: str = os.environ.get('MOTIVE_API_KEY', '')
 
 # True behind the Zscaler-intercepting laptop; False on Colab / a GCP VM.
 USE_TRUSTSTORE: bool = True

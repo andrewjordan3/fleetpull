@@ -36,11 +36,6 @@ def memory_connection() -> Iterator[sqlite3.Connection]:
         connection.close()
 
 
-def _database_path(directory: Path) -> Path:
-    """The state database path used across the class-level tests."""
-    return directory / 'state.sqlite3'
-
-
 def _read_pragma(database_path: Path, pragma: str) -> SqliteScalar:
     """Open the database file, read a single-value PRAGMA, and return it."""
     connection = sqlite3.connect(database_path)
@@ -109,8 +104,7 @@ class TestStampOrVerifyApplicationId:
 
 
 class TestEnableWal:
-    def test_converts_to_wal_on_local_disk(self, tmp_path: Path) -> None:
-        database_path = _database_path(tmp_path)
+    def test_converts_to_wal_on_local_disk(self, database_path: Path) -> None:
         connection = sqlite3.connect(database_path)
         try:
             enable_wal(connection, database_path)
@@ -146,8 +140,9 @@ class TestVerifyQuickCheck:
 
 
 class TestDatabasePath:
-    def test_database_path_echoes_the_constructed_path(self, tmp_path: Path) -> None:
-        database_path = _database_path(tmp_path)
+    def test_database_path_echoes_the_constructed_path(
+        self, database_path: Path
+    ) -> None:
         assert StateDatabase(database_path).database_path == database_path
 
 
@@ -158,31 +153,31 @@ class TestInitialize:
         assert database_path.parent.is_dir()
         assert database_path.is_file()
 
-    def test_creates_the_database_file(self, tmp_path: Path) -> None:
-        database = StateDatabase(_database_path(tmp_path))
+    def test_creates_the_database_file(self, database_path: Path) -> None:
+        database = StateDatabase(database_path)
         database.initialize()
         assert database.database_path.is_file()
 
-    def test_database_is_in_wal_mode(self, tmp_path: Path) -> None:
-        database = StateDatabase(_database_path(tmp_path))
+    def test_database_is_in_wal_mode(self, database_path: Path) -> None:
+        database = StateDatabase(database_path)
         database.initialize()
         assert _read_pragma(database.database_path, 'journal_mode') == 'wal'
 
-    def test_stamps_the_fleetpull_application_id(self, tmp_path: Path) -> None:
-        database = StateDatabase(_database_path(tmp_path))
+    def test_stamps_the_fleetpull_application_id(self, database_path: Path) -> None:
+        database = StateDatabase(database_path)
         database.initialize()
         stamped = _read_pragma(database.database_path, 'application_id')
         assert stamped == _APPLICATION_ID
 
-    def test_is_idempotent(self, tmp_path: Path) -> None:
-        database = StateDatabase(_database_path(tmp_path))
+    def test_is_idempotent(self, database_path: Path) -> None:
+        database = StateDatabase(database_path)
         database.initialize()
         database.initialize()
         stamped = _read_pragma(database.database_path, 'application_id')
         assert stamped == _APPLICATION_ID
 
-    def test_refuses_a_foreign_application_id(self, tmp_path: Path) -> None:
-        database = StateDatabase(_database_path(tmp_path))
+    def test_refuses_a_foreign_application_id(self, database_path: Path) -> None:
+        database = StateDatabase(database_path)
         foreign_application_id = 12345
         preexisting = sqlite3.connect(database.database_path)
         try:
@@ -194,45 +189,43 @@ class TestInitialize:
         with pytest.raises(ConfigurationError, match='another application'):
             database.initialize()
 
-    def test_surfaces_a_non_sqlite_file(self, tmp_path: Path) -> None:
-        database = StateDatabase(_database_path(tmp_path))
+    def test_surfaces_a_non_sqlite_file(self, database_path: Path) -> None:
+        database = StateDatabase(database_path)
         database.database_path.write_bytes(b'this is not a sqlite database')
         with pytest.raises(sqlite3.DatabaseError):
             database.initialize()
 
 
 class TestConnect:
-    def test_yields_a_working_connection(self, tmp_path: Path) -> None:
-        database = StateDatabase(_database_path(tmp_path))
+    def test_yields_a_working_connection(self, database_path: Path) -> None:
+        database = StateDatabase(database_path)
         database.initialize()
         with database.connect() as connection:
             value = fetch_scalar(connection, 'SELECT 1')
         assert value == 1
 
-    def test_applies_the_default_busy_timeout(self, tmp_path: Path) -> None:
-        database = StateDatabase(_database_path(tmp_path))
+    def test_applies_the_default_busy_timeout(self, database_path: Path) -> None:
+        database = StateDatabase(database_path)
         database.initialize()
         with database.connect() as connection:
             busy_timeout = fetch_scalar(connection, 'PRAGMA busy_timeout')
         assert busy_timeout == _DEFAULT_BUSY_TIMEOUT_MS
 
-    def test_applies_a_custom_busy_timeout(self, tmp_path: Path) -> None:
+    def test_applies_a_custom_busy_timeout(self, database_path: Path) -> None:
         custom_busy_timeout_ms = 4321
-        database = StateDatabase(
-            _database_path(tmp_path), busy_timeout_ms=custom_busy_timeout_ms
-        )
+        database = StateDatabase(database_path, busy_timeout_ms=custom_busy_timeout_ms)
         database.initialize()
         with database.connect() as connection:
             busy_timeout = fetch_scalar(connection, 'PRAGMA busy_timeout')
         assert busy_timeout == custom_busy_timeout_ms
 
-    def test_raises_when_not_initialized(self, tmp_path: Path) -> None:
-        database = StateDatabase(_database_path(tmp_path))
+    def test_raises_when_not_initialized(self, database_path: Path) -> None:
+        database = StateDatabase(database_path)
         with pytest.raises(RuntimeError, match='initialize'):
             _open_and_close(database)
 
-    def test_closes_the_connection_on_exit(self, tmp_path: Path) -> None:
-        database = StateDatabase(_database_path(tmp_path))
+    def test_closes_the_connection_on_exit(self, database_path: Path) -> None:
+        database = StateDatabase(database_path)
         database.initialize()
         with database.connect() as connection:
             captured_connection = connection
@@ -241,8 +234,8 @@ class TestConnect:
 
 
 class TestRoundTrip:
-    def test_write_and_read_through_a_connection(self, tmp_path: Path) -> None:
-        database = StateDatabase(_database_path(tmp_path))
+    def test_write_and_read_through_a_connection(self, database_path: Path) -> None:
+        database = StateDatabase(database_path)
         database.initialize()
         with database.connect() as connection:
             connection.execute('CREATE TABLE probe (value INTEGER)')
@@ -252,9 +245,8 @@ class TestRoundTrip:
         assert stored == 7
 
     def test_a_second_instance_verifies_the_existing_database(
-        self, tmp_path: Path
+        self, database_path: Path
     ) -> None:
-        database_path = _database_path(tmp_path)
         StateDatabase(database_path).initialize()
         reopened = StateDatabase(database_path)
         reopened.initialize()

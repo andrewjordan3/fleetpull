@@ -76,7 +76,7 @@ from fleetpull.orchestrator.resume import (
 )
 from fleetpull.orchestrator.streaming import stream_processed_batches
 from fleetpull.orchestrator.unit_loop import UnitQueue, drive_claimable_units
-from fleetpull.storage import WriteResult, select_writer
+from fleetpull.storage import DatasetWriter, WriteResult, select_writer
 from fleetpull.timing import Clock
 from fleetpull.vocabulary import Provider
 
@@ -119,6 +119,38 @@ def _observe_batches(
     for processed in batches:
         observer(processed.frame)
         yield processed
+
+
+def _drain_batches(
+    batches: Iterator[ProcessedBatch], writer: DatasetWriter
+) -> tuple[int, datetime | None]:
+    """Consume a processed-batch stream: write, count, and fold as it arrives.
+
+    The shared drain both runner arms run: each batch's frame is handed to
+    the writer as it yields (memory stays bounded by one batch) while the
+    fetched-row count sums and the in-window event-time maximum folds. On
+    the snapshot path every fold candidate is ``None`` (``process_batch``
+    with ``context=None``), so the fold component is ``None`` there and the
+    snapshot arm discards it.
+
+    Args:
+        batches: The run's processed-batch stream, ready to consume.
+        writer: The run's dataset writer, handed each frame in order.
+
+    Returns:
+        The fetched-row count and the folded in-window maximum event time
+        (``None`` on the snapshot path, or when no in-window event was
+        observed).
+    """
+    records_fetched = 0
+    latest_observed: datetime | None = None
+    for processed in batches:
+        writer.write(processed.frame)
+        records_fetched += processed.frame.height
+        latest_observed = combine_latest_event_time(
+            latest_observed, processed.latest_event_time
+        )
+    return records_fetched, latest_observed
 
 
 class ClientSource(Protocol):
@@ -243,11 +275,12 @@ class EndpointRunner:
                 store, and the work-unit queue.
             clock: Supplies the run instant (trailing edge, future-event guard).
             config: The root config -- the container its composition root
-                already holds. The runner reads exactly three values:
+                already holds. The runner reads exactly four values:
                 ``sync.default_start_datetime`` (the cold-start anchor),
                 ``sync.backfill_chunk_days`` (the unit width newly planned
-                windows tile into), and ``storage.dataset_root`` (where the
-                writers land).
+                windows tile into), ``storage.dataset_root`` (where the
+                writers land), and ``storage.drop_exact_duplicates`` (the
+                writers' exact-dedup switch).
         """
         self._client_source = client_source
         self._state = state
@@ -309,6 +342,8 @@ class EndpointRunner:
         Args:
             definition: The snapshot endpoint to run.
             driver: The request driver (a ``SingleRequestDriver`` for a snapshot).
+            observer: The optional per-frame hook, handed each post-validation
+                frame as the run streams.
 
         Returns:
             ``Executed`` with the fetched-row count and the write report.
@@ -325,13 +360,12 @@ class EndpointRunner:
             writer = select_writer(
                 definition, self._dataset_root, drop_duplicates=self._drop_duplicates
             )
-            records_fetched = 0
             batches = stream_processed_batches(
                 definition, driver, client, resume=None, context=None
             )
-            for processed in _observe_batches(batches, observer):
-                writer.write(processed.frame)
-                records_fetched += processed.frame.height
+            records_fetched, _ = _drain_batches(
+                _observe_batches(batches, observer), writer
+            )
             write = writer.finalize()
             self._state.recorder.complete_run(run_id, row_count=records_fetched)
             return Executed(records_fetched=records_fetched, write=write)
@@ -534,14 +568,7 @@ class EndpointRunner:
                 window=window,
                 drop_duplicates=self._drop_duplicates,
             )
-            records_fetched = 0
-            latest_observed: datetime | None = None
-            for processed in batches:
-                writer.write(processed.frame)
-                records_fetched += processed.frame.height
-                latest_observed = combine_latest_event_time(
-                    latest_observed, processed.latest_event_time
-                )
+            records_fetched, latest_observed = _drain_batches(batches, writer)
             write = writer.finalize()
             if latest_observed is not None and should_advance_watermark(
                 prior, latest_observed

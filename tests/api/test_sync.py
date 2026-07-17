@@ -10,9 +10,7 @@ capture set (``tests/geotab_devices_capture.py``).
 
 import json
 import sqlite3
-import ssl
 import threading
-from collections.abc import Callable
 from pathlib import Path
 from typing import NoReturn
 
@@ -22,22 +20,20 @@ import pytest
 
 import fleetpull.api.sync as sync_module
 from fleetpull import ConfigurationError, Sync, SyncFailuresError
-from fleetpull.vocabulary import JsonObject, JsonValue
+from fleetpull.vocabulary import JsonObject
+from tests.api.conftest import (
+    SYNTHETIC_GEOTAB_PASS,
+    SYNTHETIC_MOTIVE_KEY,
+    SYNTHETIC_SAMSARA_TOKEN,
+    install_transport,
+    vehicle_record,
+)
 from tests.geotab_devices_capture import (
     AUTHENTICATE_SUCCESS_JSON,
     SEEK_PAGE_1_RESPONSE,
     SEEK_PAGE_2_RESPONSE,
     SEEK_TERMINAL_RESPONSE,
 )
-
-_SYNTHETIC_KEY = 'synthetic-motive-key-000'
-_SYNTHETIC_GEOTAB_PASS = 'synthetic-geotab-pass-000'
-
-# The genuine class, captured before any test monkeypatches httpx.Client
-# (the transport-test precedent).
-_REAL_CLIENT_CLS = httpx.Client
-
-_Handler = Callable[[httpx.Request], httpx.Response]
 
 
 @pytest.fixture(autouse=True)
@@ -46,19 +42,6 @@ def _no_ambient_credential(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv('MOTIVE_API_KEY', raising=False)
     monkeypatch.delenv('GEOTAB_PASSWORD', raising=False)
     monkeypatch.delenv('SAMSARA_API_KEY', raising=False)
-
-
-def _install_transport(monkeypatch: pytest.MonkeyPatch, handler: _Handler) -> None:
-    """Route every httpx.Client the composition builds through ``handler``."""
-    mock_transport = httpx.MockTransport(handler)
-
-    def client_factory(
-        *, verify: ssl.SSLContext | bool = True, timeout: httpx.Timeout | None = None
-    ) -> httpx.Client:
-        # verify is ignored -- the mock transport short-circuits real TLS.
-        return _REAL_CLIENT_CLS(transport=mock_transport, timeout=timeout)
-
-    monkeypatch.setattr(httpx, 'Client', client_factory)
 
 
 def _write_config(
@@ -79,7 +62,7 @@ def _write_config(
         f'{extra}'
         'providers:\n'
         '  motive:\n'
-        f"    api_key: '{_SYNTHETIC_KEY}'\n"
+        f"    api_key: '{SYNTHETIC_MOTIVE_KEY}'\n"
         f'    endpoints: {endpoints}\n'
         '    rate_limit:\n'
         '      requests_per_period: 6000\n'
@@ -98,7 +81,7 @@ def _write_geotab_config(
     config_path = tmp_path / 'config.yaml'
     motive_block = (
         '  motive:\n'
-        f"    api_key: '{_SYNTHETIC_KEY}'\n"
+        f"    api_key: '{SYNTHETIC_MOTIVE_KEY}'\n"
         '    endpoints: [vehicles]\n'
         '    rate_limit:\n'
         '      requests_per_period: 6000\n'
@@ -118,7 +101,7 @@ def _write_geotab_config(
         '  geotab:\n'
         '    auth:\n'
         '      username: user@example.com\n'
-        f"      password: '{_SYNTHETIC_GEOTAB_PASS}'\n"
+        f"      password: '{SYNTHETIC_GEOTAB_PASS}'\n"
         '      database: exampledb\n'
         f'    endpoints: {endpoints}\n',
         encoding='utf-8',
@@ -152,23 +135,11 @@ class _GeotabRpcHandler:
         return httpx.Response(200, json=page)
 
 
-def _vehicle_record(vehicle_id: int) -> dict[str, JsonValue]:
-    return {
-        'id': vehicle_id,
-        'company_id': 77,
-        'number': f'UNIT-{vehicle_id}',
-        'status': 'active',
-        'ifta': False,
-        'created_at': '2026-01-01T00:00:00Z',
-        'updated_at': '2026-01-02T00:00:00Z',
-    }
-
-
 def _vehicles_response(*vehicle_ids: int) -> httpx.Response:
     return httpx.Response(
         200,
         json={
-            'vehicles': [{'vehicle': _vehicle_record(v)} for v in vehicle_ids],
+            'vehicles': [{'vehicle': vehicle_record(v)} for v in vehicle_ids],
             'pagination': {'page_no': 1, 'per_page': 100, 'total': len(vehicle_ids)},
         },
     )
@@ -234,7 +205,7 @@ class TestConstruction:
             f'storage:\n  dataset_root: {tmp_path / "data"}\n'
             'providers:\n'
             '  samsara:\n'
-            "    api_key: 'synthetic-samsara-token-000'\n"
+            f"    api_key: '{SYNTHETIC_SAMSARA_TOKEN}'\n"
             '    endpoints: [vehiclez]\n'
         )
         with pytest.raises(ConfigurationError) as raised:
@@ -262,15 +233,15 @@ class TestConstruction:
         config_path = _write_config(tmp_path, endpoints='[vehiclez]')
         with pytest.raises(ConfigurationError) as raised:
             Sync(config_path)
-        assert _SYNTHETIC_KEY not in str(raised.value)
-        assert _SYNTHETIC_KEY not in repr(raised.value)
+        assert SYNTHETIC_MOTIVE_KEY not in str(raised.value)
+        assert SYNTHETIC_MOTIVE_KEY not in repr(raised.value)
 
 
 class TestRun:
     def test_end_to_end_writes_parquet_state_and_ledger(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _install_transport(monkeypatch, _happy_handler)
+        install_transport(monkeypatch, _happy_handler)
         Sync(_write_config(tmp_path)).run()
         dataset_root = tmp_path / 'data'
         snapshot = pl.read_parquet(dataset_root / 'motive/vehicles/data.parquet')
@@ -294,7 +265,7 @@ class TestRun:
     def test_feeder_runs_before_its_consumer_regardless_of_config_order(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _install_transport(monkeypatch, _happy_handler)
+        install_transport(monkeypatch, _happy_handler)
         config_path = _write_config(tmp_path, endpoints='[vehicle_locations, vehicles]')
         Sync(config_path).run()
         run_order = [row[0] for row in _ledger_rows(tmp_path / 'data')]
@@ -308,7 +279,7 @@ class TestRun:
                 return _vehicles_response(1)
             return httpx.Response(404, text='no route')  # FATAL -> public error
 
-        _install_transport(monkeypatch, locations_fail)
+        install_transport(monkeypatch, locations_fail)
         with pytest.raises(SyncFailuresError) as raised:
             Sync(_write_config(tmp_path)).run()
         failures = raised.value.failures
@@ -326,7 +297,7 @@ class TestRun:
         def explode(*args: object, **kwargs: object) -> NoReturn:
             raise RuntimeError('planted bug')
 
-        _install_transport(monkeypatch, _happy_handler)
+        install_transport(monkeypatch, _happy_handler)
         monkeypatch.setattr(sync_module, 'run_endpoint', explode)
         with pytest.raises(RuntimeError, match='planted bug'):
             Sync(_write_config(tmp_path)).run()
@@ -337,13 +308,13 @@ class TestRun:
         def all_fail(request: httpx.Request) -> httpx.Response:
             return httpx.Response(404, text='no route')
 
-        _install_transport(monkeypatch, all_fail)
+        install_transport(monkeypatch, all_fail)
         with pytest.raises(SyncFailuresError) as raised:
             Sync(_write_config(tmp_path)).run()
-        assert _SYNTHETIC_KEY not in str(raised.value)
-        assert _SYNTHETIC_KEY not in repr(raised.value)
+        assert SYNTHETIC_MOTIVE_KEY not in str(raised.value)
+        assert SYNTHETIC_MOTIVE_KEY not in repr(raised.value)
         assert all(
-            _SYNTHETIC_KEY not in repr(failure.error)
+            SYNTHETIC_MOTIVE_KEY not in repr(failure.error)
             for failure in raised.value.failures
         )
 
@@ -361,7 +332,7 @@ class TestDedupFlagThreading:
     def test_default_true_drops_the_planted_duplicate(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _install_transport(monkeypatch, self._duplicating_handler)
+        install_transport(monkeypatch, self._duplicating_handler)
         Sync(_write_config(tmp_path, endpoints='[vehicles]')).run()
         snapshot = pl.read_parquet(tmp_path / 'data/motive/vehicles/data.parquet')
         assert snapshot.height == 1
@@ -369,7 +340,7 @@ class TestDedupFlagThreading:
     def test_false_preserves_the_duplicate(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _install_transport(monkeypatch, self._duplicating_handler)
+        install_transport(monkeypatch, self._duplicating_handler)
         config_path = _write_config(
             tmp_path,
             endpoints='[vehicles]',
@@ -411,7 +382,7 @@ class TestFanOutConcurrency:
                 return _locations_response(request.url.path.rsplit('/', 1)[1])
             return httpx.Response(404, text='no route')
 
-        _install_transport(monkeypatch, overlapping_handler)
+        install_transport(monkeypatch, overlapping_handler)
         Sync(_write_config(tmp_path)).run()
         partition = pl.read_parquet(
             tmp_path / 'data/motive/vehicle_locations/date=2026-06-02/part.parquet'
@@ -421,7 +392,7 @@ class TestFanOutConcurrency:
     def test_no_worker_threads_outlive_a_successful_run(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _install_transport(monkeypatch, _happy_handler)
+        install_transport(monkeypatch, _happy_handler)
         Sync(_write_config(tmp_path)).run()
         assert _fleetpull_worker_threads() == []
 
@@ -431,7 +402,7 @@ class TestFanOutConcurrency:
         def all_fail(request: httpx.Request) -> httpx.Response:
             return httpx.Response(404, text='no route')
 
-        _install_transport(monkeypatch, all_fail)
+        install_transport(monkeypatch, all_fail)
         with pytest.raises(SyncFailuresError):
             Sync(_write_config(tmp_path)).run()
         assert _fleetpull_worker_threads() == []
@@ -445,7 +416,7 @@ class TestGeotabRun:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         handler = _GeotabRpcHandler()
-        _install_transport(monkeypatch, handler)
+        install_transport(monkeypatch, handler)
         Sync(_write_geotab_config(tmp_path)).run()
         snapshot = pl.read_parquet(tmp_path / 'data/geotab/devices/data.parquet')
         assert snapshot.height == 6
@@ -478,7 +449,7 @@ class TestGeotabRun:
                 return _vehicles_response(1, 2)
             return httpx.Response(404, text='no route')
 
-        _install_transport(monkeypatch, handler)
+        install_transport(monkeypatch, handler)
         Sync(_write_geotab_config(tmp_path, include_motive=True)).run()
         motive = pl.read_parquet(tmp_path / 'data/motive/vehicles/data.parquet')
         geotab = pl.read_parquet(tmp_path / 'data/geotab/devices/data.parquet')
@@ -504,7 +475,7 @@ class TestGeotabRun:
     ) -> None:
         # A mismatched count fails the run loudly after the one harvest;
         # the failure aggregates and no repr anywhere carries the password.
-        _install_transport(monkeypatch, _GeotabRpcHandler(count=999))
+        install_transport(monkeypatch, _GeotabRpcHandler(count=999))
         with pytest.raises(SyncFailuresError) as raised:
             Sync(_write_geotab_config(tmp_path)).run()
         failures = raised.value.failures
@@ -515,7 +486,7 @@ class TestGeotabRun:
             repr(raised.value),
             repr(failures[0].error),
         ):
-            assert _SYNTHETIC_GEOTAB_PASS not in rendering  # ...the secret never
+            assert SYNTHETIC_GEOTAB_PASS not in rendering  # ...the secret never
 
 
 class TestGeotabTripsEnablement:

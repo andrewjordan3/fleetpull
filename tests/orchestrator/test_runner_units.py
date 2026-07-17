@@ -11,11 +11,9 @@ Deterministic throughout: canned drivers, a frozen clock, pinned shard
 names for the byte comparisons.
 """
 
-import itertools
 from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -36,17 +34,18 @@ from fleetpull.exceptions import ProviderResponseError
 from fleetpull.incremental import DateWatermark, DateWindow, IncrementalCursor
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import FetchedPage, TransportClient
-from fleetpull.network.contract import DecodedPage, PageAdvance, RequestSpec
 from fleetpull.orchestrator.outcome import Executed
 from fleetpull.orchestrator.runner import EndpointRunner, RunStateAccess
-from fleetpull.state import (
-    StateDatabase,
-    WorkUnitSpec,
-    WorkUnitStore,
-    migrate_to_head,
-)
+from fleetpull.state import WorkUnitSpec, WorkUnitStore
 from fleetpull.timing import FrozenClock
-from fleetpull.vocabulary import JsonObject, JsonValue, Provider, QuotaScope
+from fleetpull.vocabulary import JsonObject, Provider, QuotaScope
+from tests.orchestrator.doubles import (
+    StubClientSource,
+    StubPageDecoder,
+    open_work_unit_store,
+    partition_bytes,
+    pin_shard_names,
+)
 
 _CLOCK_NOW = datetime(2026, 6, 16, tzinfo=UTC)
 _ENDPOINT = 'locations'
@@ -59,35 +58,6 @@ _WINDOW_END = datetime(2026, 6, 15, tzinfo=UTC)
 
 class _WatermarkModel(ResponseModel):
     occurred_at: datetime
-
-
-class _StubPageDecoder:
-    """A PageDecoder double; the canned driver bypasses it entirely."""
-
-    def first_request(self, spec: RequestSpec) -> RequestSpec:
-        return spec
-
-    def decode_page(self, sent: RequestSpec, envelope: JsonValue) -> DecodedPage:
-        return DecodedPage(
-            records=[], advance=PageAdvance(next_spec=None, durable_progress=None)
-        )
-
-
-class _StubClient(TransportClient):
-    """A hollow client; the canned driver never calls it."""
-
-    def __init__(self) -> None:
-        pass
-
-
-class _StubClientSource:
-    """A ClientSource handing a hollow client for any provider."""
-
-    def __init__(self) -> None:
-        self._client = _StubClient()
-
-    def client_for(self, provider: Provider) -> TransportClient:
-        return self._client
 
 
 class _RecordingRecorder:
@@ -170,7 +140,7 @@ def _definition() -> EndpointDefinition[_WatermarkModel]:
         provider=Provider.MOTIVE,
         name=_ENDPOINT,
         spec_builder=StaticGetSpecBuilder(base_url='https://x.test', path='/v3/loc'),
-        page_decoder=_StubPageDecoder(),
+        page_decoder=StubPageDecoder(),
         response_model=_WatermarkModel,
         quota_scope=QuotaScope.MOTIVE,
         storage_kind=StorageKind.DATE_PARTITIONED,
@@ -181,10 +151,7 @@ def _definition() -> EndpointDefinition[_WatermarkModel]:
 
 def _open_store(root: Path) -> WorkUnitStore:
     """The work-unit store over ``root``'s state database (created if absent)."""
-    database = StateDatabase(root / 'state.sqlite3')
-    database.initialize()
-    migrate_to_head(database)
-    return WorkUnitStore(database, FrozenClock(start_time_utc=_CLOCK_NOW))
+    return open_work_unit_store(root, FrozenClock(start_time_utc=_CLOCK_NOW))
 
 
 def _make_runner(
@@ -194,7 +161,7 @@ def _make_runner(
     chunk_days: int,
 ) -> EndpointRunner:
     return EndpointRunner(
-        _StubClientSource(),
+        StubClientSource(),
         RunStateAccess(recorder=recorder, cursors=cursors, units=_open_store(root)),
         FrozenClock(start_time_utc=_CLOCK_NOW),
         FleetpullConfig(
@@ -229,33 +196,15 @@ def _daily_window(start_day: int) -> DateWindow:
     )
 
 
-def _pin_shard_names(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Replace the uuid shard names with a fresh deterministic counter.
-
-    Shard files are uuid-named and compaction folds them in sorted-name
-    order, so byte-stability across runs requires pinning; a monotone
-    counter preserves each partition's insertion order.
-    """
-    counter = itertools.count()
-    monkeypatch.setattr(
-        'fleetpull.storage.files.uuid4',
-        lambda: SimpleNamespace(hex=f'{next(counter):08d}'),
-    )
-
-
 def _partition_bytes(root: Path) -> dict[str, bytes]:
-    endpoint_dir = root / 'motive' / _ENDPOINT
-    return {
-        part_file.parent.name: part_file.read_bytes()
-        for part_file in sorted(endpoint_dir.glob('date=*/part.parquet'))
-    }
+    return partition_bytes(root / 'motive' / _ENDPOINT)
 
 
 def _run_to_completion(
     root: Path, chunk_days: int, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[_RecordingRecorder, _FaithfulCursorAccess, Executed]:
     """One uninterrupted invocation over the mock fleet, shard names pinned."""
-    _pin_shard_names(monkeypatch)
+    pin_shard_names(monkeypatch)
     recorder = _RecordingRecorder()
     cursors = _FaithfulCursorAccess()
     runner = _make_runner(recorder, root, cursors, chunk_days)
@@ -326,7 +275,7 @@ def test_crash_resume_drives_only_the_remaining_units(
     # failed unit is claimable again, and the final state equals an
     # uninterrupted run's, byte for byte.
     root = tmp_path / 'resumed'
-    _pin_shard_names(monkeypatch)
+    pin_shard_names(monkeypatch)
     first_recorder = _RecordingRecorder()
     cursors = _FaithfulCursorAccess()
     runner = _make_runner(first_recorder, root, cursors, chunk_days=1)
@@ -352,7 +301,7 @@ def test_crash_resume_drives_only_the_remaining_units(
     # The resumed invocation re-claims the failed unit and the pending tail,
     # ascending; the residual re-plan collapses onto the already-done daily
     # units, so nothing before the failure point is requested again.
-    _pin_shard_names(monkeypatch)
+    pin_shard_names(monkeypatch)
     resumed_driver = _WindowRecordingDriver(_fleet_batches())
     second_runner = _make_runner(_RecordingRecorder(), root, cursors, chunk_days=1)
     outcome = second_runner.run(_definition(), resumed_driver)

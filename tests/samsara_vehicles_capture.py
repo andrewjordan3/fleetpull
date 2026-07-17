@@ -16,8 +16,8 @@ shapes, driver, tag ids/names with the shared-parent equality class and
 the double-space quirk; makes/models/years, timestamps, empty-string
 ``notes``, and the settings vocabulary VERBATIM).
 
-Shared by the Vehicle model tests and the vehicles endpoint tests -- a
-multi-consumer capture set in one helper module under ``tests/`` (the
+Consumed by the Vehicle model tests -- kept as a helper module under
+``tests/`` so future consumers share one capture set (the
 ``geotab_devices_capture`` precedent). The raw JSON literals are the
 captures; the parsed objects beside them are what tests consume.
 """

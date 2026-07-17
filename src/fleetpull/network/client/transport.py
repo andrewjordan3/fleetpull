@@ -233,31 +233,15 @@ class TransportClient:
                     return envelope
                 case ResponseCategory.TRANSIENT:
                     transient_failures += 1
-                    transient_decision: RetryDecision = decide_retry(
-                        ResponseCategory.TRANSIENT,
-                        transient_failures,
-                        self._runtime.retry_config,
-                        self._runtime.random_source,
+                    transient_decision: RetryDecision = self._retry_or_exhaust(
+                        ResponseCategory.TRANSIENT, transient_failures
                     )
-                    if not transient_decision.should_retry:
-                        raise RetriesExhaustedError(
-                            category=ResponseCategory.TRANSIENT,
-                            attempt_count=transient_failures,
-                        )
                     self._runtime.sleeper.sleep(transient_decision.local_delay_seconds)
                 case ResponseCategory.RATE_LIMITED:
                     rate_limited_failures += 1
-                    rate_limited_decision: RetryDecision = decide_retry(
-                        ResponseCategory.RATE_LIMITED,
-                        rate_limited_failures,
-                        self._runtime.retry_config,
-                        self._runtime.random_source,
+                    self._retry_or_exhaust(
+                        ResponseCategory.RATE_LIMITED, rate_limited_failures
                     )
-                    if not rate_limited_decision.should_retry:
-                        raise RetriesExhaustedError(
-                            category=ResponseCategory.RATE_LIMITED,
-                            attempt_count=rate_limited_failures,
-                        )
                     self._penalize_scope(quota_scope, classified)
                 case ResponseCategory.AUTH_FAILURE:
                     auth_failures += 1
@@ -268,6 +252,41 @@ class TransportClient:
                         raise AuthenticationError(detail=classified.detail)
                 case ResponseCategory.FATAL:
                     raise ProviderResponseError(detail=classified.detail)
+
+    def _retry_or_exhaust(
+        self, category: ResponseCategory, failure_count: int
+    ) -> RetryDecision:
+        """
+        Decide one more retry for a retryable category, or raise.
+
+        Raising on exhaustion happens BEFORE the caller's category-specific
+        action (sleep or penalize), so the exhausted attempt pays no delay
+        and applies no penalty — pinned by the transport tests.
+
+        Args:
+            category: The retryable category being budgeted.
+            failure_count: Consecutive failures of this category on this
+                page, including the one just observed.
+
+        Returns:
+            The retry decision; the caller applies its category-specific
+            action.
+
+        Raises:
+            RetriesExhaustedError: The category's failure budget is spent.
+        """
+        decision: RetryDecision = decide_retry(
+            category,
+            failure_count,
+            self._runtime.retry_config,
+            self._runtime.random_source,
+        )
+        if not decision.should_retry:
+            raise RetriesExhaustedError(
+                category=category,
+                attempt_count=failure_count,
+            )
+        return decision
 
     def _attempt(self, sent: RequestSpec, quota_scope: str) -> ClassifiedResponse:
         """

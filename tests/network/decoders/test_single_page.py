@@ -2,8 +2,9 @@
 
 Fixtures are synthetic, in the verified shape: a top-level record list
 under the configured key, with no pagination metadata. Unlike the
-paginator it ports, the decoder validates the record list, so a
-missing key now raises rather than silently completing.
+pagination-strategy class it superseded, the decoder validates the
+record list, so a missing key now raises rather than silently
+completing.
 """
 
 import pytest

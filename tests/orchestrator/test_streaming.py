@@ -16,11 +16,16 @@ from fleetpull.exceptions import ProviderResponseError
 from fleetpull.incremental import DateWindow
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import FetchedPage, TransportClient
-from fleetpull.network.contract import DecodedPage, PageAdvance, RequestSpec
 from fleetpull.orchestrator.batch import ProcessedBatch, WindowContext
 from fleetpull.orchestrator.drivers import RequestDriver
 from fleetpull.orchestrator.streaming import stream_processed_batches
-from fleetpull.vocabulary import JsonObject, JsonValue, Provider, QuotaScope
+from fleetpull.vocabulary import JsonObject, Provider, QuotaScope
+from tests.orchestrator.doubles import (
+    CannedDriver,
+    FailingDriver,
+    StubClient,
+    StubPageDecoder,
+)
 
 _WINDOW = DateWindow(
     start=datetime(2026, 6, 1, tzinfo=UTC),
@@ -32,41 +37,6 @@ _NOW = datetime(2026, 6, 10, tzinfo=UTC)
 class _EventModel(ResponseModel):
     id: int
     occurred_at: datetime
-
-
-class _StubPageDecoder:
-    """A PageDecoder double; the canned driver bypasses it, so it is never called."""
-
-    def first_request(self, spec: RequestSpec) -> RequestSpec:
-        return spec
-
-    def decode_page(self, sent: RequestSpec, envelope: JsonValue) -> DecodedPage:
-        return DecodedPage(
-            records=[], advance=PageAdvance(next_spec=None, durable_progress=None)
-        )
-
-
-class _StubClient(TransportClient):
-    """A hollow client; the canned driver never calls it (no ``super().__init__``)."""
-
-    def __init__(self) -> None:
-        pass
-
-
-class _CannedDriver:
-    """A RequestDriver yielding pre-set record pages, ignoring the client."""
-
-    def __init__(self, batches: list[list[JsonObject]]) -> None:
-        self._batches = batches
-
-    def record_batches(
-        self,
-        definition: EndpointDefinition[ResponseModel],
-        client: TransportClient,
-        resume: ResumeValue,
-    ) -> Iterator[FetchedPage]:
-        for batch in self._batches:
-            yield FetchedPage(records=batch, durable_progress=None)
 
 
 class _ResumeRecordingDriver:
@@ -98,24 +68,12 @@ class _OnePageThenRaisingDriver:
         raise RuntimeError('second page blew up')
 
 
-class _FailingDriver:
-    """A RequestDriver that raises as soon as it is driven."""
-
-    def record_batches(
-        self,
-        definition: EndpointDefinition[ResponseModel],
-        client: TransportClient,
-        resume: ResumeValue,
-    ) -> Iterator[FetchedPage]:
-        raise RuntimeError('fetch blew up')
-
-
 def _definition() -> EndpointDefinition[_EventModel]:
     return EndpointDefinition(
         provider=Provider.MOTIVE,
         name='events',
         spec_builder=StaticGetSpecBuilder(base_url='https://x.test', path='/v1/e'),
-        page_decoder=_StubPageDecoder(),
+        page_decoder=StubPageDecoder(),
         response_model=_EventModel,
         quota_scope=QuotaScope.MOTIVE,
         storage_kind=StorageKind.SINGLE,
@@ -135,7 +93,7 @@ def _stream(
     driver: RequestDriver, resume: ResumeValue, context: WindowContext | None
 ) -> list[ProcessedBatch]:
     return list(
-        stream_processed_batches(_definition(), driver, _StubClient(), resume, context)
+        stream_processed_batches(_definition(), driver, StubClient(), resume, context)
     )
 
 
@@ -145,7 +103,7 @@ def test_yields_one_processed_batch_per_page() -> None:
         _record(2, datetime(2026, 6, 2, tzinfo=UTC)),
         _record(3, datetime(2026, 6, 4, tzinfo=UTC)),
     ]
-    processed = _stream(_CannedDriver([page_a, page_b]), None, None)
+    processed = _stream(CannedDriver([page_a, page_b]), None, None)
     assert len(processed) == 2
     assert processed[0].frame.get_column('id').to_list() == [1]
     assert processed[1].frame.get_column('id').to_list() == [2, 3]
@@ -156,7 +114,7 @@ def test_snapshot_path_does_not_filter_or_fold() -> None:
         _record(1, datetime(2026, 6, 1, 8, tzinfo=UTC)),
         _record(2, datetime(2026, 6, 5, tzinfo=UTC)),  # outside _WINDOW, but kept
     ]
-    processed = _stream(_CannedDriver([batch]), None, None)
+    processed = _stream(CannedDriver([batch]), None, None)
     assert processed[0].frame.height == 2
     assert processed[0].latest_event_time is None
 
@@ -168,7 +126,7 @@ def test_watermark_path_filters_and_folds() -> None:
         _record(3, datetime(2026, 6, 2, 9, tzinfo=UTC)),  # in
         _record(4, datetime(2026, 6, 3, tzinfo=UTC)),  # exactly end: out
     ]
-    processed = _stream(_CannedDriver([batch]), _WINDOW, _context())
+    processed = _stream(CannedDriver([batch]), _WINDOW, _context())
     assert processed[0].frame.get_column('id').to_list() == [2, 3]
     assert processed[0].latest_event_time == datetime(2026, 6, 2, 9, tzinfo=UTC)
 
@@ -181,7 +139,7 @@ def test_forwards_resume_to_the_driver() -> None:
 
 def test_is_lazy_one_page_before_the_next_is_fetched() -> None:
     stream = stream_processed_batches(
-        _definition(), _OnePageThenRaisingDriver(), _StubClient(), None, None
+        _definition(), _OnePageThenRaisingDriver(), StubClient(), None, None
     )
     first = next(stream)  # the first page frames without pulling the second
     assert first.frame.height == 0
@@ -191,7 +149,7 @@ def test_is_lazy_one_page_before_the_next_is_fetched() -> None:
 
 def test_propagates_driver_fetch_failure() -> None:
     stream = stream_processed_batches(
-        _definition(), _FailingDriver(), _StubClient(), None, None
+        _definition(), FailingDriver(), StubClient(), None, None
     )
     with pytest.raises(RuntimeError, match='fetch blew up'):
         list(stream)
@@ -200,7 +158,7 @@ def test_propagates_driver_fetch_failure() -> None:
 def test_propagates_future_event_guard() -> None:
     batch = [_record(1, datetime(2026, 6, 11, tzinfo=UTC))]  # after _NOW (06-10)
     stream = stream_processed_batches(
-        _definition(), _CannedDriver([batch]), _StubClient(), _WINDOW, _context()
+        _definition(), CannedDriver([batch]), StubClient(), _WINDOW, _context()
     )
     with pytest.raises(ProviderResponseError):
         list(stream)

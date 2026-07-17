@@ -178,3 +178,9 @@ def warn_disabled_providers(providers: ProvidersConfig) -> None:
             "providers.geotab: a credential resolves but 'endpoints' is empty; "
             'the provider is disabled for this run.'
         )
+    samsara = providers.samsara
+    if samsara is not None and samsara.api_key is not None and not samsara.endpoints:
+        logger.warning(
+            "providers.samsara: a credential resolves but 'endpoints' is empty; "
+            'the provider is disabled for this run.'
+        )
