@@ -9,7 +9,6 @@ validation, so a validated section is fully resolved by construction and
 downstream code never normalizes.
 """
 
-import logging
 from datetime import UTC, date, datetime, time
 from pathlib import Path
 
@@ -19,8 +18,6 @@ from fleetpull.config.base import ConfigModel
 from fleetpull.paths import resolve_path
 
 __all__: list[str] = ['StateConfig', 'StorageConfig', 'SyncConfig']
-
-logger = logging.getLogger(__name__)
 
 
 class SyncConfig(ConfigModel):

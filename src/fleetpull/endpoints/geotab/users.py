@@ -18,7 +18,6 @@ resolved host are the session strategy's injections (the devices-leaf
 convention); the host this module writes is a pre-auth placeholder.
 """
 
-import logging
 from typing import Final
 
 from fleetpull.config import GeotabConfig
@@ -33,8 +32,6 @@ from fleetpull.network.decoders import GeotabGetPageDecoder
 from fleetpull.vocabulary import Provider, QuotaScope
 
 __all__: list[str] = ['build_endpoint']
-
-logger = logging.getLogger(__name__)
 
 # Pre-auth placeholder host for a default-constructed (credential-less)
 # config -- mirrors GeotabAuthConfig's server default; the session

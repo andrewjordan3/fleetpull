@@ -16,10 +16,6 @@ from fleetpull.state.migrations import (
 )
 
 
-def _database_path(directory: Path) -> Path:
-    return directory / 'state.sqlite3'
-
-
 def _set_user_version(database_path: Path, version: int) -> None:
     """Stamp ``user_version`` on the database via an out-of-band connection."""
     connection = sqlite3.connect(database_path)
@@ -31,13 +27,13 @@ def _set_user_version(database_path: Path, version: int) -> None:
 
 
 def _expect_insert_rejected(
-    tmp_path: Path,
+    database_path: Path,
     table: str,
     columns: str,
     values: tuple[str | int | float | bytes | None, ...],
 ) -> None:
     """Migrate a fresh database, then assert a raw INSERT trips a CHECK."""
-    database = StateDatabase(_database_path(tmp_path))
+    database = StateDatabase(database_path)
     database.initialize()
     migrate_to_head(database)
     placeholders = ', '.join('?' * len(values))
@@ -62,8 +58,8 @@ def autocommit_connection() -> Iterator[sqlite3.Connection]:
 
 
 class TestMigrateToHead:
-    def test_brings_fresh_database_to_head(self, tmp_path: Path) -> None:
-        database = StateDatabase(_database_path(tmp_path))
+    def test_brings_fresh_database_to_head(self, database_path: Path) -> None:
+        database = StateDatabase(database_path)
         database.initialize()
 
         migrate_to_head(database)
@@ -72,8 +68,8 @@ class TestMigrateToHead:
             version = fetch_scalar(connection, 'PRAGMA user_version')
         assert version == _MIGRATIONS[-1].version
 
-    def test_creates_the_cursors_table(self, tmp_path: Path) -> None:
-        database = StateDatabase(_database_path(tmp_path))
+    def test_creates_the_cursors_table(self, database_path: Path) -> None:
+        database = StateDatabase(database_path)
         database.initialize()
 
         migrate_to_head(database)
@@ -85,8 +81,8 @@ class TestMigrateToHead:
             }
         assert columns == {'provider', 'endpoint', 'kind', 'value', 'updated_at'}
 
-    def test_cursors_table_rejects_an_unknown_kind(self, tmp_path: Path) -> None:
-        database = StateDatabase(_database_path(tmp_path))
+    def test_cursors_table_rejects_an_unknown_kind(self, database_path: Path) -> None:
+        database = StateDatabase(database_path)
         database.initialize()
         migrate_to_head(database)
 
@@ -99,8 +95,8 @@ class TestMigrateToHead:
                 ('motive', 'vehicles', 'not_a_kind', 'v', '2026-06-16T00:00:00Z'),
             )
 
-    def test_creates_the_runs_table(self, tmp_path: Path) -> None:
-        database = StateDatabase(_database_path(tmp_path))
+    def test_creates_the_runs_table(self, database_path: Path) -> None:
+        database = StateDatabase(database_path)
         database.initialize()
 
         migrate_to_head(database)
@@ -126,9 +122,9 @@ class TestMigrateToHead:
             'error_detail',
         }
 
-    def test_runs_table_rejects_an_unknown_status(self, tmp_path: Path) -> None:
+    def test_runs_table_rejects_an_unknown_status(self, database_path: Path) -> None:
         _expect_insert_rejected(
-            tmp_path,
+            database_path,
             'runs',
             '(provider, endpoint, status, mode, window_start, window_end, started_at)',
             (
@@ -142,9 +138,9 @@ class TestMigrateToHead:
             ),
         )
 
-    def test_runs_table_rejects_both_arms(self, tmp_path: Path) -> None:
+    def test_runs_table_rejects_both_arms(self, database_path: Path) -> None:
         _expect_insert_rejected(
-            tmp_path,
+            database_path,
             'runs',
             '(provider, endpoint, status, mode, window_start, window_end, '
             'from_version, started_at)',
@@ -161,10 +157,10 @@ class TestMigrateToHead:
         )
 
     def test_runs_table_rejects_to_version_on_a_watermark_run(
-        self, tmp_path: Path
+        self, database_path: Path
     ) -> None:
         _expect_insert_rejected(
-            tmp_path,
+            database_path,
             'runs',
             '(provider, endpoint, status, mode, window_start, window_end, '
             'to_version, started_at)',
@@ -180,9 +176,9 @@ class TestMigrateToHead:
             ),
         )
 
-    def test_runs_table_rejects_a_negative_row_count(self, tmp_path: Path) -> None:
+    def test_runs_table_rejects_a_negative_row_count(self, database_path: Path) -> None:
         _expect_insert_rejected(
-            tmp_path,
+            database_path,
             'runs',
             '(provider, endpoint, status, mode, window_start, window_end, '
             'row_count, started_at)',
@@ -198,9 +194,9 @@ class TestMigrateToHead:
             ),
         )
 
-    def test_runs_table_rejects_an_inverted_window(self, tmp_path: Path) -> None:
+    def test_runs_table_rejects_an_inverted_window(self, database_path: Path) -> None:
         _expect_insert_rejected(
-            tmp_path,
+            database_path,
             'runs',
             '(provider, endpoint, status, mode, window_start, window_end, started_at)',
             (
@@ -214,8 +210,8 @@ class TestMigrateToHead:
             ),
         )
 
-    def test_creates_the_work_units_table(self, tmp_path: Path) -> None:
-        database = StateDatabase(_database_path(tmp_path))
+    def test_creates_the_work_units_table(self, database_path: Path) -> None:
+        database = StateDatabase(database_path)
         database.initialize()
 
         migrate_to_head(database)
@@ -241,9 +237,9 @@ class TestMigrateToHead:
             'last_error',
         }
 
-    def test_work_units_rejects_an_unknown_status(self, tmp_path: Path) -> None:
+    def test_work_units_rejects_an_unknown_status(self, database_path: Path) -> None:
         _expect_insert_rejected(
-            tmp_path,
+            database_path,
             'work_units',
             '(provider, endpoint, chunk_start, chunk_end, status)',
             (
@@ -255,9 +251,11 @@ class TestMigrateToHead:
             ),
         )
 
-    def test_work_units_rejects_a_negative_attempt_count(self, tmp_path: Path) -> None:
+    def test_work_units_rejects_a_negative_attempt_count(
+        self, database_path: Path
+    ) -> None:
         _expect_insert_rejected(
-            tmp_path,
+            database_path,
             'work_units',
             '(provider, endpoint, chunk_start, chunk_end, attempt_count)',
             (
@@ -269,9 +267,9 @@ class TestMigrateToHead:
             ),
         )
 
-    def test_work_units_rejects_an_inverted_chunk(self, tmp_path: Path) -> None:
+    def test_work_units_rejects_an_inverted_chunk(self, database_path: Path) -> None:
         _expect_insert_rejected(
-            tmp_path,
+            database_path,
             'work_units',
             '(provider, endpoint, chunk_start, chunk_end)',
             (
@@ -282,8 +280,8 @@ class TestMigrateToHead:
             ),
         )
 
-    def test_work_units_dedups_a_null_partition_key(self, tmp_path: Path) -> None:
-        database = StateDatabase(_database_path(tmp_path))
+    def test_work_units_dedups_a_null_partition_key(self, database_path: Path) -> None:
+        database = StateDatabase(database_path)
         database.initialize()
         migrate_to_head(database)
         insert = (
@@ -296,8 +294,10 @@ class TestMigrateToHead:
             with pytest.raises(sqlite3.IntegrityError, match='UNIQUE'):
                 connection.execute(insert, values)
 
-    def test_work_units_dedups_a_non_null_partition_key(self, tmp_path: Path) -> None:
-        database = StateDatabase(_database_path(tmp_path))
+    def test_work_units_dedups_a_non_null_partition_key(
+        self, database_path: Path
+    ) -> None:
+        database = StateDatabase(database_path)
         database.initialize()
         migrate_to_head(database)
         insert = (
@@ -317,8 +317,10 @@ class TestMigrateToHead:
             with pytest.raises(sqlite3.IntegrityError, match='UNIQUE'):
                 connection.execute(insert, values)
 
-    def test_work_units_allows_same_start_different_end(self, tmp_path: Path) -> None:
-        database = StateDatabase(_database_path(tmp_path))
+    def test_work_units_allows_same_start_different_end(
+        self, database_path: Path
+    ) -> None:
+        database = StateDatabase(database_path)
         database.initialize()
         migrate_to_head(database)
         insert = (
@@ -354,8 +356,8 @@ class TestMigrateToHead:
             ).fetchone()
         assert same_start_count == (2,)
 
-    def test_creates_the_rosters_table(self, tmp_path: Path) -> None:
-        database = StateDatabase(_database_path(tmp_path))
+    def test_creates_the_rosters_table(self, database_path: Path) -> None:
+        database = StateDatabase(database_path)
         database.initialize()
 
         migrate_to_head(database)
@@ -372,16 +374,18 @@ class TestMigrateToHead:
             'absence_count',
         }
 
-    def test_rosters_rejects_a_negative_absence_count(self, tmp_path: Path) -> None:
+    def test_rosters_rejects_a_negative_absence_count(
+        self, database_path: Path
+    ) -> None:
         _expect_insert_rejected(
-            tmp_path,
+            database_path,
             'rosters',
             '(provider, name, member, absence_count)',
             ('motive', 'vehicle_ids', 'V1', -1),
         )
 
-    def test_is_idempotent(self, tmp_path: Path) -> None:
-        database = StateDatabase(_database_path(tmp_path))
+    def test_is_idempotent(self, database_path: Path) -> None:
+        database = StateDatabase(database_path)
         database.initialize()
 
         migrate_to_head(database)
@@ -391,8 +395,8 @@ class TestMigrateToHead:
             version = fetch_scalar(connection, 'PRAGMA user_version')
         assert version == _MIGRATIONS[-1].version
 
-    def test_refuses_a_future_schema_version(self, tmp_path: Path) -> None:
-        database = StateDatabase(_database_path(tmp_path))
+    def test_refuses_a_future_schema_version(self, database_path: Path) -> None:
+        database = StateDatabase(database_path)
         database.initialize()
         _set_user_version(database.database_path, _MIGRATIONS[-1].version + 1)
 
@@ -400,7 +404,7 @@ class TestMigrateToHead:
             migrate_to_head(database)
 
     def test_failing_migration_rolls_back_atomically(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self, monkeypatch: pytest.MonkeyPatch, database_path: Path
     ) -> None:
         def boom(connection: sqlite3.Connection) -> None:
             connection.execute('CREATE TABLE half_applied (x INTEGER)')
@@ -410,7 +414,7 @@ class TestMigrateToHead:
             'fleetpull.state.migrations._MIGRATIONS',
             (_Migration(version=1, apply=boom),),
         )
-        database = StateDatabase(_database_path(tmp_path))
+        database = StateDatabase(database_path)
         database.initialize()
 
         with pytest.raises(RuntimeError, match='deliberate migration failure'):

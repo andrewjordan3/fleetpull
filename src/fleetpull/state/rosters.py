@@ -29,7 +29,6 @@ mechanism, not a correctness one: it stops the fan-out paying for empty fetches 
 long-retired vehicles, so the threshold is generous.
 """
 
-import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -44,8 +43,6 @@ __all__: list[str] = [
     'is_roster_stale',
     'reconcile',
 ]
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,8 +104,12 @@ def reconcile(
         to_increment = absent
         to_evict = set()
     else:
-        to_increment = {m for m in absent if current[m] + 1 <= eviction_threshold}
-        to_evict = {m for m in absent if current[m] + 1 > eviction_threshold}
+        to_increment = {
+            member for member in absent if current[member] + 1 <= eviction_threshold
+        }
+        to_evict = {
+            member for member in absent if current[member] + 1 > eviction_threshold
+        }
     return RosterDelta(
         to_zero=frozenset(new | reappeared),
         to_increment=frozenset(to_increment),

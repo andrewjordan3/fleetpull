@@ -7,8 +7,8 @@ provider's envelope is parsed in exactly one place, so the records and
 the continuation cursor are read from a single validated view rather
 than re-interpreted downstream. Implementations live in the sibling
 ``network/decoders/`` package and reach this surface through the
-contract face; like the paginators they deliberately share no concrete
-behavior (blast-radius over DRY).
+contract face; they deliberately share no concrete behavior
+(blast-radius over DRY).
 """
 
 from dataclasses import dataclass

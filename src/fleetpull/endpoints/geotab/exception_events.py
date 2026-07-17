@@ -23,7 +23,6 @@ resolved host are the session strategy's injections (the devices-leaf
 convention); the host this module writes is a pre-auth placeholder.
 """
 
-import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
@@ -45,8 +44,6 @@ from fleetpull.timing import to_iso8601
 from fleetpull.vocabulary import JsonValue, Provider, QuotaScope
 
 __all__: list[str] = ['build_endpoint']
-
-logger = logging.getLogger(__name__)
 
 # The JSON-RPC ingress path every GeoTab method POSTs to.
 _API_PATH: Final[str] = '/apiv1'

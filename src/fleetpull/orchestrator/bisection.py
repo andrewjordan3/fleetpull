@@ -29,7 +29,6 @@ seconds because fractional-second search bounds are unprobed on the
 wire.
 """
 
-import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -46,8 +45,6 @@ from fleetpull.network.client import FetchedPage, TransportClient
 from fleetpull.vocabulary import JsonObject
 
 __all__: list[str] = ['BisectingWindowDriver']
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)

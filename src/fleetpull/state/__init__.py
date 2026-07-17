@@ -1,5 +1,7 @@
 # src/fleetpull/state/__init__.py
-"""SQLite operational state store: connection lifecycle, schema migrations, and integrity verification."""
+"""SQLite operational state store: the database lifecycle (connections, schema
+migrations, integrity verification) and the stores over it -- incremental
+cursors, the run ledger, feeder rosters, and the backfill work-unit queue."""
 
 from fleetpull.state.cursors import CursorKind, CursorStore
 from fleetpull.state.database import StateDatabase

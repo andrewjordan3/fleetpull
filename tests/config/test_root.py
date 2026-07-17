@@ -226,6 +226,30 @@ class TestEnablement:
         assert motive is not None
         assert motive.endpoints == ()
 
+    def test_samsara_credential_without_endpoints_warns_and_disables(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        text = (
+            'sync:\n'
+            '  default_start_date: 2026-06-01\n'
+            'storage:\n'
+            f'  dataset_root: {tmp_path}\n'
+            'providers:\n'
+            '  samsara:\n'
+            "    api_key: 'synthetic-samsara-token-000'\n"
+        )
+        with caplog.at_level(logging.WARNING, logger='fleetpull.config.loading'):
+            config = FleetpullConfig.from_yaml(_write(tmp_path, text))
+        warnings = [
+            record for record in caplog.records if record.levelno == logging.WARNING
+        ]
+        assert len(warnings) == 1
+        assert 'samsara' in warnings[0].getMessage()
+        assert 'disabled' in warnings[0].getMessage()
+        samsara = config.providers.samsara
+        assert samsara is not None
+        assert samsara.endpoints == ()
+
     def test_absent_provider_is_silent(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:

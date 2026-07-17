@@ -11,7 +11,6 @@ feed tokens -- lives in dedicated builders beside their bindings, never
 here.
 """
 
-import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -19,8 +18,6 @@ from fleetpull.endpoints.shared.base import ResumeValue
 from fleetpull.network.contract import HttpMethod, RequestSpec
 
 __all__: list[str] = ['StaticGetSpecBuilder']
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)

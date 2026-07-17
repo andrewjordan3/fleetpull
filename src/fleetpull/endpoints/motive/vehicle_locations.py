@@ -37,10 +37,10 @@ fetch plus a per-vehicle path fan-out. The fleet-wide Motive date-range endpoint
 the per-vehicle path.
 """
 
-import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
+from typing import Final
 
 from fleetpull.config import MotiveConfig
 from fleetpull.endpoints.shared import (
@@ -64,11 +64,9 @@ __all__: list[str] = [
     'build_endpoint',
 ]
 
-logger = logging.getLogger(__name__)
-
-_VEHICLE_LOCATIONS_PATH: str = '/v3/vehicle_locations/{vehicle_id}'
-_VEHICLE_LOCATIONS_LIST_KEY: str = 'vehicle_locations'
-_VEHICLE_LOCATIONS_ITEM_KEY: str = 'vehicle_location'
+_VEHICLE_LOCATIONS_PATH: Final[str] = '/v3/vehicle_locations/{vehicle_id}'
+_VEHICLE_LOCATIONS_LIST_KEY: Final[str] = 'vehicle_locations'
+_VEHICLE_LOCATIONS_ITEM_KEY: Final[str] = 'vehicle_location'
 
 
 @dataclass(frozen=True, slots=True)

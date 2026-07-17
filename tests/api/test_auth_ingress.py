@@ -12,7 +12,6 @@ authenticates.
 """
 
 import json
-import ssl
 
 import httpx
 import pytest
@@ -23,7 +22,6 @@ from fleetpull.api.auth_ingress import (
     ProviderProfileContext,
     build_provider_profile,
 )
-from fleetpull.api.identity import SnapshotEndpoint
 from fleetpull.config import GeotabAuthConfig, GeotabConfig, HttpConfig
 from fleetpull.exceptions import ConfigurationError
 from fleetpull.network.auth import GeotabSessionAuth
@@ -35,15 +33,12 @@ from fleetpull.network.classifiers import (
 from fleetpull.network.contract import HttpMethod, RequestSpec
 from fleetpull.network.limits import RateLimiterRegistry, rate_limits_from_configs
 from fleetpull.timing import SystemClock
-from fleetpull.vocabulary import Provider
-
-_SYNTHETIC_KEY = 'synthetic-motive-key-000'
-_SYNTHETIC_PASS = 'synthetic-geotab-pass-000'
-_SYNTHETIC_TOKEN = 'synthetic-samsara-token-000'
-
-# The genuine class, captured before any test monkeypatches httpx.Client
-# (the transport-test precedent).
-_REAL_CLIENT_CLS = httpx.Client
+from tests.api.conftest import (
+    SYNTHETIC_GEOTAB_PASS,
+    SYNTHETIC_MOTIVE_KEY,
+    SYNTHETIC_SAMSARA_TOKEN,
+    install_transport,
+)
 
 # Captured: Authenticate success (the June fixture shape).
 _AUTHENTICATE_SUCCESS = (
@@ -78,32 +73,32 @@ def _context() -> ProviderProfileContext:
 def _geotab_mapping() -> dict[str, str]:
     return {
         'username': 'user@example.com',
-        'password': _SYNTHETIC_PASS,
+        'password': SYNTHETIC_GEOTAB_PASS,
         'database': 'exampledb',
     }
 
 
 def test_motive_bare_string_becomes_header_profile() -> None:
     profile = build_provider_profile(
-        Endpoints.Motive.vehicles, _SYNTHETIC_KEY, _context()
+        Endpoints.Motive.vehicles, SYNTHETIC_MOTIVE_KEY, _context()
     )
     prepared = profile.auth.prepare(_bare_spec())
-    assert prepared.headers['X-API-Key'] == _SYNTHETIC_KEY
+    assert prepared.headers['X-API-Key'] == SYNTHETIC_MOTIVE_KEY
     assert isinstance(profile.classifier, MotiveResponseClassifier)
 
 
 def test_motive_profile_never_reprs_the_secret() -> None:
     profile = build_provider_profile(
-        Endpoints.Motive.vehicles, _SYNTHETIC_KEY, _context()
+        Endpoints.Motive.vehicles, SYNTHETIC_MOTIVE_KEY, _context()
     )
     for rendering in (repr(profile), str(profile), repr(profile.auth)):
-        assert _SYNTHETIC_KEY not in rendering
+        assert SYNTHETIC_MOTIVE_KEY not in rendering
 
 
 @pytest.mark.parametrize(
     'wrong_shaped_auth',
     [
-        {'api_key': _SYNTHETIC_KEY},
+        {'api_key': SYNTHETIC_MOTIVE_KEY},
         GeotabAuthConfig(
             username='synthetic-user',
             password=SecretStr('synthetic-pass'),
@@ -126,46 +121,46 @@ def test_wrong_shape_for_motive_names_shape_and_provider(
 def test_rejection_never_echoes_the_value() -> None:
     with pytest.raises(ConfigurationError) as raised:
         build_provider_profile(
-            Endpoints.Motive.vehicles, {'api_key': _SYNTHETIC_KEY}, _context()
+            Endpoints.Motive.vehicles, {'api_key': SYNTHETIC_MOTIVE_KEY}, _context()
         )
-    assert _SYNTHETIC_KEY not in str(raised.value)
-    assert _SYNTHETIC_KEY not in repr(raised.value)
+    assert SYNTHETIC_MOTIVE_KEY not in str(raised.value)
+    assert SYNTHETIC_MOTIVE_KEY not in repr(raised.value)
 
 
 class TestSamsaraArm:
-    """No Samsara catalog identity exists yet; hand-built identities
-    exercise the arm (the provider is wired ahead of its first
-    endpoint, so the first vertical is purely endpoint work)."""
-
     def test_bare_string_becomes_bearer_header_profile(self) -> None:
-        identity = SnapshotEndpoint(Provider.SAMSARA, 'vehicles')
-        profile = build_provider_profile(identity, _SYNTHETIC_TOKEN, _context())
+        profile = build_provider_profile(
+            Endpoints.Samsara.vehicles, SYNTHETIC_SAMSARA_TOKEN, _context()
+        )
         prepared = profile.auth.prepare(_bare_spec())
-        assert prepared.headers['Authorization'] == f'Bearer {_SYNTHETIC_TOKEN}'
+        assert prepared.headers['Authorization'] == f'Bearer {SYNTHETIC_SAMSARA_TOKEN}'
         assert isinstance(profile.classifier, SamsaraResponseClassifier)
 
     def test_secret_str_passes_through_to_the_same_header(self) -> None:
-        identity = SnapshotEndpoint(Provider.SAMSARA, 'vehicles')
         profile = build_provider_profile(
-            identity, SecretStr(_SYNTHETIC_TOKEN), _context()
+            Endpoints.Samsara.vehicles, SecretStr(SYNTHETIC_SAMSARA_TOKEN), _context()
         )
         prepared = profile.auth.prepare(_bare_spec())
-        assert prepared.headers['Authorization'] == f'Bearer {_SYNTHETIC_TOKEN}'
+        assert prepared.headers['Authorization'] == f'Bearer {SYNTHETIC_SAMSARA_TOKEN}'
 
     def test_profile_never_reprs_the_token(self) -> None:
-        identity = SnapshotEndpoint(Provider.SAMSARA, 'vehicles')
-        profile = build_provider_profile(identity, _SYNTHETIC_TOKEN, _context())
+        profile = build_provider_profile(
+            Endpoints.Samsara.vehicles, SYNTHETIC_SAMSARA_TOKEN, _context()
+        )
         for rendering in (repr(profile), str(profile), repr(profile.auth)):
-            assert _SYNTHETIC_TOKEN not in rendering
+            assert SYNTHETIC_SAMSARA_TOKEN not in rendering
 
     def test_wrong_shape_names_shape_and_provider_never_the_value(self) -> None:
-        identity = SnapshotEndpoint(Provider.SAMSARA, 'vehicles')
         with pytest.raises(ConfigurationError) as raised:
-            build_provider_profile(identity, {'api_key': _SYNTHETIC_TOKEN}, _context())
+            build_provider_profile(
+                Endpoints.Samsara.vehicles,
+                {'api_key': SYNTHETIC_SAMSARA_TOKEN},
+                _context(),
+            )
         message = str(raised.value)
         assert 'samsara' in message
         assert 'bare API-token string' in message
-        assert _SYNTHETIC_TOKEN not in message
+        assert SYNTHETIC_SAMSARA_TOKEN not in message
 
 
 class TestGeotabArm:
@@ -179,7 +174,7 @@ class TestGeotabArm:
     def test_geotab_auth_config_passes_through(self) -> None:
         credential = GeotabAuthConfig(
             username='user@example.com',
-            password=SecretStr(_SYNTHETIC_PASS),
+            password=SecretStr(SYNTHETIC_GEOTAB_PASS),
             database='exampledb',
         )
         profile = build_provider_profile(
@@ -190,7 +185,7 @@ class TestGeotabArm:
 
     @pytest.mark.parametrize(
         'wrong_shaped_auth',
-        [_SYNTHETIC_KEY, SecretStr(_SYNTHETIC_KEY)],
+        [SYNTHETIC_MOTIVE_KEY, SecretStr(SYNTHETIC_MOTIVE_KEY)],
         ids=['bare_string', 'secret_str'],
     )
     def test_wrong_shape_for_geotab_names_shapes_and_provider(
@@ -209,20 +204,20 @@ class TestGeotabArm:
         with pytest.raises(ConfigurationError) as raised:
             build_provider_profile(
                 Endpoints.Geotab.devices,
-                {'username': 'user@example.com', 'password': _SYNTHETIC_PASS},
+                {'username': 'user@example.com', 'password': SYNTHETIC_GEOTAB_PASS},
                 _context(),
             )
         message = str(raised.value)
         assert 'database' in message
-        assert _SYNTHETIC_PASS not in message
-        assert _SYNTHETIC_PASS not in repr(raised.value)
+        assert SYNTHETIC_GEOTAB_PASS not in message
+        assert SYNTHETIC_GEOTAB_PASS not in repr(raised.value)
 
     def test_no_geotab_path_ever_reprs_the_password(self) -> None:
         profile = build_provider_profile(
             Endpoints.Geotab.devices, _geotab_mapping(), _context()
         )
         for rendering in (repr(profile), str(profile), repr(profile.auth)):
-            assert _SYNTHETIC_PASS not in rendering
+            assert SYNTHETIC_GEOTAB_PASS not in rendering
 
     def test_ingress_composes_a_stack_that_authenticates(
         self, monkeypatch: pytest.MonkeyPatch
@@ -236,16 +231,7 @@ class TestGeotabArm:
             assert body['method'] == 'Authenticate'
             return httpx.Response(200, text=_AUTHENTICATE_SUCCESS)
 
-        mock_transport = httpx.MockTransport(handler)
-
-        def client_factory(
-            *,
-            verify: ssl.SSLContext | bool = True,
-            timeout: httpx.Timeout | None = None,
-        ) -> httpx.Client:
-            return _REAL_CLIENT_CLS(transport=mock_transport, timeout=timeout)
-
-        monkeypatch.setattr(httpx, 'Client', client_factory)
+        install_transport(monkeypatch, handler)
         profile = build_provider_profile(
             Endpoints.Geotab.devices, _geotab_mapping(), _context()
         )

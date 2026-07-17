@@ -14,7 +14,6 @@ carry raw request or response material (headers, bodies, request
 specs, credentials-adjacent values) — every instance is safe to log.
 """
 
-import logging
 from dataclasses import dataclass
 
 from fleetpull.vocabulary import ResponseCategory
@@ -29,8 +28,6 @@ __all__: list[str] = [
     'SyncFailuresError',
     'UnknownQuotaScopeError',
 ]
-
-logger = logging.getLogger(__name__)
 
 
 def _compose_message(

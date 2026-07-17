@@ -1,3 +1,4 @@
+# src/fleetpull/orchestrator/backfill.py
 """Window decomposition: a windowed run's range into per-chunk work units.
 
 The caller-side planning the work-unit store defers to its driver (DESIGN §5).
@@ -103,8 +104,8 @@ def plan_backfill_units(
         provider: The provider being backfilled.
         endpoint: The endpoint being backfilled.
         span: The full backfill range, half-open and midnight-UTC on both bounds
-            (the coordinator builds it from the configured start and the trailing
-            edge).
+            (the runner's residual-window resolution builds it from the resume
+            precedence against the trailing edge).
         chunk: The width of each date chunk; a positive whole number of days.
 
     Returns:

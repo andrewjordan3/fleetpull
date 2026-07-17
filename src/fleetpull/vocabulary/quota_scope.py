@@ -5,11 +5,11 @@ The closed set of quota scopes an endpoint definition declares.
 Shared, dependency-free package vocabulary, sibling to ``Provider`` and
 ``ResponseCategory`` in the leaf. A ``QuotaScope`` is which token bucket an
 endpoint spends from — the type of ``endpoint.quota_scope`` — not which
-provider it belongs to. The members coincide with ``Provider``'s today, but the
-two are separate vocabularies on purpose: they diverge the moment a provider
-meters one endpoint apart from the rest (the §13 Samsara ``vehicle_locations``
-case adds a new ``QuotaScope`` member while the ``Provider`` stays ``SAMSARA``),
-and folding both into one type would be exactly the conflation this avoids.
+provider it belongs to. The two are separate vocabularies on purpose — folding
+both into one type would be exactly the conflation this avoids — and they
+diverged when GeoTab metered its endpoints apart from the rest (the
+method-class scopes below; the §13 Samsara ``vehicle_locations`` case would
+add another ``QuotaScope`` member while the ``Provider`` stays ``SAMSARA``).
 
 GeoTab meters per method class, not per provider (§8, captured 2026-07-09),
 so its scopes are method-class members: ``GEOTAB_GET`` is the Get-class data
@@ -38,7 +38,6 @@ class QuotaScope(StrEnum):
     change (a new member) plus a config change (its limits) — not config-only.
     """
 
-    GEOTAB = 'geotab'
     GEOTAB_AUTHENTICATE = 'geotab_authenticate'
     GEOTAB_GET = 'geotab_get'
     MOTIVE = 'motive'
