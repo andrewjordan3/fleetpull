@@ -152,6 +152,46 @@ class TestBisectingWindowDriver:
         assert batches[0].records == dataset
         assert len(client.requested_windows) == 1
 
+    def test_a_sparse_window_narrates_no_bisection(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client = _OverlapCappedClient([_event(_at(13, 10), _at(13, 20))], _LIMIT)
+        with caplog.at_level('INFO', logger='fleetpull.orchestrator.bisection'):
+            list(
+                _driver().record_batches(
+                    _definition(), client, _window(_at(13), _at(14))
+                )
+            )
+        assert not any(
+            'bisection complete' in record.message for record in caplog.records
+        )
+
+    def test_overflow_narrates_the_unit_summary(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        dataset = [
+            _event(_at(13, 5), _at(13, 10)),
+            _event(_at(13, 20), _at(13, 25)),
+            _event(_at(14, 5), _at(14, 10)),
+            _event(_at(14, 20), _at(14, 25)),
+        ]
+        client = _OverlapCappedClient(dataset, _LIMIT)
+        with caplog.at_level('INFO', logger='fleetpull.orchestrator.bisection'):
+            list(
+                _driver().record_batches(
+                    _definition(), client, _window(_at(13), _at(15))
+                )
+            )
+        summaries = [
+            record
+            for record in caplog.records
+            if 'bisection complete' in record.getMessage()
+        ]
+        assert len(summaries) == 1
+        assert summaries[0].levelname == 'INFO'
+        assert 'leaves=2' in summaries[0].getMessage()
+        assert 'overflows=1' in summaries[0].getMessage()
+
     def test_overflow_splits_and_recovers_every_record(self) -> None:
         # Four events across two hours: the whole window overflows (the
         # cap serves only three), each half serves two -- the driver must

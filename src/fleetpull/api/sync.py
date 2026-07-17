@@ -144,6 +144,12 @@ class Sync:
         independently -- parquet and state land per endpoint as each
         finishes, so a sibling's failure never rolls anything back.
 
+        The run narrates at INFO: a start line naming the enabled
+        providers, the validated selection, and the dataset root; a
+        finish line with the succeeded/failed endpoint counts and the
+        elapsed seconds (a ``monotonic_seconds`` delta on the run's own
+        clock, emitted before any failure aggregate raises).
+
         Returns:
             None. Every selected endpoint ran and committed.
 
@@ -172,11 +178,19 @@ class Sync:
         schema, no assumed end use (DESIGN section 10).
         """
         setup_logger(self._config.logging)
+        clock = SystemClock()
+        run_started = clock.monotonic_seconds()
+        logger.info(
+            'sync started: providers=[%s] endpoints=%d selection=[%s] dataset_root=%s',
+            ', '.join(provider.value for provider, _ in self._enabled_providers()),
+            len(self._selection),
+            ', '.join(f'{provider.value}.{name}' for provider, name in self._selection),
+            self._config.storage.dataset_root,
+        )
         provider_configs = self._discovery_provider_configs()
         endpoint_registry = build_endpoint_registry(provider_configs)
         roster_registry = build_roster_registry()
         ordered = _feeders_first(self._selection, roster_registry)
-        clock = SystemClock()
         database = StateDatabase(_required_database_path(self._config))
         database.initialize()
         migrate_to_head(database)
@@ -233,6 +247,12 @@ class Sync:
                         name,
                     )
                     failures.append(EndpointFailure(provider.value, name, failure))
+        logger.info(
+            'sync finished: succeeded=%d failed=%d elapsed_seconds=%.1f',
+            len(ordered) - len(failures),
+            len(failures),
+            clock.monotonic_seconds() - run_started,
+        )
         if failures:
             raise SyncFailuresError(tuple(failures))
 
