@@ -146,7 +146,7 @@ def test_auth_provider_mismatch_makes_no_request(
 def test_success_status_with_non_json_body_is_a_provider_response_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # A TLS-intercepting proxy's block page: HTTP 200, HTML body (AUD-01).
+    # A TLS-intercepting proxy's block page: HTTP 200, HTML body.
     def block_page(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -207,8 +207,8 @@ def test_geotab_devices_end_to_end_through_the_session_stack(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The first live-shaped proof of auth stack + transport POST +
-    # classifier + seek decoder + completeness guard, end to end
-    # (GEOTAB-AUDIT GTA-01's composition gap): Authenticate success, two
+    # classifier + seek decoder + completeness guard, end to end (the
+    # once-unwired auth stack's composition gap): Authenticate success, two
     # captured Get pages, the empty terminal page, a matching GetCountOf.
     handler = _GeotabHandler()
     _install_transport(monkeypatch, handler)

@@ -20,7 +20,8 @@ current listing. Filtering (by vehicle, by group, by status) presumes a
 use case, and the scope refusal (§10) forbids exactly that presumption
 -- consumers filter the returned frame themselves.
 
-The composition is the audit's state-free fetch trace (AUDIT.md Part B):
+The composition is the state-free fetch trace (established by the
+2026-07-06 pre-API audit):
 provider configs from defaults → the discovery registry → the definition
 by identity key → a ``ClientRuntime`` on internal defaults → the
 auth-ingress profile (its ``ProviderProfileContext`` reusing the
@@ -181,8 +182,8 @@ def fetch(
             rate_limits_from_configs(provider_configs)
         ),
     )
-    # fetch now holds a clock solely for GeoTab session aging; the state-free
-    # trace otherwise needs none (AUDIT.md row 23's note is dated stale).
+    # fetch holds a clock solely for GeoTab session aging; the state-free
+    # trace otherwise needs none.
     profile = build_provider_profile(
         endpoint,
         auth,
