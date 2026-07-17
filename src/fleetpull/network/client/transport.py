@@ -11,7 +11,6 @@ interprets neither the records' field shapes nor the cursor.
 
 import json
 import logging
-import ssl
 from collections.abc import Iterator
 from dataclasses import replace
 from types import TracebackType
@@ -33,8 +32,8 @@ from fleetpull.network.contract import (
     PageDecoder,
     RequestSpec,
 )
+from fleetpull.network.posture import client_timeout, client_verify
 from fleetpull.network.retry import RetryDecision, decide_retry
-from fleetpull.network.tls import build_truststore_ssl_context
 from fleetpull.vocabulary import JsonValue, ResponseCategory
 
 __all__: list[str] = ['TransportClient']
@@ -95,20 +94,9 @@ class TransportClient:
         """
         self._profile: ProviderProfile = profile
         self._runtime: ClientRuntime = runtime
-        # OS trust store behind a TLS-intercepting proxy; httpx's bundled CA
-        # store otherwise (the proxy is the exception, not the rule).
-        verify: ssl.SSLContext | bool = (
-            build_truststore_ssl_context()
-            if runtime.http_config.use_truststore
-            else True
-        )
-        # read_timeout backs read/write/pool; connect is its own knob.
         self._http_client: httpx.Client = httpx.Client(
-            verify=verify,
-            timeout=httpx.Timeout(
-                runtime.http_config.read_timeout_seconds,
-                connect=runtime.http_config.connect_timeout_seconds,
-            ),
+            verify=client_verify(runtime.http_config),
+            timeout=client_timeout(runtime.http_config),
         )
 
     def __enter__(self) -> Self:

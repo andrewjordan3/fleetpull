@@ -1512,6 +1512,11 @@ fleetpull/
       page.py        # FetchedPage — the emit type (records + durable_progress)
     tls/           # SSL-context construction
       truststore_context.py  # SSLContext factory backed by the OS trust store (Zscaler-class proxies)
+    posture/       # transport posture: the one HttpConfig -> httpx-options mapping
+      client_options.py  # client_verify + client_timeout, consumed by every
+                         #   httpx.Client construction site (the transport pool
+                         #   and the GeoTab authenticator's per-call client) so
+                         #   the mapping cannot drift between them
     auth/
       models.py    # AuthenticationResult, GeotabSession (frozen dataclasses)
       manager.py   # GeotabSessionManager — single-flight session lifecycle (§8)
