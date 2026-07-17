@@ -9,11 +9,11 @@ class: the network layer already owns auth, pagination, classification, and
 parsing as separate strategies, so the only work that remains on the endpoint is
 its spec-builder.
 
-This module ships the binding, the one Protocol it defines (``SpecBuilder``; the
-``PageDecoder`` it composes is imported from the contract), and the small
-declaration types beside it: ``StorageKind``, the ``SyncMode`` union
-(``SnapshotMode`` / ``WatermarkMode`` / ``FeedMode``), and the ``ResumeValue``
-alias. The ``event_time_column`` the watermark and date-partitioning read
+This module ships the binding, the two Protocols it defines (``SpecBuilder``
+and ``CompletenessCheck``; the ``PageDecoder`` it composes is imported from the
+contract), and the small declaration types beside it: ``StorageKind``, the
+``SyncMode`` union (``SnapshotMode`` / ``WatermarkMode`` / ``FeedMode``), and
+the ``ResumeValue`` alias. The ``event_time_column`` the watermark and date-partitioning read
 (§3/§5) now ships here on the binding, validated at construction; the records
 ``schema_overrides`` hatch (§9) is the one contract piece still deferred.
 """

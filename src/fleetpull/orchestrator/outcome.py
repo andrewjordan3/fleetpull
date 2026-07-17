@@ -2,11 +2,12 @@
 """The run executor's result carrier: what one endpoint run produced.
 
 A frozen tagged union the run executor returns instead of ``None``, so the caller
-(the future fan-out coordinator and user-facing surface) dispatches on the outcome
-rather than inferring it. ``Executed`` carries the fetched-row count and the write
-report; ``CaughtUp`` is the no-op marker for a run whose resume window resolved to
-nothing -- no fetch, no writer, no ledger row. ``CaughtUp`` is reachable only once
-the watermark arm's window resolution exists; a snapshot always executes.
+(the orchestration entry, ``entry.py``) dispatches on the outcome rather than
+inferring it. ``Executed`` carries the fetched-row count and the write report;
+``CaughtUp`` is the no-op marker for a run whose resume window resolved to
+nothing -- no fetch, no writer, no ledger row. ``CaughtUp`` is reachable only on
+the watermark arm, whose window resolution can find nothing to drive; a snapshot
+always executes.
 """
 
 from dataclasses import dataclass
@@ -36,7 +37,8 @@ class CaughtUp:
     """A run that did nothing because its resume window resolved to empty.
 
     No fetch, no writer, no ledger row; carries no fields (the run executor logs the
-    detail). Reachable only on the watermark arm, once window resolution lands.
+    detail). Reachable only on the watermark arm, whose window resolution can
+    resolve to nothing.
     """
 
 

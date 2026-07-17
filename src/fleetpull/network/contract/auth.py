@@ -7,14 +7,13 @@ out of this surface module is what lets the contract face stay free of
 any ``network/auth`` dependency.
 """
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 from fleetpull.network.contract.request import RequestSpec
 
 __all__: list[str] = ['AuthStrategy']
 
 
-@runtime_checkable
 class AuthStrategy(Protocol):
     """Provider-agnostic credential injection (DESIGN.md §8)."""
 

@@ -16,7 +16,6 @@ from fleetpull.endpoints.shared import (
 )
 from fleetpull.exceptions import ConfigurationError, ProviderResponseError
 from fleetpull.model_contract import ResponseModel
-from fleetpull.network.contract import DecodedPage, PageAdvance, RequestSpec
 from fleetpull.orchestrator.drivers import (
     FanOutRequestDriver,
     RequestDriver,
@@ -28,7 +27,8 @@ from fleetpull.orchestrator.outcome import CaughtUp, Executed, RunOutcome
 from fleetpull.orchestrator.runner import BatchObserver
 from fleetpull.roster import RosterDefinition, RosterKey, RosterRegistry
 from fleetpull.storage import WriteResult
-from fleetpull.vocabulary import JsonValue, Provider, QuotaScope
+from fleetpull.vocabulary import Provider, QuotaScope
+from tests.orchestrator.doubles import StubPageDecoder
 from tests.orchestrator.serial_executor import SerialExecutor
 
 VEHICLE_IDS_KEY = RosterKey(Provider.MOTIVE, 'vehicle_ids')
@@ -50,25 +50,13 @@ class _WatermarkModel(ResponseModel):
     occurred_at: datetime
 
 
-class _StubPageDecoder:
-    """A PageDecoder double; the entry never drives it."""
-
-    def first_request(self, spec: RequestSpec) -> RequestSpec:
-        return spec
-
-    def decode_page(self, sent: RequestSpec, envelope: JsonValue) -> DecodedPage:
-        return DecodedPage(
-            records=[], advance=PageAdvance(next_spec=None, durable_progress=None)
-        )
-
-
 def _snapshot_definition() -> EndpointDefinition[_SnapshotModel]:
     """A no-fan-out definition (the vehicles shape)."""
     return EndpointDefinition(
         provider=Provider.MOTIVE,
         name='vehicles',
         spec_builder=StaticGetSpecBuilder(base_url='https://x.test', path='/v1/v'),
-        page_decoder=_StubPageDecoder(),
+        page_decoder=StubPageDecoder(),
         response_model=_SnapshotModel,
         quota_scope=QuotaScope.MOTIVE,
         storage_kind=StorageKind.SINGLE,
@@ -82,7 +70,7 @@ def _fan_out_definition() -> EndpointDefinition[_WatermarkModel]:
         provider=Provider.MOTIVE,
         name='locations',
         spec_builder=StaticGetSpecBuilder(base_url='https://x.test', path='/v3/l'),
-        page_decoder=_StubPageDecoder(),
+        page_decoder=StubPageDecoder(),
         response_model=_WatermarkModel,
         quota_scope=QuotaScope.MOTIVE,
         storage_kind=StorageKind.DATE_PARTITIONED,
@@ -377,7 +365,7 @@ def test_endpoint_that_sources_nothing_and_fans_out_nothing_is_untouched() -> No
         provider=Provider.MOTIVE,
         name='other',
         spec_builder=StaticGetSpecBuilder(base_url='https://x.test', path='/v1/o'),
-        page_decoder=_StubPageDecoder(),
+        page_decoder=StubPageDecoder(),
         response_model=_SnapshotModel,
         quota_scope=QuotaScope.MOTIVE,
         storage_kind=StorageKind.SINGLE,

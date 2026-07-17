@@ -19,15 +19,14 @@ from fleetpull.incremental import DateWindow
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import FetchedPage, TransportClient
 from fleetpull.network.contract import (
-    DecodedPage,
     HttpMethod,
-    PageAdvance,
     PageDecoder,
     RequestSpec,
 )
 from fleetpull.orchestrator.drivers import FanOutRequestDriver, SingleRequestDriver
 from fleetpull.orchestrator.fanout import FetchPool
-from fleetpull.vocabulary import JsonObject, JsonValue, Provider, QuotaScope
+from fleetpull.vocabulary import JsonObject, Provider, QuotaScope
+from tests.orchestrator.doubles import StubPageDecoder
 from tests.orchestrator.serial_executor import SerialExecutor
 
 _PLACEHOLDER = 'vehicle_id'
@@ -45,18 +44,6 @@ def _fan_out(members: list[str]) -> FanOutRequestDriver:
 class _StubModel(ResponseModel):
     id: int
     name: str
-
-
-class _StubPageDecoder:
-    """A PageDecoder double; the stub client bypasses it, so it is never called."""
-
-    def first_request(self, spec: RequestSpec) -> RequestSpec:
-        return spec
-
-    def decode_page(self, sent: RequestSpec, envelope: JsonValue) -> DecodedPage:
-        return DecodedPage(
-            records=[], advance=PageAdvance(next_spec=None, durable_progress=None)
-        )
 
 
 class _StubClient(TransportClient):
@@ -123,7 +110,7 @@ def _definition(
         provider=Provider.MOTIVE,
         name='items',
         spec_builder=spec_builder,
-        page_decoder=_StubPageDecoder(),
+        page_decoder=StubPageDecoder(),
         response_model=_StubModel,
         quota_scope=QuotaScope.MOTIVE,
         storage_kind=StorageKind.SINGLE,

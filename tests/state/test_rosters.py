@@ -67,10 +67,6 @@ class TestIsRosterStale:
         assert is_roster_stale(last, NOW, timedelta(days=1)) is True
 
 
-def _database_path(directory: Path) -> Path:
-    return directory / 'state.sqlite3'
-
-
 def _zero_delta(*members: str) -> RosterDelta:
     """A delta that only upserts ``members`` at absence-count zero (the seed case)."""
     return RosterDelta(
@@ -81,9 +77,9 @@ def _zero_delta(*members: str) -> RosterDelta:
 
 
 @pytest.fixture
-def roster_store(tmp_path: Path) -> RosterStore:
+def roster_store(database_path: Path) -> RosterStore:
     """A RosterStore over a freshly initialized, migrated state database."""
-    database = StateDatabase(_database_path(tmp_path))
+    database = StateDatabase(database_path)
     database.initialize()
     migrate_to_head(database)
     return RosterStore(database)

@@ -107,8 +107,12 @@ def reconcile(
         to_increment = absent
         to_evict = set()
     else:
-        to_increment = {m for m in absent if current[m] + 1 <= eviction_threshold}
-        to_evict = {m for m in absent if current[m] + 1 > eviction_threshold}
+        to_increment = {
+            member for member in absent if current[member] + 1 <= eviction_threshold
+        }
+        to_evict = {
+            member for member in absent if current[member] + 1 > eviction_threshold
+        }
     return RosterDelta(
         to_zero=frozenset(new | reappeared),
         to_increment=frozenset(to_increment),
