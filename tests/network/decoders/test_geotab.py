@@ -1,7 +1,8 @@
 """Tests for fleetpull.network.decoders.geotab.
 
 Feed fixtures upgraded to the 2026-07-09 live captures where shapes
-match (GTA-09's live half); remaining feed bodies are synthetic,
+match (the live-observed caught-up short page); remaining feed bodies
+are synthetic,
 constructed in the verified GetFeed shapes: zeroed-pattern version
 strings, scrubbed ids, real camelCase keys. The seek-paging Get tests
 run on the committed boundary capture

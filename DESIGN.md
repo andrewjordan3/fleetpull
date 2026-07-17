@@ -1047,9 +1047,9 @@ observed-behaviors table below); the build prompts implement them.
 
 ### GeoTab `exception_events` design decisions (2026-07-15)
 
-Settled conversationally from the 2026-07-13 ExceptionEvent capture set
-(earmarked in GEOTAB-AUDIT §3); the build prompt implements them once the
-banked probes (GEOTAB-AUDIT §3, P11) select the paging arm.
+Settled conversationally from the 2026-07-13 ExceptionEvent capture set;
+the paging arm was selected by the 2026-07-15 discrimination probes (the
+observed-behaviors rows below).
 
 1. **`exception_events` ships as the second windowed GeoTab endpoint on the
    trips template** — windowed watermark, date-partitioned, the shared
@@ -1092,7 +1092,8 @@ banked probes (GEOTAB-AUDIT §3, P11) select the paging arm.
    overflow signal is sound only where the endpoint honors requests up to
    the asked size: a lower silent cap would make every page look partial
    and overflow undetectable. Bisection therefore ships for a type only
-   after that type's cap behavior is captured (GEOTAB-AUDIT §3, P13).
+   after that type's cap behavior is captured (done for ExceptionEvent —
+   the observed-behaviors row below).
    Corollary: `resultsLimit` values stay per-leaf constants carrying
    per-type provenance comments — two leaves declaring 5,000 are two
    per-type facts that currently coincide, not one fact stated twice —
@@ -1477,7 +1478,7 @@ fleetpull/
     sections.py    # the run-scoped standalone sections: SyncConfig
                    #   (default_start_date + the package-wide window knobs),
                    #   StorageConfig (dataset_root — its only home), StateConfig
-                   #   (database_path — AUD-13's landing); path fields normalize
+                   #   (database_path); path fields normalize
                    #   through paths.resolve_path at validation
     providers.py   # the provider family: ProviderConfig (quota_scope, rate_limit,
                    #   endpoints), MotiveConfig (api_key, base_url, records_per_page,
@@ -1498,7 +1499,7 @@ fleetpull/
     retry.py       # RetryConfig — attempt budgets, backoff shape, fallback penalty (§7)
     http.py        # HttpConfig — connect/read timeouts, truststore opt-in
     rate_limit.py  # RateLimitConfig — one quota scope's token-bucket budget; each
-                   #   provider config defaults its own (AUDIT AUD-12)
+                   #   provider config defaults its own
   logger/
     setup.py       # package logging setup (setup_logger), driven by LoggerConfig
   network/         # organizational namespace; the surfaces live in the subpackages
@@ -1657,7 +1658,7 @@ fleetpull/
 The package root holds user-facing modules only; internal code lives in
 subpackages. Settled: ALL Pydantic models parsing user-provided YAML
 centralize in `config/` — including `RateLimitConfig`, migrated there from
-`network/limits/` ahead of the YAML loader (audit fix wave 1, AUD-12):
+`network/limits/` ahead of the YAML loader (audit fix wave 1):
 provider defaults live on the provider configs (`MotiveConfig.rate_limit`),
 and `rate_limits_from_configs` derives the limiter registry's per-scope map,
 so no composition root invents rate-limit numbers. Placement for everything else is settled the same
@@ -2300,17 +2301,20 @@ resolution (item 1, done).
    typed `Endpoints` catalog, `sync` as the config-driven verb whose full
    vocabulary is item 6's schema work, and the fluent/method-chaining
    pattern retired.
-4. **Pre-API audit, anchored to that design (done — `AUDIT.md`,
-   2026-07-06).** The audit swept the composition path the API will sit on,
-   produced the wiring inventory, the state-free fetch trace (clean — the
-   item-5 build map), and sixteen verdicted findings; audit fix wave 1
-   cleared everything pre-item-5 (the SUCCESS-path parse escape, the
-   rate-limit config migration and runtime defaults, the roster feeder-mode
-   guards, the empty-member filter, the `JsonObject` relocation to
-   `vocabulary/`, the `ResponseModel` bound, the carrier-contract rename,
-   and the script comment drifts). The item-6-owned findings (roster
-   discovery, the state DB path key, `runs.row_count` semantics, the
-   rate-limit YAML key) remain open in `AUDIT.md`.
+4. **Pre-API audit, anchored to that design (done, 2026-07-06).** The
+   audit swept the composition path the API will sit on, produced the
+   wiring inventory, the state-free fetch trace (clean — the item-5 build
+   map), and sixteen verdicted findings; audit fix wave 1 cleared
+   everything pre-item-5 (the SUCCESS-path parse escape, the rate-limit
+   config migration and runtime defaults, the roster feeder-mode guards,
+   the empty-member filter, the `JsonObject` relocation to `vocabulary/`,
+   the `ResponseModel` bound, the carrier-contract rename, and the script
+   comment drifts). The item-6-owned findings (roster discovery, the
+   state DB path key, `runs.row_count` semantics, the rate-limit YAML
+   key) closed with the Sync vertical. Both point-in-time audit reports
+   (`AUDIT.md` and the GeoTab readiness audit) were retired 2026-07-17,
+   every finding resolved and every settled fact migrated into §8's
+   observed-behaviors table and decision blocks.
 5. **Build the fetch side of the public API (§10), after the audit (done —
    `fleetpull/api/`, 2026-07-07):** the `Endpoints` catalog (a static
    committed module plus the two-way parity discipline test against the
@@ -2361,7 +2365,9 @@ resolution (item 1, done).
    the proven probe-then-build vertical. Samsara `vehicles` shipped
    2026-07-17 (the third provider's first vertical, same-day
    probe-to-build: cursor walk proven live per §8's rows, the
-   foundation and the vertical in one branch).*
+   foundation and the vertical in one branch).* The per-endpoint
+   inventory and port queue are tracked in `ENDPOINTS.md` (added
+   2026-07-17), updated in the same change as any endpoint addition.
 8. **Polish phase, gated on a stable public surface:** full-tree ceremony
    audit, test-coverage audit, documentation audit, the real usage-driven
    README, multi-platform CI (a Windows leg would have caught the

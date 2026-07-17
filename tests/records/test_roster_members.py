@@ -26,7 +26,7 @@ class TestExtractRosterMembers:
     def test_null_and_empty_members_are_filtered_loudly(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        # The AUD-14 edge: null and empty-string ids are unfetchable by
+        # The garbage-member edge: null and empty-string ids are unfetchable by
         # construction, so they are excluded with a warning rather than
         # raised or passed through to become unbuildable URLs.
         frame = pl.DataFrame(
