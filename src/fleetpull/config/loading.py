@@ -89,9 +89,10 @@ def with_environment_credentials(document: dict[str, object]) -> dict[str, objec
     Applied per provider from ``PROVIDER_CREDENTIAL_ENV_VARS``, only when
     the credential is absent from the YAML (a YAML literal wins) and the
     variable carries a non-empty value (empty counts as unset). The shape
-    is per-provider (the mapping's documented asymmetry): Motive's
-    variable supplies the whole credential (``api_key``); GeoTab's fills
-    only the ``password`` field of a YAML-present ``auth`` section --
+    is per-provider (the mapping's documented asymmetry): Motive's and
+    Samsara's variables each supply the whole credential (``api_key``);
+    GeoTab's fills only the ``password`` field of a YAML-present ``auth``
+    section --
     username, database, and server are not secrets and always come from
     the YAML, so an absent ``auth`` section is left for the enablement
     guard to reject. The value is wrapped in ``SecretStr`` here, so the
@@ -130,6 +131,14 @@ def with_environment_credentials(document: dict[str, object]) -> dict[str, objec
                     **geotab_section,
                     'auth': {**auth_section, 'password': SecretStr(geotab_value)},
                 }
+    samsara_section = merged_providers.get('samsara')
+    if isinstance(samsara_section, dict) and 'api_key' not in samsara_section:
+        samsara_value = os.environ.get(PROVIDER_CREDENTIAL_ENV_VARS['samsara'])
+        if samsara_value:
+            merged_providers['samsara'] = {
+                **samsara_section,
+                'api_key': SecretStr(samsara_value),
+            }
     return {**document, 'providers': merged_providers}
 
 

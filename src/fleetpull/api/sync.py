@@ -43,6 +43,7 @@ from fleetpull.config import (
     GeotabAuthConfig,
     GeotabConfig,
     MotiveConfig,
+    SamsaraConfig,
 )
 from fleetpull.endpoints import (
     build_endpoint_registry,
@@ -86,7 +87,7 @@ __all__: list[str] = ['Sync']
 logger = logging.getLogger(__name__)
 
 # The concrete provider-section union: Samsara widens it as it ports.
-type _ProviderSection = MotiveConfig | GeotabConfig
+type _ProviderSection = MotiveConfig | GeotabConfig | SamsaraConfig
 
 # The catalog as a lookup table: every public identity by registry key.
 _CATALOG: dict[tuple[Provider, str], EndpointIdentity] = {
@@ -241,8 +242,8 @@ class Sync:
         A validated config guarantees a provider with endpoints has a
         credential (``require_provider_credentials``), so enabled reduces to
         "endpoints non-empty". Typed as the concrete section union in a fixed
-        provider order (Motive, then GeoTab -- ``ProvidersConfig`` field
-        order); Samsara widens the union as it ports.
+        provider order (Motive, GeoTab, Samsara -- ``ProvidersConfig`` field
+        order).
         """
         return [
             (provider, section)
@@ -257,6 +258,7 @@ class Sync:
         return [
             (Provider.MOTIVE, self._config.providers.motive),
             (Provider.GEOTAB, self._config.providers.geotab),
+            (Provider.SAMSARA, self._config.providers.samsara),
         ]
 
     def _discovery_provider_configs(self) -> list[_ProviderSection]:
@@ -273,6 +275,7 @@ class Sync:
         defaults: dict[Provider, _ProviderSection] = {
             Provider.MOTIVE: MotiveConfig(),
             Provider.GEOTAB: GeotabConfig(),
+            Provider.SAMSARA: SamsaraConfig(),
         }
         return [
             section if section is not None else defaults[provider]
@@ -305,9 +308,10 @@ def _validated_selection(config: FleetpullConfig) -> list[tuple[Provider, str]]:
         ConfigurationError: A selected name is not in the public catalog, or
             zero providers are enabled.
     """
-    sections: list[tuple[Provider, MotiveConfig | GeotabConfig | None]] = [
+    sections: list[tuple[Provider, _ProviderSection | None]] = [
         (Provider.MOTIVE, config.providers.motive),
         (Provider.GEOTAB, config.providers.geotab),
+        (Provider.SAMSARA, config.providers.samsara),
     ]
     selection: list[tuple[Provider, str]] = []
     for provider, section in sections:
@@ -391,11 +395,12 @@ def _required_credential(
     The enablement validator guarantees it for any validated config; this
     trips loudly if that invariant is ever bypassed by direct construction.
     The return is the ingress ``AuthInput`` shape for the section's provider:
-    Motive's ``SecretStr`` key, GeoTab's four-field credential whole (its
-    password's ``SecretStr`` passes straight through -- no unwrap/rewrap).
+    the ``SecretStr`` key for the static-key providers (Motive, Samsara),
+    GeoTab's four-field credential whole (its password's ``SecretStr``
+    passes straight through -- no unwrap/rewrap).
     """
     match config:
-        case MotiveConfig():
+        case MotiveConfig() | SamsaraConfig():
             credential: SecretStr | GeotabAuthConfig | None = config.api_key
         case GeotabConfig():
             credential = config.auth
