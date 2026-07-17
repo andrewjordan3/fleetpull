@@ -1,14 +1,16 @@
 # src/fleetpull/storage/frames.py
-"""Frame operations the writers compose: the exact-duplicate dedup and the
+"""Frame operations the write path composes: the exact-duplicate dedup and the
 half-open window-membership predicate.
 
-Two pure DataFrame helpers shared across the dataset writers. ``drop_exact_
-duplicates`` is the write-time exact dedup (DESIGN §6): every writer runs it on its
-finalized frame, clearing byte-identical rows -- a feed's pagination / refetch
-duplicates most importantly, a cheap safety net elsewhere. ``in_window`` is the
-half-open ``[start, end)`` membership predicate a window-clearing writer applies in
-both polarities (delete the existing window's rows, keep the fresh fetch's
-in-window rows) so the boundary is defined in exactly one place.
+Two pure DataFrame helpers. ``drop_exact_duplicates`` is the write-time exact
+dedup (DESIGN §6): every writer runs it on its finalized frame, clearing
+byte-identical rows -- a feed's pagination / refetch duplicates most importantly,
+a cheap safety net elsewhere. ``in_window`` is the half-open ``[start, end)``
+membership predicate that defines the window boundary in exactly one place: its
+consumer today is the orchestrator's batch shaping, which keeps a fetch's
+in-window rows before they reach a writer; the future single-file window-clearing
+cells will apply it in both polarities (delete the existing window's rows, keep
+the fresh fetch's in-window rows) from the same rule.
 """
 
 import polars as pl
@@ -40,11 +42,12 @@ def in_window(event_time_column: str, window: DateWindow) -> pl.Expr:
     Returns the boolean Polars expression true for rows whose
     ``event_time_column`` falls in ``window`` -- ``>= window.start`` and
     ``< window.end``, the half-open boundary made literal. It is a *predicate*,
-    not a filter: a window-clearing writer applies it in both polarities from the
-    one rule -- ``frame.filter(~in_window(col, w))`` to delete a window's rows
-    from the existing on-disk frame, ``frame.filter(in_window(col, w))`` to keep
-    only the in-window rows of a fresh fetch -- so the boundary is defined in
-    exactly one place and "removal" stays the caller's concern (DESIGN §4).
+    not a filter, so the boundary is defined in exactly one place and "removal"
+    stays the caller's concern (DESIGN §4). Its consumer today is the
+    orchestrator's batch shaping, which keeps a fetch's in-window rows with
+    ``frame.filter(in_window(col, w))``; the future single-file window-clearing
+    cells will add the other polarity, ``frame.filter(~in_window(col, w))``, to
+    delete a window's rows from the existing on-disk frame.
 
     The full ``[start, end)`` predicate, not merely ``>= start``: in steady state
     ``end`` is ``now`` and ``< end`` binds nothing, but a historical backfill

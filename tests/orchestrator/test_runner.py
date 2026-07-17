@@ -1,6 +1,5 @@
 """Tests for fleetpull.orchestrator.runner."""
 
-from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -16,7 +15,6 @@ from fleetpull.config import (
 from fleetpull.endpoints.shared import (
     EndpointDefinition,
     FeedMode,
-    ResumeValue,
     SnapshotMode,
     StaticGetSpecBuilder,
     StorageKind,
@@ -29,8 +27,7 @@ from fleetpull.incremental import (
     IncrementalCursor,
 )
 from fleetpull.model_contract import ResponseModel
-from fleetpull.network.client import FetchedPage, TransportClient
-from fleetpull.network.contract import DecodedPage, PageAdvance, RequestSpec
+from fleetpull.network.client import TransportClient
 from fleetpull.orchestrator.outcome import CaughtUp, Executed
 from fleetpull.orchestrator.runner import (
     ClientSource,
@@ -38,9 +35,15 @@ from fleetpull.orchestrator.runner import (
     EndpointRunner,
     RunStateAccess,
 )
-from fleetpull.state import StateDatabase, WorkUnitStore, migrate_to_head
 from fleetpull.timing import FrozenClock
-from fleetpull.vocabulary import JsonObject, JsonValue, Provider, QuotaScope
+from fleetpull.vocabulary import JsonObject, Provider, QuotaScope
+from tests.orchestrator.doubles import (
+    CannedDriver,
+    FailingDriver,
+    StubClientSource,
+    StubPageDecoder,
+    open_work_unit_store,
+)
 
 # The _make_runner default clock instant, and the trailing edge it implies for a
 # one-day cutoff: midnight(2026-06-16) - 1 day.
@@ -55,35 +58,6 @@ class _SnapshotModel(ResponseModel):
 
 class _WatermarkModel(ResponseModel):
     occurred_at: datetime
-
-
-class _StubPageDecoder:
-    """A PageDecoder double; the canned driver bypasses it, so it is never called."""
-
-    def first_request(self, spec: RequestSpec) -> RequestSpec:
-        return spec
-
-    def decode_page(self, sent: RequestSpec, envelope: JsonValue) -> DecodedPage:
-        return DecodedPage(
-            records=[], advance=PageAdvance(next_spec=None, durable_progress=None)
-        )
-
-
-class _StubClient(TransportClient):
-    """A hollow client; the canned driver never calls it (no ``super().__init__``)."""
-
-    def __init__(self) -> None:
-        pass
-
-
-class _StubClientSource:
-    """A ClientSource handing a hollow client for any provider."""
-
-    def __init__(self) -> None:
-        self._client = _StubClient()
-
-    def client_for(self, provider: Provider) -> TransportClient:
-        return self._client
 
 
 class _EmptyClientSource:
@@ -154,34 +128,6 @@ class _StubCursorAccess:
         self.set_calls.append((provider, endpoint, cursor))
 
 
-class _CannedDriver:
-    """A RequestDriver yielding pre-set record pages, ignoring the client."""
-
-    def __init__(self, batches: list[list[JsonObject]]) -> None:
-        self._batches = batches
-
-    def record_batches(
-        self,
-        definition: EndpointDefinition[ResponseModel],
-        client: TransportClient,
-        resume: ResumeValue,
-    ) -> Iterator[FetchedPage]:
-        for batch in self._batches:
-            yield FetchedPage(records=batch, durable_progress=None)
-
-
-class _FailingDriver:
-    """A RequestDriver that raises when driven."""
-
-    def record_batches(
-        self,
-        definition: EndpointDefinition[ResponseModel],
-        client: TransportClient,
-        resume: ResumeValue,
-    ) -> Iterator[FetchedPage]:
-        raise RuntimeError('fetch blew up')
-
-
 def _snapshot_definition() -> EndpointDefinition[_SnapshotModel]:
     return EndpointDefinition(
         provider=Provider.MOTIVE,
@@ -189,7 +135,7 @@ def _snapshot_definition() -> EndpointDefinition[_SnapshotModel]:
         spec_builder=StaticGetSpecBuilder(
             base_url='https://x.test', path='/v1/vehicles'
         ),
-        page_decoder=_StubPageDecoder(),
+        page_decoder=StubPageDecoder(),
         response_model=_SnapshotModel,
         quota_scope=QuotaScope.MOTIVE,
         storage_kind=StorageKind.SINGLE,
@@ -202,7 +148,7 @@ def _watermark_definition() -> EndpointDefinition[_WatermarkModel]:
         provider=Provider.MOTIVE,
         name='locations',
         spec_builder=StaticGetSpecBuilder(base_url='https://x.test', path='/v3/loc'),
-        page_decoder=_StubPageDecoder(),
+        page_decoder=StubPageDecoder(),
         response_model=_WatermarkModel,
         quota_scope=QuotaScope.MOTIVE,
         storage_kind=StorageKind.DATE_PARTITIONED,
@@ -216,20 +162,12 @@ def _feed_definition() -> EndpointDefinition[_SnapshotModel]:
         provider=Provider.MOTIVE,
         name='feed',
         spec_builder=StaticGetSpecBuilder(base_url='https://x.test', path='/v1/feed'),
-        page_decoder=_StubPageDecoder(),
+        page_decoder=StubPageDecoder(),
         response_model=_SnapshotModel,
         quota_scope=QuotaScope.MOTIVE,
         storage_kind=StorageKind.SINGLE,
         sync_mode=FeedMode(),
     )
-
-
-def _unit_store(tmp_path: Path, clock: FrozenClock) -> WorkUnitStore:
-    """A real work-unit store over a migrated tmp database."""
-    database = StateDatabase(tmp_path / 'state.sqlite3')
-    database.initialize()
-    migrate_to_head(database)
-    return WorkUnitStore(database, clock)
 
 
 # A test construction helper centralizing the runner's collaborators plus the
@@ -246,11 +184,11 @@ def _make_runner(  # noqa: PLR0913
 ) -> EndpointRunner:
     run_clock = clock or FrozenClock(start_time_utc=_CLOCK_NOW)
     return EndpointRunner(
-        client_source or _StubClientSource(),
+        client_source or StubClientSource(),
         RunStateAccess(
             recorder=recorder,
             cursors=cursor_access or _StubCursorAccess(),
-            units=_unit_store(tmp_path, run_clock),
+            units=open_work_unit_store(tmp_path, run_clock),
         ),
         run_clock,
         FleetpullConfig(
@@ -269,7 +207,7 @@ def test_snapshot_run_executes_writes_and_records(tmp_path: Path) -> None:
     recorder = _RecordingRecorder()
     runner = _make_runner(recorder, tmp_path)
     records: list[JsonObject] = [{'id': 1, 'name': 'a'}, {'id': 2, 'name': 'b'}]
-    outcome = runner.run(_snapshot_definition(), _CannedDriver([records]))
+    outcome = runner.run(_snapshot_definition(), CannedDriver([records]))
     assert isinstance(outcome, Executed)
     assert outcome.records_fetched == 2
     assert outcome.write.rows_written == 2
@@ -283,7 +221,7 @@ def test_snapshot_run_executes_writes_and_records(tmp_path: Path) -> None:
 def test_empty_snapshot_writes_empty_dataset_and_completes(tmp_path: Path) -> None:
     recorder = _RecordingRecorder()
     runner = _make_runner(recorder, tmp_path)
-    outcome = runner.run(_snapshot_definition(), _CannedDriver([[]]))
+    outcome = runner.run(_snapshot_definition(), CannedDriver([[]]))
     assert isinstance(outcome, Executed)
     assert outcome.records_fetched == 0
     assert recorder.completed == [(1, 0)]
@@ -296,7 +234,7 @@ def test_fetch_failure_records_failure_and_reraises(tmp_path: Path) -> None:
     recorder = _RecordingRecorder()
     runner = _make_runner(recorder, tmp_path)
     with pytest.raises(RuntimeError, match='fetch blew up'):
-        runner.run(_snapshot_definition(), _FailingDriver())
+        runner.run(_snapshot_definition(), FailingDriver())
     assert recorder.completed == []
     assert len(recorder.failed) == 1
 
@@ -306,7 +244,7 @@ def test_validation_failure_records_failure_and_reraises(tmp_path: Path) -> None
     runner = _make_runner(recorder, tmp_path)
     bad_batch: list[JsonObject] = [{'name': 'missing id'}]
     with pytest.raises(ProviderResponseError):
-        runner.run(_snapshot_definition(), _CannedDriver([bad_batch]))
+        runner.run(_snapshot_definition(), CannedDriver([bad_batch]))
     assert recorder.completed == []
     assert len(recorder.failed) == 1
 
@@ -316,7 +254,7 @@ def test_completion_failure_records_failure_and_reraises(tmp_path: Path) -> None
     runner = _make_runner(recorder, tmp_path)
     records: list[JsonObject] = [{'id': 1, 'name': 'a'}]
     with pytest.raises(RuntimeError, match='completion write failed'):
-        runner.run(_snapshot_definition(), _CannedDriver([records]))
+        runner.run(_snapshot_definition(), CannedDriver([records]))
     assert recorder.completed == []
     assert len(recorder.failed) == 1
 
@@ -325,14 +263,14 @@ def test_fail_run_failure_does_not_mask_original_error(tmp_path: Path) -> None:
     recorder = _FailRunFailingRecorder()
     runner = _make_runner(recorder, tmp_path)
     with pytest.raises(RuntimeError, match='fetch blew up'):
-        runner.run(_snapshot_definition(), _FailingDriver())
+        runner.run(_snapshot_definition(), FailingDriver())
 
 
 def test_unresolvable_client_opens_no_run(tmp_path: Path) -> None:
     recorder = _RecordingRecorder()
     runner = _make_runner(recorder, tmp_path, client_source=_EmptyClientSource())
     with pytest.raises(ConfigurationError):
-        runner.run(_snapshot_definition(), _CannedDriver([]))
+        runner.run(_snapshot_definition(), CannedDriver([]))
     assert recorder.started == []
 
 
@@ -340,7 +278,7 @@ def test_feed_mode_is_not_yet_executable(tmp_path: Path) -> None:
     recorder = _RecordingRecorder()
     runner = _make_runner(recorder, tmp_path)
     with pytest.raises(NotImplementedError):
-        runner.run(_feed_definition(), _CannedDriver([]))
+        runner.run(_feed_definition(), CannedDriver([]))
 
 
 class TestBatchObserver:
@@ -355,7 +293,7 @@ class TestBatchObserver:
         observed: list[pl.DataFrame] = []
         records: list[JsonObject] = [{'id': 1, 'name': 'a'}, {'id': 2, 'name': 'b'}]
         outcome = runner.run(
-            _snapshot_definition(), _CannedDriver([records]), observed.append
+            _snapshot_definition(), CannedDriver([records]), observed.append
         )
         assert isinstance(outcome, Executed)
         assert [frame.columns for frame in observed] == [['id', 'name']]
@@ -371,7 +309,7 @@ class TestBatchObserver:
             datetime(2026, 6, 11, 8, tzinfo=UTC),  # out of window: filtered
             datetime(2026, 6, 13, 9, tzinfo=UTC),  # in window
         )
-        runner.run(_watermark_definition(), _CannedDriver([batch]), observed.append)
+        runner.run(_watermark_definition(), CannedDriver([batch]), observed.append)
         assert len(observed) == 1
         assert observed[0].height == 1
 
@@ -385,7 +323,7 @@ class TestBatchObserver:
         records: list[JsonObject] = [{'id': 1, 'name': 'a'}]
         with pytest.raises(ValueError, match='observer blew up'):
             runner.run(
-                _snapshot_definition(), _CannedDriver([records]), exploding_observer
+                _snapshot_definition(), CannedDriver([records]), exploding_observer
             )
         assert recorder.completed == []
         assert len(recorder.failed) == 1
@@ -408,7 +346,7 @@ class TestWatermarkRun:
             datetime(2026, 6, 13, 9, tzinfo=UTC),
             datetime(2026, 6, 14, 10, tzinfo=UTC),
         )
-        outcome = runner.run(_watermark_definition(), _CannedDriver([batch]))
+        outcome = runner.run(_watermark_definition(), CannedDriver([batch]))
         assert isinstance(outcome, Executed)
         assert outcome.records_fetched == 3
         assert recorder.windows == [(datetime(2026, 6, 12, tzinfo=UTC), _TRAILING_EDGE)]
@@ -431,7 +369,7 @@ class TestWatermarkRun:
         runner = _make_runner(recorder, tmp_path, clock=clock, cursor_access=cursor)
         outcome = runner.run(
             _watermark_definition(),
-            _CannedDriver([_wm_batch(datetime(2026, 6, 16, 9, tzinfo=UTC))]),
+            CannedDriver([_wm_batch(datetime(2026, 6, 16, 9, tzinfo=UTC))]),
         )
         assert isinstance(outcome, CaughtUp)
         assert recorder.started == []
@@ -450,13 +388,43 @@ class TestWatermarkRun:
             datetime(2026, 6, 12, 8, tzinfo=UTC),
             datetime(2026, 6, 14, 10, tzinfo=UTC),
         )
-        runner.run(_watermark_definition(), _CannedDriver([batch]))
+        runner.run(_watermark_definition(), CannedDriver([batch]))
         assert recorder.windows == [(datetime(2026, 6, 12, tzinfo=UTC), _TRAILING_EDGE)]
         assert cursor.set_calls == [
             (
                 Provider.MOTIVE,
                 'locations',
                 DateWatermark(watermark=datetime(2026, 6, 14, 10, tzinfo=UTC)),
+            )
+        ]
+
+    def test_no_cursor_resumes_from_the_coverage_frontier_without_lookback(
+        self, tmp_path: Path
+    ) -> None:
+        # Resume arm 2 (DESIGN section 4): no stored cursor, but a succeeded
+        # run's coverage frontier exists. The window starts at the frontier
+        # floored to its UTC midnight -- no lookback applies (that is arm 1's
+        # re-fetch margin) and the cold-start anchor is outranked. A
+        # lookback-applied start would be 2026-06-12; an arm-3 start would be
+        # the 2026-06-10 anchor.
+        recorder = _RecordingRecorder()
+        recorder.frontier = datetime(2026, 6, 13, 4, tzinfo=UTC)
+        cursor = _StubCursorAccess()
+        runner = _make_runner(
+            recorder,
+            tmp_path,
+            cursor_access=cursor,
+            default_start_date=date(2026, 6, 10),
+        )
+        batch = _wm_batch(datetime(2026, 6, 14, 9, tzinfo=UTC))
+        outcome = runner.run(_watermark_definition(), CannedDriver([batch]))
+        assert isinstance(outcome, Executed)
+        assert recorder.windows == [(datetime(2026, 6, 13, tzinfo=UTC), _TRAILING_EDGE)]
+        assert cursor.set_calls == [
+            (
+                Provider.MOTIVE,
+                'locations',
+                DateWatermark(watermark=datetime(2026, 6, 14, 9, tzinfo=UTC)),
             )
         ]
 
@@ -482,7 +450,7 @@ class TestWatermarkRun:
             datetime(2026, 6, 13, 12, 0, tzinfo=UTC),
             datetime(2026, 6, 13, 23, 59, 59, tzinfo=UTC),
         )
-        outcome = runner.run(_watermark_definition(), _CannedDriver([batch]))
+        outcome = runner.run(_watermark_definition(), CannedDriver([batch]))
         assert isinstance(outcome, Executed)
         assert recorder.windows == [(datetime(2026, 6, 13, tzinfo=UTC), _TRAILING_EDGE)]
         assert outcome.records_fetched == 3
@@ -516,7 +484,7 @@ class TestWatermarkRun:
         )
         runner = _make_runner(recorder, tmp_path, cursor_access=cursor)
         refetched = _wm_batch(datetime(2026, 6, 13, 8, tzinfo=UTC))
-        outcome = runner.run(_watermark_definition(), _CannedDriver([refetched]))
+        outcome = runner.run(_watermark_definition(), CannedDriver([refetched]))
         assert isinstance(outcome, Executed)
         assert outcome.write.deleted_partitions == []
         assert (prior_partition / 'part.parquet').exists()
@@ -532,7 +500,7 @@ class TestWatermarkRun:
             datetime(2026, 6, 13, 13, tzinfo=UTC),
             datetime(2026, 6, 14, 9, tzinfo=UTC),
         )
-        runner.run(_watermark_definition(), _CannedDriver([batch]))
+        runner.run(_watermark_definition(), CannedDriver([batch]))
         assert cursor.set_calls == []
         assert recorder.completed == [(1, 2)]
 
@@ -545,7 +513,7 @@ class TestWatermarkRun:
             cursor_access=cursor,
             default_start_date=date(2026, 6, 12),
         )
-        outcome = runner.run(_watermark_definition(), _CannedDriver([[]]))
+        outcome = runner.run(_watermark_definition(), CannedDriver([[]]))
         assert isinstance(outcome, Executed)
         assert outcome.records_fetched == 0
         assert cursor.set_calls == []
@@ -565,7 +533,7 @@ class TestWatermarkRun:
             datetime(2026, 6, 13, 9, tzinfo=UTC),  # in
             datetime(2026, 6, 15, 1, tzinfo=UTC),  # at/after end (06-15): out
         )
-        outcome = runner.run(_watermark_definition(), _CannedDriver([batch]))
+        outcome = runner.run(_watermark_definition(), CannedDriver([batch]))
         assert isinstance(outcome, Executed)
         assert outcome.records_fetched == 1
         assert cursor.set_calls == [
@@ -587,7 +555,7 @@ class TestWatermarkRun:
         )
         runner = _make_runner(recorder, tmp_path, cursor_access=cursor)
         with pytest.raises(ConfigurationError, match='future'):
-            runner.run(_watermark_definition(), _CannedDriver([]))
+            runner.run(_watermark_definition(), CannedDriver([]))
         assert recorder.started == []
         assert cursor.set_calls == []
 
@@ -602,7 +570,7 @@ class TestWatermarkRun:
         )
         batch = _wm_batch(datetime(2026, 6, 17, 8, tzinfo=UTC))  # after now (06-16)
         with pytest.raises(ProviderResponseError):
-            runner.run(_watermark_definition(), _CannedDriver([batch]))
+            runner.run(_watermark_definition(), CannedDriver([batch]))
         assert len(recorder.failed) == 1
         assert recorder.completed == []
         assert cursor.set_calls == []
@@ -612,14 +580,14 @@ class TestWatermarkRun:
         cursor = _StubCursorAccess(FeedToken(from_version='v1'))
         runner = _make_runner(recorder, tmp_path, cursor_access=cursor)
         with pytest.raises(ConfigurationError, match='feed cursor'):
-            runner.run(_watermark_definition(), _CannedDriver([]))
+            runner.run(_watermark_definition(), CannedDriver([]))
         assert recorder.started == []
 
     def test_fetch_failure_records_failure_and_reraises(self, tmp_path: Path) -> None:
         recorder = _RecordingRecorder()
         runner = _make_runner(recorder, tmp_path, default_start_date=date(2026, 6, 12))
         with pytest.raises(RuntimeError, match='fetch blew up'):
-            runner.run(_watermark_definition(), _FailingDriver())
+            runner.run(_watermark_definition(), FailingDriver())
         assert recorder.completed == []
         assert len(recorder.failed) == 1
 
@@ -630,7 +598,7 @@ class TestWatermarkRun:
         runner = _make_runner(recorder, tmp_path, default_start_date=date(2026, 6, 12))
         bad_batch: list[JsonObject] = [{'wrong': 'shape'}]
         with pytest.raises(ProviderResponseError):
-            runner.run(_watermark_definition(), _CannedDriver([bad_batch]))
+            runner.run(_watermark_definition(), CannedDriver([bad_batch]))
         assert recorder.completed == []
         assert len(recorder.failed) == 1
 
@@ -647,7 +615,7 @@ class TestWatermarkRun:
         )
         batch = _wm_batch(datetime(2026, 6, 13, 9, tzinfo=UTC))
         with pytest.raises(RuntimeError, match='completion write failed'):
-            runner.run(_watermark_definition(), _CannedDriver([batch]))
+            runner.run(_watermark_definition(), CannedDriver([batch]))
         assert cursor.set_calls == [
             (
                 Provider.MOTIVE,
@@ -664,4 +632,4 @@ class TestWatermarkRun:
         recorder = _FailRunFailingRecorder()
         runner = _make_runner(recorder, tmp_path, default_start_date=date(2026, 6, 12))
         with pytest.raises(RuntimeError, match='fetch blew up'):
-            runner.run(_watermark_definition(), _FailingDriver())
+            runner.run(_watermark_definition(), FailingDriver())

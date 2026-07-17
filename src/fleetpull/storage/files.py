@@ -2,9 +2,10 @@
 """Storage file-path construction: the parquet-format-specific paths under an
 endpoint directory.
 
-Pure path arithmetic, no filesystem access. The single-layout data file and the
-temp sibling used for atomic writes live here -- storage-specific, unlike the
-shared endpoint-directory construction in ``paths``. The temp sibling sits in the
+Pure path arithmetic, no filesystem access. The single-layout data file, the
+date-partitioned layout's partition / part / staging paths, and the temp sibling
+used for atomic writes live here -- storage-specific, unlike the shared
+endpoint-directory construction in ``paths``. The temp sibling sits in the
 target's own directory so the rename that follows is same-filesystem and
 therefore atomic.
 """

@@ -24,8 +24,8 @@ a fan-out over this roster covers vehicles that were active during a
 historical window even if they are inactive today.
 """
 
-import logging
 from datetime import timedelta
+from typing import Final
 
 from fleetpull.config import MotiveConfig
 from fleetpull.endpoints.shared import (
@@ -41,22 +41,20 @@ from fleetpull.vocabulary import Provider, QuotaScope
 
 __all__: list[str] = ['VEHICLE_IDS_ROSTER', 'build_endpoint']
 
-logger = logging.getLogger(__name__)
-
-_VEHICLES_PATH: str = '/v1/vehicles'
-_VEHICLES_LIST_KEY: str = 'vehicles'
-_VEHICLES_ITEM_KEY: str = 'vehicle'
+_VEHICLES_PATH: Final[str] = '/v1/vehicles'
+_VEHICLES_LIST_KEY: Final[str] = 'vehicles'
+_VEHICLES_ITEM_KEY: Final[str] = 'vehicle'
 
 # The fleet's membership changes on the order of days, so a daily re-list
 # keeps the roster current without spending a full vehicles listing on
 # every sync.
-_VEHICLE_IDS_MAX_AGE: timedelta = timedelta(days=1)
+_VEHICLE_IDS_MAX_AGE: Final[timedelta] = timedelta(days=1)
 
 # Eviction hysteresis (DESIGN §3): vehicle ids are permanent, absent-means-
 # empty keys, so eviction is an efficiency lever (stop fanning over
 # long-retired vehicles), not a correctness one. Three consecutive absent
 # listings tolerate a transient provider omission before dropping a member.
-_VEHICLE_IDS_EVICTION_THRESHOLD: int = 3
+_VEHICLE_IDS_EVICTION_THRESHOLD: Final[int] = 3
 
 # The Motive vehicle_ids roster: fed by this module's vehicles listing, read
 # by the vehicle_locations fan-out (which carries only the RosterKey).

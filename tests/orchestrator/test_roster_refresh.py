@@ -22,18 +22,14 @@ from fleetpull.exceptions import (
 )
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import FetchedPage, TransportClient
-from fleetpull.network.contract import (
-    DecodedPage,
-    PageAdvance,
-    PageDecoder,
-    RequestSpec,
-)
+from fleetpull.network.contract import PageDecoder, RequestSpec
 from fleetpull.orchestrator.roster_refresh import RosterRefreshCoordinator
 from fleetpull.records import extract_roster_members
 from fleetpull.roster import RosterDefinition, RosterKey
 from fleetpull.state import RosterDelta
 from fleetpull.timing import FrozenClock
-from fleetpull.vocabulary import JsonObject, JsonValue, Provider, QuotaScope
+from fleetpull.vocabulary import JsonObject, Provider, QuotaScope
+from tests.orchestrator.doubles import StubPageDecoder
 
 _NOW = datetime(2026, 6, 16, 12, 0, tzinfo=UTC)
 _MAX_AGE = timedelta(days=1)
@@ -47,18 +43,6 @@ class _Vehicle(ResponseModel):
 class _TimestampedVehicle(ResponseModel):
     vehicle_id: str
     occurred_at: datetime
-
-
-class _StubPageDecoder:
-    """A PageDecoder double; the canned client bypasses it, so it is never called."""
-
-    def first_request(self, spec: RequestSpec) -> RequestSpec:
-        return spec
-
-    def decode_page(self, sent: RequestSpec, envelope: JsonValue) -> DecodedPage:
-        return DecodedPage(
-            records=[], advance=PageAdvance(next_spec=None, durable_progress=None)
-        )
 
 
 class _CannedClient(TransportClient):
@@ -147,7 +131,7 @@ def _snapshot_feeder() -> EndpointDefinition[ResponseModel]:
         provider=Provider.MOTIVE,
         name='vehicles',
         spec_builder=StaticGetSpecBuilder(base_url='https://api.test', path='/v'),
-        page_decoder=_StubPageDecoder(),
+        page_decoder=StubPageDecoder(),
         response_model=_Vehicle,
         quota_scope=QuotaScope.MOTIVE,
         storage_kind=StorageKind.SINGLE,
@@ -160,7 +144,7 @@ def _watermark_feeder() -> EndpointDefinition[ResponseModel]:
         provider=Provider.MOTIVE,
         name='vehicle_locations',
         spec_builder=StaticGetSpecBuilder(base_url='https://api.test', path='/v'),
-        page_decoder=_StubPageDecoder(),
+        page_decoder=StubPageDecoder(),
         response_model=_TimestampedVehicle,
         quota_scope=QuotaScope.MOTIVE,
         storage_kind=StorageKind.DATE_PARTITIONED,

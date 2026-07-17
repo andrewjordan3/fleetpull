@@ -17,7 +17,6 @@ partition tripwire — does the trimming. A pad only ever widens what is
 fetched, never what is written.
 """
 
-import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
@@ -28,8 +27,6 @@ from fleetpull.network.contract import HttpMethod, RequestSpec
 from fleetpull.timing import to_utc_date_string
 
 __all__: list[str] = ['MotiveFleetDateRangeSpecBuilder']
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)

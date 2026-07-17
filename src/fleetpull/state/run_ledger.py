@@ -31,6 +31,7 @@ run's stale ``running`` row is diagnostic only — the frontier filters
 """
 
 import logging
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -144,6 +145,110 @@ class _RunRange:
     window_start_text: str | None = None
     window_end_text: str | None = None
     from_version: str | None = None
+
+
+def _read_run_mode(connection: sqlite3.Connection, run_id: int) -> RunMode:
+    """
+    Read a run's stored ``mode`` and narrow it to a :class:`RunMode`.
+
+    The read half of :meth:`RunLedger.complete_run`'s mode dispatch, on the
+    caller's already-open connection so the read and the closing UPDATE share
+    one transaction.
+
+    Args:
+        connection: An open state-database connection; nothing is committed here.
+        run_id: The run whose mode to read.
+
+    Returns:
+        The stored mode as a :class:`RunMode`.
+
+    Raises:
+        ValueError: No run has this ``run_id`` — a caller bug, kept stdlib.
+        ConfigurationError: The stored ``mode`` is not a recognized ``RunMode``
+            — state-store corruption, the same stance as the cursor store.
+        RuntimeError: The stored ``mode`` came back non-text, violating the
+            STRICT ``TEXT`` schema contract.
+
+    Side Effects:
+        Reads one row on ``connection``.
+    """
+    mode_row = connection.execute(_SELECT_RUN_MODE_SQL, (run_id,)).fetchone()
+    if mode_row is None:
+        raise ValueError(f'no run with run_id {run_id}')
+    stored_mode: SqliteScalar = mode_row[0]
+    if not isinstance(stored_mode, str):
+        raise RuntimeError(f'runs.mode was not text: {stored_mode!r}')
+    try:
+        return RunMode(stored_mode)
+    except ValueError as error:
+        raise ConfigurationError(
+            'state database holds an unrecognized run mode',
+            detail=(
+                f'run {run_id} mode {stored_mode!r} is not one of '
+                f'{[member.value for member in RunMode]}'
+            ),
+        ) from error
+
+
+def _max_over_succeeded_runs(
+    database: StateDatabase,
+    sql: str,
+    provider: Provider,
+    endpoint: str,
+    *,
+    column: str,
+) -> datetime | None:
+    """
+    Run a ``max(...)``-over-``succeeded``-runs aggregate and parse its instant.
+
+    The shared tail of :meth:`RunLedger.coverage_frontier` and
+    :meth:`RunLedger.last_success_at`: execute ``sql`` bound to (provider,
+    endpoint, ``succeeded``), narrow the aggregate's single nullable TEXT
+    column, and parse it from ISO-8601 UTC. ``column`` names the aggregated
+    ``runs`` column in the raised errors, so each caller keeps its own prose
+    (``window_end`` / ``ended_at``).
+
+    Args:
+        database: The state database supplying the connection.
+        sql: The aggregate query; must bind exactly ``(provider, endpoint,
+            status)`` and return one row with one nullable TEXT column.
+        provider: The provider whose runs to aggregate.
+        endpoint: The endpoint whose runs to aggregate.
+        column: The aggregated ``runs`` column's name, used in error prose.
+
+    Returns:
+        The parsed UTC datetime, or ``None`` when the aggregate's column is
+        NULL (no succeeded run qualifies).
+
+    Raises:
+        ConfigurationError: The stored value is not parseable ISO-8601 UTC —
+            state-store corruption, the same stance as the cursor store.
+        RuntimeError: The aggregated value came back non-text, violating the
+            STRICT ``TEXT`` schema contract.
+
+    Side Effects:
+        Opens a connection and reads one aggregate row.
+    """
+    with database.connect() as connection:
+        aggregate_row = connection.execute(
+            sql, (provider.value, endpoint, RunStatus.SUCCEEDED.value)
+        ).fetchone()
+    # A bare max() always returns exactly one row; its single column is NULL
+    # when no succeeded run qualifies.
+    instant_text: SqliteScalar = aggregate_row[0]
+    if instant_text is None:
+        return None
+    if not isinstance(instant_text, str):
+        raise RuntimeError(f'runs.{column} was not text: {instant_text!r}')
+    try:
+        return from_iso8601(instant_text)
+    except ValueError as error:
+        raise ConfigurationError(
+            f'state database holds an unparseable run {column}',
+            provider=provider.value,
+            endpoint=endpoint,
+            detail=f'run {column} {instant_text!r} is not ISO-8601 UTC',
+        ) from error
 
 
 class RunLedger:
@@ -341,22 +446,7 @@ class RunLedger:
             raise ValueError(f'row_count must be non-negative, got {row_count}')
         ended_at: str = to_iso8601(self._clock.now_utc())
         with self._database.connect() as connection:
-            mode_row = connection.execute(_SELECT_RUN_MODE_SQL, (run_id,)).fetchone()
-            if mode_row is None:
-                raise ValueError(f'no run with run_id {run_id}')
-            stored_mode: SqliteScalar = mode_row[0]
-            if not isinstance(stored_mode, str):
-                raise RuntimeError(f'runs.mode was not text: {stored_mode!r}')
-            try:
-                mode: RunMode = RunMode(stored_mode)
-            except ValueError as error:
-                raise ConfigurationError(
-                    'state database holds an unrecognized run mode',
-                    detail=(
-                        f'run {run_id} mode {stored_mode!r} is not one of '
-                        f'{[member.value for member in RunMode]}'
-                    ),
-                ) from error
+            mode: RunMode = _read_run_mode(connection, run_id)
             match mode:
                 case RunMode.FEED:
                     if to_version is None:
@@ -391,7 +481,7 @@ class RunLedger:
         needed — an UPDATE that matches no row is the unknown-``run_id`` signal.
 
         Args:
-            run_id: The run to close, from :meth:`start_run`.
+            run_id: The run to close, from one of the ``start_*_run`` methods.
             error_detail: Human-readable failure context recorded on the row.
 
         Raises:
@@ -442,27 +532,13 @@ class RunLedger:
         Side Effects:
             Opens a connection and reads one aggregate row.
         """
-        with self._database.connect() as connection:
-            frontier_row = connection.execute(
-                _COVERAGE_FRONTIER_SQL,
-                (provider.value, endpoint, RunStatus.SUCCEEDED.value),
-            ).fetchone()
-        # A bare max() always returns exactly one row; its single column is NULL
-        # when no succeeded watermark run qualifies.
-        frontier_text: SqliteScalar = frontier_row[0]
-        if frontier_text is None:
-            return None
-        if not isinstance(frontier_text, str):
-            raise RuntimeError(f'runs.window_end was not text: {frontier_text!r}')
-        try:
-            return from_iso8601(frontier_text)
-        except ValueError as error:
-            raise ConfigurationError(
-                'state database holds an unparseable run window_end',
-                provider=provider.value,
-                endpoint=endpoint,
-                detail=f'run window_end {frontier_text!r} is not ISO-8601 UTC',
-            ) from error
+        return _max_over_succeeded_runs(
+            self._database,
+            _COVERAGE_FRONTIER_SQL,
+            provider,
+            endpoint,
+            column='window_end',
+        )
 
     def last_success_at(self, provider: Provider, endpoint: str) -> datetime | None:
         """
@@ -493,22 +569,6 @@ class RunLedger:
         Side Effects:
             Opens a connection and reads one aggregate row.
         """
-        with self._database.connect() as connection:
-            row = connection.execute(
-                _LAST_SUCCESS_SQL,
-                (provider.value, endpoint, RunStatus.SUCCEEDED.value),
-            ).fetchone()
-        ended_at_text: SqliteScalar = row[0]
-        if ended_at_text is None:
-            return None
-        if not isinstance(ended_at_text, str):
-            raise RuntimeError(f'runs.ended_at was not text: {ended_at_text!r}')
-        try:
-            return from_iso8601(ended_at_text)
-        except ValueError as error:
-            raise ConfigurationError(
-                'state database holds an unparseable run ended_at',
-                provider=provider.value,
-                endpoint=endpoint,
-                detail=f'run ended_at {ended_at_text!r} is not ISO-8601 UTC',
-            ) from error
+        return _max_over_succeeded_runs(
+            self._database, _LAST_SUCCESS_SQL, provider, endpoint, column='ended_at'
+        )

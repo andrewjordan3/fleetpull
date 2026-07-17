@@ -19,8 +19,8 @@ from fleetpull.state.work_units import (
 from fleetpull.timing.clock import FrozenClock, SystemClock
 from fleetpull.timing.codec import to_iso8601
 from fleetpull.vocabulary import Provider
+from tests.state.conftest import FROZEN_INSTANT
 
-FROZEN_INSTANT: datetime = datetime(2026, 6, 16, 9, 30, 0, tzinfo=UTC)
 CHUNK_START: datetime = datetime(2026, 6, 1, 0, 0, 0, tzinfo=UTC)
 CHUNK_END: datetime = datetime(2026, 6, 2, 0, 0, 0, tzinfo=UTC)
 
@@ -37,10 +37,6 @@ _WORK_UNIT_COLUMNS: tuple[str, ...] = (
     'finished_at',
     'last_error',
 )
-
-
-def _database_path(directory: Path) -> Path:
-    return directory / 'state.sqlite3'
 
 
 def _day(day: int) -> datetime:
@@ -116,15 +112,9 @@ def _insert_raw_unit(
 
 
 @pytest.fixture
-def frozen_clock() -> FrozenClock:
-    """A clock fixed at FROZEN_INSTANT, shared with the work_unit_store fixture."""
-    return FrozenClock(start_time_utc=FROZEN_INSTANT)
-
-
-@pytest.fixture
-def work_unit_store(tmp_path: Path, frozen_clock: FrozenClock) -> WorkUnitStore:
+def work_unit_store(database_path: Path, frozen_clock: FrozenClock) -> WorkUnitStore:
     """A WorkUnitStore over a freshly initialized, migrated state database."""
-    database = StateDatabase(_database_path(tmp_path))
+    database = StateDatabase(database_path)
     database.initialize()
     migrate_to_head(database)
     return WorkUnitStore(database, frozen_clock)
@@ -132,37 +122,37 @@ def work_unit_store(tmp_path: Path, frozen_clock: FrozenClock) -> WorkUnitStore:
 
 class TestEnqueue:
     def test_inserts_and_returns_the_count(
-        self, work_unit_store: WorkUnitStore, tmp_path: Path
+        self, work_unit_store: WorkUnitStore, database_path: Path
     ) -> None:
         specs = [
             _spec(chunk_start=_day(1), chunk_end=_day(2)),
             _spec(chunk_start=_day(2), chunk_end=_day(3)),
         ]
         assert work_unit_store.enqueue(specs) == 2
-        assert _count_units(_database_path(tmp_path)) == 2
+        assert _count_units(database_path) == 2
 
     def test_is_idempotent_for_a_null_partition_key(
-        self, work_unit_store: WorkUnitStore, tmp_path: Path
+        self, work_unit_store: WorkUnitStore, database_path: Path
     ) -> None:
         specs = [_spec(partition_key=None)]
         assert work_unit_store.enqueue(specs) == 1
         assert work_unit_store.enqueue(specs) == 0
-        assert _count_units(_database_path(tmp_path)) == 1
+        assert _count_units(database_path) == 1
 
     def test_is_idempotent_for_a_non_null_partition_key(
-        self, work_unit_store: WorkUnitStore, tmp_path: Path
+        self, work_unit_store: WorkUnitStore, database_path: Path
     ) -> None:
         specs = [_spec(partition_key='V1')]
         assert work_unit_store.enqueue(specs) == 1
         assert work_unit_store.enqueue(specs) == 0
-        assert _count_units(_database_path(tmp_path)) == 1
+        assert _count_units(database_path) == 1
 
     def test_same_start_different_end_is_distinct(
-        self, work_unit_store: WorkUnitStore, tmp_path: Path
+        self, work_unit_store: WorkUnitStore, database_path: Path
     ) -> None:
         assert work_unit_store.enqueue([_spec(chunk_end=CHUNK_END)]) == 1
         assert work_unit_store.enqueue([_spec(chunk_end=_day(3))]) == 1
-        assert _count_units(_database_path(tmp_path)) == 2
+        assert _count_units(database_path) == 2
 
     @pytest.mark.parametrize(
         ('chunk_start', 'chunk_end'),
@@ -191,14 +181,14 @@ class TestClaimNext:
             work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=0)
 
     def test_returns_the_unit_and_flips_the_row(
-        self, work_unit_store: WorkUnitStore, tmp_path: Path
+        self, work_unit_store: WorkUnitStore, database_path: Path
     ) -> None:
         work_unit_store.enqueue([_spec(partition_key='V1')])
         claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
         assert claimed is not None
         assert claimed.attempt_count == 1
         assert claimed.spec == _spec(partition_key='V1')
-        row = _read_unit(_database_path(tmp_path), claimed.unit_id)
+        row = _read_unit(database_path, claimed.unit_id)
         assert row['status'] == WorkUnitStatus.CLAIMED
         assert row['claimed_at'] == to_iso8601(FROZEN_INSTANT)
         assert row['attempt_count'] == 1
@@ -250,34 +240,37 @@ class TestClaimNext:
         assert second.attempt_count == 2
 
     def test_reclaim_clears_the_prior_outcome(
-        self, work_unit_store: WorkUnitStore, tmp_path: Path
+        self, work_unit_store: WorkUnitStore, database_path: Path
     ) -> None:
         work_unit_store.enqueue([_spec()])
         first = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
         assert first is not None
         work_unit_store.mark_failed(first.unit_id, error_detail='boom')
-        failed_row = _read_unit(_database_path(tmp_path), first.unit_id)
+        failed_row = _read_unit(database_path, first.unit_id)
         assert failed_row['last_error'] == 'boom'
         assert failed_row['finished_at'] is not None
 
         second = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
         assert second is not None
         assert second.unit_id == first.unit_id
-        reclaimed_row = _read_unit(_database_path(tmp_path), first.unit_id)
+        reclaimed_row = _read_unit(database_path, first.unit_id)
         assert reclaimed_row['last_error'] is None
         assert reclaimed_row['finished_at'] is None
 
 
 class TestMarkDone:
     def test_flips_claimed_to_done(
-        self, work_unit_store: WorkUnitStore, frozen_clock: FrozenClock, tmp_path: Path
+        self,
+        work_unit_store: WorkUnitStore,
+        frozen_clock: FrozenClock,
+        database_path: Path,
     ) -> None:
         work_unit_store.enqueue([_spec()])
         claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
         assert claimed is not None
         frozen_clock.advance(timedelta(minutes=10))
         work_unit_store.mark_done(claimed.unit_id)
-        row = _read_unit(_database_path(tmp_path), claimed.unit_id)
+        row = _read_unit(database_path, claimed.unit_id)
         assert row['status'] == WorkUnitStatus.DONE
         assert row['finished_at'] == to_iso8601(FROZEN_INSTANT + timedelta(minutes=10))
 
@@ -296,13 +289,13 @@ class TestMarkDone:
 
 class TestMarkFailed:
     def test_flips_claimed_to_failed_with_error(
-        self, work_unit_store: WorkUnitStore, tmp_path: Path
+        self, work_unit_store: WorkUnitStore, database_path: Path
     ) -> None:
         work_unit_store.enqueue([_spec()])
         claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
         assert claimed is not None
         work_unit_store.mark_failed(claimed.unit_id, error_detail='kaboom')
-        row = _read_unit(_database_path(tmp_path), claimed.unit_id)
+        row = _read_unit(database_path, claimed.unit_id)
         assert row['status'] == WorkUnitStatus.FAILED
         assert row['last_error'] == 'kaboom'
 
@@ -321,14 +314,14 @@ class TestMarkFailed:
 
 class TestResetClaimedToPending:
     def test_reverts_claimed_preserving_attempt_count(
-        self, work_unit_store: WorkUnitStore, tmp_path: Path
+        self, work_unit_store: WorkUnitStore, database_path: Path
     ) -> None:
         work_unit_store.enqueue([_spec()])
         claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
         assert claimed is not None
         assert claimed.attempt_count == 1
         assert work_unit_store.reset_claimed_to_pending(Provider.SAMSARA, 'trips') == 1
-        row = _read_unit(_database_path(tmp_path), claimed.unit_id)
+        row = _read_unit(database_path, claimed.unit_id)
         assert row['status'] == WorkUnitStatus.PENDING
         assert row['attempt_count'] == 1
 
@@ -389,7 +382,7 @@ class TestProgress:
 
 class TestLifecycle:
     def test_enqueue_claim_fail_reclaim_done(
-        self, work_unit_store: WorkUnitStore, tmp_path: Path
+        self, work_unit_store: WorkUnitStore, database_path: Path
     ) -> None:
         work_unit_store.enqueue([_spec()])
         first = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
@@ -401,21 +394,21 @@ class TestLifecycle:
         assert second.unit_id == first.unit_id
         assert second.attempt_count == 2
         work_unit_store.mark_done(second.unit_id)
-        row = _read_unit(_database_path(tmp_path), second.unit_id)
+        row = _read_unit(database_path, second.unit_id)
         assert row['status'] == WorkUnitStatus.DONE
         assert row['last_error'] is None  # cleared at the re-claim, never restored
 
 
 class TestCrashRecovery:
     def test_reset_then_reclaim_increments_attempt(
-        self, work_unit_store: WorkUnitStore, tmp_path: Path
+        self, work_unit_store: WorkUnitStore, database_path: Path
     ) -> None:
         work_unit_store.enqueue([_spec()])
         first = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
         assert first is not None
         assert first.attempt_count == 1
         assert work_unit_store.reset_claimed_to_pending(Provider.SAMSARA, 'trips') == 1
-        row = _read_unit(_database_path(tmp_path), first.unit_id)
+        row = _read_unit(database_path, first.unit_id)
         assert row['status'] == WorkUnitStatus.PENDING
         assert row['attempt_count'] == 1  # preserved across the reset
         second = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
@@ -426,12 +419,12 @@ class TestCrashRecovery:
 
 class TestCorruption:
     def test_unparseable_chunk_raises(
-        self, work_unit_store: WorkUnitStore, tmp_path: Path
+        self, work_unit_store: WorkUnitStore, database_path: Path
     ) -> None:
         # chunk_start='2026-...' is lexically < 'zzz-bad' ('2' < 'z'), so the order
         # CHECK passes; the value is unparseable when the claim reconstructs it.
         _insert_raw_unit(
-            _database_path(tmp_path),
+            database_path,
             Provider.SAMSARA.value,
             'trips',
             '2026-01-01T00:00:00Z',
@@ -442,8 +435,8 @@ class TestCorruption:
 
 
 class TestConcurrency:
-    def test_concurrent_claims_never_double_claim(self, tmp_path: Path) -> None:
-        database = StateDatabase(_database_path(tmp_path))
+    def test_concurrent_claims_never_double_claim(self, database_path: Path) -> None:
+        database = StateDatabase(database_path)
         database.initialize()
         migrate_to_head(database)
         store = WorkUnitStore(database, SystemClock())

@@ -14,7 +14,7 @@ class ProviderProfile:
     The per-provider, per-construction dependencies of a transport client.
 
     Auth strategy and classifier are shared across all of a provider's
-    endpoints (one session auth, one classifier). Pagination strategy and
+    endpoints (one session auth, one classifier). The page decoder and
     quota scope are deliberately NOT here — they are per-endpoint and arrive
     on each ``fetch_pages`` call.
 

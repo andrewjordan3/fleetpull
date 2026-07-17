@@ -5,17 +5,18 @@ segment a date-partitioned dataset uses, and its inverse.
 The shared, filesystem-neutral translation between a partition ``date`` and the
 hive directory-name segment that encodes it. The forward direction builds the
 segment for the write path (the storage layer joins it under an endpoint
-directory); the inverse recovers the date from a segment for the merge path,
-which scans an endpoint directory and must turn the partition names it finds back
-into dates to decide which partitions a fetch window overlaps.
+directory). The inverse has no production caller yet: today it pins the segment
+grammar's round-trip (the tests drive the two directions against each other);
+its production consumer is the future layer that reads partition directories
+back -- the metadata snapshot generator and the feed cells -- when it lands.
 
 A pure leaf -- stdlib ``date`` only, imports nothing internal, never touches the
-filesystem (directory creation and scanning are the writing/merge layers'
+filesystem (directory creation and scanning are the writing/reading layers'
 concerns). It lives in ``paths`` rather than ``storage`` because the hive
 ``date=`` convention is a shared structural fact about the dataset layout -- the
-storage read/merge path and the future metadata layer both read it, and BigQuery
-external tables read it natively -- not parquet-specific arithmetic like the
-``part.parquet`` filename, which is storage's.
+storage write path builds it, the future directory-reading layer will read it
+back, and BigQuery external tables read it natively -- not parquet-specific
+arithmetic like the ``part.parquet`` filename, which is storage's.
 
 The inverse is strict: a segment that is not a well-formed ``date=YYYY-MM-DD`` is
 a corrupt or foreign directory entry, and the parser raises ``ValueError`` rather

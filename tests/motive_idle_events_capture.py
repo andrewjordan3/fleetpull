@@ -19,11 +19,10 @@ in-progress analogue was observed); the ``rg_match: false`` record's
 The endpoint's company-local overlap window matching (DESIGN section 8)
 lives in the endpoint leaf's wire-window pad, not in these shapes.
 
-Shared by the IdleEvent model tests, the endpoint-binding tests, and any
-future e2e consumers -- a multi-consumer capture set in one helper
-module under ``tests/`` (the ``geotab_trips_capture`` precedent). The
-JSON literals are the captures; the parsed objects beside them are what
-tests consume.
+Consumed by the IdleEvent model tests -- kept as a helper module under
+``tests/`` so future consumers share one capture set (the
+``geotab_trips_capture`` precedent). The JSON literals are the captures;
+the parsed objects beside them are what tests consume.
 """
 
 import json

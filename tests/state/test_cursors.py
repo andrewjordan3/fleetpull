@@ -19,20 +19,12 @@ from fleetpull.state.migrations import migrate_to_head
 from fleetpull.timing.clock import FrozenClock
 from fleetpull.timing.codec import to_iso8601
 from fleetpull.vocabulary import Provider
-
-# The clock is frozen here, distinct from any watermark instant the tests store,
-# so the updated_at assertion proves the column comes from the clock, not the
-# cursor's payload.
-FROZEN_INSTANT: datetime = datetime(2026, 6, 16, 9, 30, 0, tzinfo=UTC)
+from tests.state.conftest import FROZEN_INSTANT
 
 # A whole-second watermark: to_iso8601 drops sub-second precision, so a
 # microsecond-bearing instant would not compare equal after a round-trip.
 WATERMARK_INSTANT: datetime = datetime(2026, 6, 1, 12, 0, 0, tzinfo=UTC)
 WATERMARK_ISO: str = '2026-06-01T12:00:00Z'
-
-
-def _database_path(directory: Path) -> Path:
-    return directory / 'state.sqlite3'
 
 
 def _read_updated_at(database_path: Path, provider: Provider, endpoint: str) -> str:
@@ -68,12 +60,12 @@ def _insert_raw_cursor(
 
 
 @pytest.fixture
-def cursor_store(tmp_path: Path) -> CursorStore:
+def cursor_store(database_path: Path, frozen_clock: FrozenClock) -> CursorStore:
     """A CursorStore over a freshly initialized, migrated state database."""
-    database = StateDatabase(_database_path(tmp_path))
+    database = StateDatabase(database_path)
     database.initialize()
     migrate_to_head(database)
-    return CursorStore(database, FrozenClock(start_time_utc=FROZEN_INSTANT))
+    return CursorStore(database, frozen_clock)
 
 
 class TestRoundTrip:
@@ -121,24 +113,24 @@ class TestKeyIsolation:
 
 class TestUpdatedAt:
     def test_updated_at_is_stamped_from_the_clock(
-        self, cursor_store: CursorStore, tmp_path: Path
+        self, cursor_store: CursorStore, database_path: Path
     ) -> None:
         cursor_store.set_cursor(
             Provider.MOTIVE, 'vehicles', FeedToken(from_version='v1')
         )
-        stored = _read_updated_at(_database_path(tmp_path), Provider.MOTIVE, 'vehicles')
+        stored = _read_updated_at(database_path, Provider.MOTIVE, 'vehicles')
         assert stored == to_iso8601(FROZEN_INSTANT)
 
 
 class TestDurability:
     def test_a_separate_store_reads_the_committed_cursor(
-        self, cursor_store: CursorStore, tmp_path: Path
+        self, cursor_store: CursorStore, database_path: Path
     ) -> None:
         cursor = FeedToken(from_version='feed-version-7')
         cursor_store.set_cursor(Provider.GEOTAB, 'log_records', cursor)
 
         reopened_store = CursorStore(
-            StateDatabase(_database_path(tmp_path)),
+            StateDatabase(database_path),
             FrozenClock(start_time_utc=FROZEN_INSTANT),
         )
         assert reopened_store.get_cursor(Provider.GEOTAB, 'log_records') == cursor
@@ -146,12 +138,12 @@ class TestDurability:
 
 class TestCorruptCursor:
     def test_unparseable_watermark_value_raises(
-        self, cursor_store: CursorStore, tmp_path: Path
+        self, cursor_store: CursorStore, database_path: Path
     ) -> None:
         # 'not-a-date' passes the CHECK (which constrains kind, not value) but is
         # not ISO-8601, so the read path surfaces it as state-store corruption.
         _insert_raw_cursor(
-            _database_path(tmp_path),
+            database_path,
             'motive',
             'vehicles',
             'date_watermark',
