@@ -21,7 +21,6 @@ function's.
 
 import json
 import logging
-import ssl
 from collections.abc import Callable
 from http import HTTPStatus
 from typing import Final, NoReturn
@@ -34,7 +33,7 @@ from fleetpull.exceptions import AuthenticationError, ProviderResponseError
 from fleetpull.network.auth.models import AuthenticationResult
 from fleetpull.network.contract import body_snippet, validated_envelope_slice
 from fleetpull.network.limits import RateLimiterRegistry
-from fleetpull.network.tls import build_truststore_ssl_context
+from fleetpull.network.posture import client_timeout, client_verify
 from fleetpull.vocabulary import JsonValue
 
 __all__: list[str] = ['build_geotab_authenticator']
@@ -265,23 +264,15 @@ def build_geotab_authenticator(
         limiter = limiter_registry.get(quota_scope)
         url: str = f'https://{config.server}{_APIV1_PATH}'
         request_body: dict[str, JsonValue] = _build_authenticate_body(config)
-        # All four Timeout members explicitly: httpx raises at
-        # construction when some are set and others have no default.
-        timeout = httpx.Timeout(
-            connect=http_config.connect_timeout_seconds,
-            read=http_config.read_timeout_seconds,
-            write=http_config.read_timeout_seconds,
-            pool=http_config.connect_timeout_seconds,
-        )
-        verify: ssl.SSLContext | bool = (
-            build_truststore_ssl_context() if http_config.use_truststore else True
-        )
         # A fresh, context-managed client per call: Authenticate fires
         # rarely behind the manager's single-flight, so connection reuse
         # buys nothing worth a held resource.
         with (
             limiter.request_slot(),
-            httpx.Client(verify=verify, timeout=timeout) as client,
+            httpx.Client(
+                verify=client_verify(http_config),
+                timeout=client_timeout(http_config),
+            ) as client,
         ):
             response = client.post(url, json=request_body)
         return _resolve_authenticate_outcome(response, config)
