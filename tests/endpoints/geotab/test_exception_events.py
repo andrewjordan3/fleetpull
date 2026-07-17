@@ -12,10 +12,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from fleetpull.config import GeotabAuthConfig, GeotabConfig
-from fleetpull.endpoints.geotab.exception_events import (
-    _GeotabUnsortedWindowedGetSpecBuilder,
-    build_endpoint,
-)
+from fleetpull.endpoints.geotab._get_requests import GeotabWindowedGetSpecBuilder
+from fleetpull.endpoints.geotab.exception_events import build_endpoint
 from fleetpull.endpoints.shared import (
     EndpointDefinition,
     StorageKind,
@@ -40,7 +38,14 @@ def _build_endpoint() -> EndpointDefinition[ExceptionEvent]:
     return build_endpoint(GeotabConfig())
 
 
-class TestGeotabUnsortedWindowedGetSpecBuilder:
+class TestExceptionEventsSpecBuilder:
+    def test_composes_the_shared_builder_unsorted(self) -> None:
+        # id_sort=False is the per-type declared capability: id-sort is
+        # rejected outright for ExceptionEvent, never assumed sortable.
+        endpoint = _build_endpoint()
+        assert isinstance(endpoint.spec_builder, GeotabWindowedGetSpecBuilder)
+        assert endpoint.spec_builder.id_sort is False
+
     def test_builds_the_windowed_unsorted_get(self) -> None:
         endpoint = _build_endpoint()
         spec = endpoint.spec_builder.build_spec(resume=_window(), path_values={})
@@ -66,10 +71,11 @@ class TestGeotabUnsortedWindowedGetSpecBuilder:
         assert 'sort' not in params
 
     def test_requires_a_date_window(self) -> None:
-        builder = _GeotabUnsortedWindowedGetSpecBuilder(
+        builder = GeotabWindowedGetSpecBuilder(
             server='my.geotab.com',
             type_name='ExceptionEvent',
             results_limit=5000,
+            id_sort=False,
         )
         with pytest.raises(TypeError):
             builder.build_spec(resume=None, path_values={})

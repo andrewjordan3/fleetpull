@@ -1,8 +1,8 @@
 # src/fleetpull/endpoints/shared/__init__.py
 """Shared endpoints-layer surface: the ``EndpointDefinition`` binding, the
 ``SpecBuilder`` protocol and its provider-agnostic implementations, the
-URL-fan-out path renderer, and the sync-mode / storage / resume declaration
-types."""
+URL-fan-out path renderer, the resume-value type guard, and the sync-mode /
+storage / resume declaration types."""
 
 from fleetpull.endpoints.shared.base import (
     CompletenessCheck,
@@ -17,6 +17,7 @@ from fleetpull.endpoints.shared.base import (
 )
 from fleetpull.endpoints.shared.bisection import WindowBisection
 from fleetpull.endpoints.shared.fan_out import FanOutBinding
+from fleetpull.endpoints.shared.resume import require_date_window
 from fleetpull.endpoints.shared.spec_builders import StaticGetSpecBuilder
 from fleetpull.endpoints.shared.url_paths import (
     UrlPathTemplateError,
@@ -38,4 +39,5 @@ __all__: list[str] = [
     'WatermarkMode',
     'WindowBisection',
     'render_url_path_template',
+    'require_date_window',
 ]
