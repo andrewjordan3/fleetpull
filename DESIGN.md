@@ -1,6 +1,6 @@
 # fleetpull — Design Document
 
-**Status:** Design settled through the two-verb public API (§10) and config-driven sync. Shipped end-to-end: the `fetch` API; `Sync(config_path).run()`; work-unit planning with crash resume and the per-provider fan-out executor; Motive `vehicles` (snapshot), `vehicle_locations` (date-partitioned watermark, live-run), and the fleet-wide event pair `driving_periods` / `idle_events` (windowed watermark); GeoTab `devices` (snapshot, live-run), `users` (snapshot), `trips` (windowed watermark, stop-anchored), and `exception_events` (windowed watermark, bisected). The Samsara foundation is wired (2026-07-17): `SamsaraConfig` with the `SAMSARA_API_KEY` fallback, the bearer auth-ingress arm, and full `Sync` dispatch; Samsara `vehicles` (snapshot, cursor walk) is the first Samsara vertical, built from the same-day probe session. The GeoTab feed arm (`GetFeed` runner, storage cells, token commit) remains unbuilt — trips ships windowed until it lands (§8). See §15 for run status and the build roadmap.
+**Status:** Design settled through the two-verb public API (§10) and config-driven sync. Shipped end-to-end: the `fetch` API; `Sync(config_path).run()`; the yaml-run CLI (`fleetpull sync <config>`) and the per-endpoint `metadata.json` projection (both 2026-07-17); work-unit planning with crash resume and the per-provider fan-out executor; Motive `vehicles` (snapshot), `vehicle_locations` (date-partitioned watermark, live-run), and the fleet-wide event pair `driving_periods` / `idle_events` (windowed watermark); GeoTab `devices` (snapshot, live-run), `users` (snapshot), `trips` (windowed watermark, stop-anchored), and `exception_events` (windowed watermark, bisected). The Samsara foundation is wired (2026-07-17): `SamsaraConfig` with the `SAMSARA_API_KEY` fallback, the bearer auth-ingress arm, and full `Sync` dispatch; Samsara `vehicles` (snapshot, cursor walk) is the first Samsara vertical, built from the same-day probe session. The GeoTab feed arm (`GetFeed` runner, storage cells, token commit) remains unbuilt — trips ships windowed until it lands (§8). See §15 for run status and the build roadmap.
 **Name:** `fleetpull` — final. Describes exactly what the package does and nothing more (PyPI availability confirmed 2026-06-10).
 **Relationship to fleet-telemetry-hub:** New package, not a rewrite. fleet-telemetry-hub remains in production untouched while fleetpull is built.
 
@@ -92,9 +92,15 @@ data/
 - `single` — one parquet file; a merge reads the whole file, applies the `SyncMode`'s write semantics, and rewrites it. Fine for low-volume endpoints (on the order of 10–15k rows/day or less). Snapshot endpoints are always `single` — a current-state snapshot has no event-time dimension to partition on.
 - `date_partitioned` — hive-style `date=YYYY-MM-DD` partitions; a merge touches only the partitions the fetch window overlaps. Required for breadcrumb-scale endpoints. Hive layout is read natively by BigQuery external tables and `pl.scan_parquet`.
 
-`metadata.json` is a **generated human-readable snapshot**, written from SQLite
-contents at the end of each successful run. It is never read by the program.
-SQLite is the single source of truth (see §5) — no dual-write divergence.
+`metadata.json` is a **generated human-readable snapshot** (shipped
+2026-07-17): after each successful endpoint run, the runner projects the run's
+committed facts — its counts and resolved window, plus a cursor read-back from
+the store — into a `MetadataSnapshot` that `storage/metadata.py` renders and
+atomically writes as `<endpoint>/metadata.json`. It is never read by the
+program; SQLite remains the single source of truth (see §5) — no dual-write
+divergence. The write is post-commit and best-effort: an `OSError` logs at
+ERROR and the committed run stands — a stale file the next successful run
+rewrites beats failing a committed run over a cosmetic projection.
 
 **Realized structure (`snapshot`+`single` and `watermark`+`date_partitioned` built;
 the feed cells next).** Each `(StorageKind, SyncMode)` cell is its own
@@ -106,9 +112,10 @@ cell's writer, constructed with the runtime resume `window` an incremental cell
 needs. The orchestrator drives every endpoint identically — `write` per fetched
 piece, `finalize` once — and `finalize` returns a `WriteResult`. The exact-duplicate
 dedup (§6) runs inside each writer's finalize, on the frame it is about to write.
-Storage is stateless — parquet only, no SQLite, no watermark commit, no
-`metadata.json` (the orchestrator sequences those after a successful `finalize`,
-§5). The single-file family (`SingleFileWriter` → `SnapshotWriter`) and the
+Storage is stateless — parquet only, no SQLite, no watermark commit (the
+orchestrator sequences those after a successful `finalize`, §5); the
+`metadata.json` render/write primitive lives in `storage/metadata.py`, but the
+facts it projects are the orchestrator's. The single-file family (`SingleFileWriter` → `SnapshotWriter`) and the
 date-partitioned watermark cell (`PartitionedWriter` → `WatermarkPartitionedWriter`)
 are built; the feed cells (single and partitioned) fill with GeoTab. The leaf
 primitives the writers compose: `split_by_date` (`storage/partition.py`: a frame →
@@ -1481,8 +1488,10 @@ fleetpull/
                    #   (database_path); path fields normalize
                    #   through paths.resolve_path at validation
     providers.py   # the provider family: ProviderConfig (quota_scope, rate_limit,
-                   #   endpoints), MotiveConfig (api_key, base_url, records_per_page,
-                   #   per-provider lookback_days/cutoff_days), GeotabConfig (nested
+                   #   endpoints, and the shared lookback_days/cutoff_days --
+                   #   declared once, per-provider YAML override preserved),
+                   #   MotiveConfig (api_key, base_url, records_per_page),
+                   #   GeotabConfig (nested
                    #   GeotabAuthConfig, the two method-class budgets: rate_limit for
                    #   the Get class + authenticate_rate_limit, §8), ProvidersConfig,
                    #   the credential env-var convention map, and the enablement checker
@@ -1544,8 +1553,8 @@ fleetpull/
   paths/           # filesystem path expansion + dataset-layout utilities (pure leaf)
     resolution.py  # resolve_path + PathInput: lexical absolute-path normalization
     datasets.py    # endpoint_directory: the shared, filesystem-neutral endpoint-dir
-                   #   atom ({root}/{provider}/{endpoint}/), used by storage and the
-                   #   future metadata layer
+                   #   atom ({root}/{provider}/{endpoint}/), used by the parquet
+                   #   writers and the metadata.json projection
     partitions.py  # date_partition_segment + parse_date_partition_segment: the hive
                    #   date=YYYY-MM-DD segment and its strict inverse
   timing/
@@ -1569,23 +1578,30 @@ fleetpull/
                    #   FeedMode), ResumeValue, and StorageKind
       fan_out.py   # FanOutBinding — the per-endpoint fan-out declaration (names a RosterKey)
       spec_builders.py  # StaticGetSpecBuilder — the shared snapshot spec-builder
+      bisection.py  # WindowBisection — the per-endpoint bisection declaration (§14's driver reads it)
+      resume.py    # require_date_window — the shared windowed-resume guard
       url_paths.py  # render_url_path_template — strict {placeholder} URL-path rendering (fan-out)
     motive/
+      _spec_builders.py  # MotiveFleetDateRangeSpecBuilder — the shared fleet-wide date-range builder
       vehicles.py  # build_endpoint — the Motive vehicles snapshot factory
       vehicle_locations.py  # MotiveVehicleLocationsSpecBuilder + build_endpoint — the watermark binding
+      driving_periods.py  # build_endpoint — the fleet-wide driving-span watermark binding
+      idle_events.py  # build_endpoint — the fleet-wide idle-interval watermark binding (padded wire window)
     samsara/
       vehicles.py  # build_endpoint — the vehicles cursor-walk snapshot factory
     geotab/
-      _seek_walk.py  # GeotabGetSpecBuilder + GetCountOfCheck — the shared snapshot
-                   #   seek-walk machinery (promoted from the devices leaf when the
-                   #   users leaf became its second consumer; underscore-prefixed so
-                   #   the registry walk skips it)
+      _get_requests.py  # the shared GeoTab Get request machinery: GeotabGetSpecBuilder
+                   #   (the snapshot seek walk), GeotabWindowedGetSpecBuilder (the
+                   #   windowed builder with per-leaf id_sort), server_host, and
+                   #   GetCountOfCheck (underscore-prefixed so the registry walk
+                   #   skips it)
       devices.py   # build_endpoint — the devices seek-paged snapshot factory
       users.py     # build_endpoint — the users seek-paged snapshot factory
       trips.py     # build_endpoint — the trips windowed (watermark) factory; the
                    #   TripSearch date bounds ride the seek walk (§4's amendment)
-      exception_events.py  # build_endpoint — the bisected windowed factory; the
-                   #   unsorted windowed spec builder (id-sort rejected per-type, §8)
+      exception_events.py  # build_endpoint — the bisected windowed factory; composes
+                   #   the windowed builder with id_sort=False (id-sort rejected
+                   #   per-type, §8)
     registry.py  # EndpointRegistry + build_endpoint_registry — the (provider, name) catalog; discovers leaves by walking endpoints.<provider>
   polars_typing/   # quarantined re-export boundary for Polars type aliases with no public
                    #   equivalent (e.g. ParquetCompression) — the sole importer of polars._typing
@@ -1604,6 +1620,8 @@ fleetpull/
       shared.py    # DriverSummary, EldDeviceInfo — embedded shapes shared across endpoints
       vehicles.py  # Vehicle snapshot record (+ AvailabilityDetails / AvailabilityStatus / VehicleStatus)
       vehicle_locations.py # VehicleLocation breadcrumb record (/v3/vehicle_locations)
+      driving_periods.py  # DrivingPeriod span record (/v1/driving_periods)
+      idle_events.py  # IdleEvent interval record (/v1/idle_events)
     samsara/
       vehicle.py   # Vehicle (+ the gateway/driver refs and the open-map
                    #   externalIds slice) — the fleet-vehicle snapshot record
@@ -1638,6 +1656,7 @@ fleetpull/
     staging.py     # the date-partition write half: stage_shard + compact_partition (§3)
     frames.py      # frame ops the writers compose: exact dedup + the half-open window predicate
     result.py      # WriteResult: the write report
+    metadata.py    # MetadataSnapshot + render/write — the metadata.json projection (§3)
     writers.py     # DatasetWriter protocol + SingleFile/Partitioned ABCs + Snapshot/WatermarkPartitioned writers + select_writer (feed cells next, §3)
   state/           # SQLite operational state (§5)
     database.py    # StateDatabase shell + DB primitives (connect, verify, WAL)
@@ -1650,14 +1669,26 @@ fleetpull/
     outcome.py     # RunOutcome: Executed | CaughtUp — the run result carrier (§14)
     drivers.py     # RequestDriver Protocol + SingleRequestDriver + FanOutRequestDriver — yields FetchedPage per batch (§14)
     bisection.py   # BisectingWindowDriver — capped, unsortable Gets fetched whole via adaptive window halving (§14)
-    runner.py      # EndpointRunner — one endpoint's run transaction; snapshot arm built (§14)
+    runner.py      # EndpointRunner — one endpoint's run transaction: the snapshot arm,
+                   #   the plan-and-drive watermark arm, and the post-success
+                   #   metadata projection (§14, §3)
     batch.py       # process_batch: per-batch validate/frame/window + fold (§14)
     streaming.py   # stream_processed_batches: a driver's pages, validated and framed per batch (§14)
     roster_harvest.py # harvest_roster_members: a feeder's complete membership as roster members (drives streaming, no write)
     roster_refresh.py # RosterRefreshCoordinator: refresh a roster when stale (staleness -> harvest -> reconcile -> apply); refresh only, not fan-out
     resume.py      # resolve_watermark_start + should_advance_watermark (§14)
     backfill.py    # plan_backfill_units: whole-UTC-day chunk -> WorkUnitSpecs (§5)
-  cli.py           # fetch, sync
+    unit_loop.py   # the claim-and-drive loop over work units (§13's settled transaction boundary)
+    entry.py       # run_endpoint — the orchestration entry: driver resolution, roster refresh, feeder tap (§14)
+    executors.py   # FetchPoolRegistry — per-provider executors, context-managed (§7)
+    fanout.py      # stream_pieces — the bounded-channel threaded fan-out (§7)
+  api/             # the public-surface tier: the two verbs and their machinery (§10)
+    fetch.py       # fetch — the snapshot-only in-memory convenience verb
+    sync.py        # Sync — the config-driven pipeline verb (validate, compose, execute)
+    catalog.py     # Endpoints — the typed public identity catalog + available_endpoints
+    identity.py    # EndpointIdentity / SnapshotEndpoint / WindowedEndpoint
+    auth_ingress.py  # build_provider_profile — the one public auth= shape, coerced at the boundary
+  cli.py           # the yaml-run CLI: fleetpull sync <config>
 ```
 
 The package root holds user-facing modules only; internal code lives in
@@ -1689,6 +1720,8 @@ package-wide vertical `layers` contract over every top-level module under
 `fleetpull/`:
 
 ```
+cli
+api
 orchestrator
 storage
 endpoints | records | state
@@ -2257,11 +2290,12 @@ page decoder and quota scope to arrive on each `fetch_pages` call.
 **Vertical progress.** The Motive `vehicles` snapshot vertical was proven
 complete end-to-end in June 2026 (`client → validate_records →
 models_to_dataframe → persist`, exercised by a throwaway hand-run driver).
-That driver has since been re-pointed through the public `fetch` surface
-(roadmap item 5) and no longer persists — the persist-ending trace is the
-June proof, not the script's current shape. The Motive `vehicle_locations`
+That driver was re-pointed through the public `fetch` surface (roadmap
+item 5), no longer persisted, and was retired with the scripts folder
+2026-07-17 — the persist-ending trace is the June proof. The Motive `vehicle_locations`
 date-partitioned/watermark vertical has run end-to-end live
-(`scripts/run_vehicle_locations.py`, on local disk): the incremental loop
+(the since-retired diagnostic driver `scripts/run_vehicle_locations.py`, on
+local disk): the incremental loop
 mechanics are live-proven — cold backfill, watermark persistence and resume
 (through the canonical-UTC serialization path), wholesale date-partition
 replacement idempotency, compaction dedup (0 duplicates across ~1.03M
@@ -2303,7 +2337,8 @@ resolution (item 1, done).
    (the orchestrator-boundary principle, §14). The `vehicle_ids` roster is
    declared beside its feeder (`endpoints/motive/vehicles.py`,
    `VEHICLE_IDS_ROSTER`), vehicle_locations declares its binding, and the
-   diagnostic script composes the entry instead of hand-harvesting. The
+   (since-retired) diagnostic script composed the entry instead of
+   hand-harvesting. The
    settled constraint holds at the feeder population: `/v1/vehicles` lists
    inactive and retired vehicles, so the roster covers vehicles active during
    historical windows even if inactive today. The vehicle_locations module
@@ -2346,6 +2381,9 @@ resolution (item 1, done).
    surface: the YAML schema *is* sync's API, so designing the config schema
    and designing `Sync(path).run()` are one unit (§10). `fetch` was separable
    and designed first because its vocabulary does not depend on the schema.
+   *The yaml-run tool shipped 2026-07-17: `fleetpull sync <config>`
+   (`cli.py` over `Sync`, a console entry point in `pyproject.toml`),
+   closing this item.*
 7. **One GeoTab endpoint end-to-end before bulk porting.** GeoTab is the
    architectural stress test (different auth, pagination, decode); if it
    bends the abstractions, that must surface before more Motive endpoints are
@@ -2356,8 +2394,8 @@ resolution (item 1, done).
    method-class scopes, the ingress `ProviderProfileContext` seam, the
    seek-paging Get decoder, the `GetCountOf` completeness guard (probe-settled
    decisions 1 and 2), the union-of-shapes `Device` model, `Endpoints.Geotab`,
-   and both verbs; `scripts/run_geotab_devices.py` is the live-proof driver.
-   The abstractions held — no driver, runner, or entry change carried a
+   and both verbs; the since-retired diagnostic driver
+   `scripts/run_geotab_devices.py` was the live proof. The abstractions held — no driver, runner, or entry change carried a
    provider branch. The `trips` windowed vertical followed (2026-07-13),
    proving the watermark arm crosses providers, and the `exception_events`
    design is settled (2026-07-15; the §8 decision block, probe-gated
@@ -2373,7 +2411,9 @@ resolution (item 1, done).
    §14). The GeoTab `users` snapshot followed (2026-07-16, id-sort and the
    full-population shape proven live per §8's rows): the second seek-walk
    consumer, so the walk's spec builder and `GetCountOfCheck` promoted out
-   of the devices leaf into the shared `_seek_walk` module. Second half
+   of the devices leaf into the shared `_seek_walk` module — unified
+   2026-07-17 into `_get_requests`, which also carries the windowed
+   builder. Second half
    (the feed vertical) remains. Under the endpoint-breadth scope
    principle (§1, 2026-07-17) this item's endgame widened: after the
    Samsara onboarding (foundation, then the legacy four — `vehicles`,
@@ -2407,7 +2447,8 @@ concurrency vertical (§7) as fan-out machinery, orthogonal to backfill, and
 per-endpoint writer threads were never part of the settled design; the
 single writer per endpoint stands, §3.)
 
-**Deliberately deferred — off the roadmap's critical path.**
-`metadata.json` generation (cosmetic, projected from SQLite, never read by
-the program). The YAML config loader, previously deferred here, is now
-roadmap item 6.
+**Formerly deferred, now shipped.** `metadata.json` generation shipped
+2026-07-17 (§3): the post-commit, best-effort per-endpoint projection of a
+successful run's committed facts — cosmetic, never read by the program. The
+YAML config loader, previously deferred here, became roadmap item 6 and
+shipped with the Sync vertical. The deferred inventory is empty.

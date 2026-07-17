@@ -85,6 +85,10 @@ Homepage = "https://github.com/andrewjordan3/fleetpull"
 Repository = "https://github.com/andrewjordan3/fleetpull"
 Issues = "https://github.com/andrewjordan3/fleetpull/issues"
 
+# Console entry point: the yaml-run CLI, `fleetpull sync <config>` (cli.py over Sync)
+[project.scripts]
+fleetpull = "fleetpull.cli:main"
+
 ###############################################################################
 # [tool.setuptools] - PACKAGE DISCOVERY
 ###############################################################################
@@ -162,9 +166,6 @@ combine-as-imports = true
 # Docstring presence (D) is enforced in src/ only: test names are the
 # documentation convention there.
 "tests/**" = ["PLR2004", "S101", "D"]
-# A hand-run driver script's stdout IS its interface, so print (T20) is its
-# legitimate output mechanism, not the production-logging smell the rule guards.
-"scripts/**" = ["T20"]
 
 [tool.ruff.format]
 quote-style = "single"
@@ -291,6 +292,9 @@ layers = [
 name = "The package-wide vertical: every top-level package sits in its layer"
 type = "layers"
 layers = [
+    # cli is the outermost tier: the console entry composes api's Sync
+    # verb, which same-tier independence would forbid.
+    "fleetpull.cli",
     # api is its own tier above the orchestrator, not a sibling: sync
     # (roadmap item 6) lands in api and composes the orchestrator entry,
     # which same-tier independence would forbid.
