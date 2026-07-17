@@ -14,7 +14,16 @@ the raw API responses as is reasonable.
 
 **In scope**
 
-- Fetching from provider APIs (Motive, Samsara, GeoTab when access lands; extensible to others)
+- Fetching from provider APIs (Motive, GeoTab, Samsara; extensible to others)
+- Broad endpoint coverage per provider — as many endpoints as practical, built
+  out over time into a large default library. "No assumed end use" includes
+  not assuming which endpoints are useful: an endpoint is never excluded
+  because no known consumer wants it, only deferred until its vertical is
+  built (or excluded for a documented practicality reason, e.g. a shape the
+  schema pipeline cannot yet honestly type). fleet-telemetry-hub seeds the
+  port order; it is a bootstrap aid, not the scope ceiling — fleetpull
+  implements more endpoints than its predecessor ever did. (Scope principle
+  settled 2026-07-17.)
 - Dtype coercion and structural normalization (flattening) so output is predictable
 - DataFrame output via programmatic API and CLI
 - Config-driven incremental updates across multiple endpoints
@@ -1133,7 +1142,14 @@ port build prompt implements them.
 4. **The rollup endpoints stay unported** (`vehicle_utilization`,
    `driver_utilization`): superseded in the legacy package, and their
    documented company-local rollup timestamps make them a modeling hazard
-   with no consumer.
+   with no consumer. *Amended 2026-07-17: reframed from excluded to
+   deferred under the endpoint-breadth scope principle (§1) — "no
+   consumer" is no longer a scope argument. The company-local timestamp
+   semantics become a documentation obligation on the mirror (verbatim
+   timestamps, the timezone caveat in the model docstring) plus a
+   window-matching probe question, not an exclusion. Same reframe for
+   the legacy `groups` and `users` endpoints. All queue behind the
+   Samsara wave (§15 item 7).*
 
 ### The exception hierarchy (implemented: `exceptions.py`)
 
@@ -2320,14 +2336,23 @@ resolution (item 1, done).
    (2026-07-15): `driving_periods` and `idle_events` shipped as the
    fleet-wide event pair per their §8 decision block, on a shared
    fleet-date-range spec builder; the remaining legacy Motive endpoints
-   (`groups`, `users`, the rollup pair) are deliberately unported. GeoTab
+   (`groups`, `users`, the rollup pair) were deferred (originally recorded
+   as "deliberately unported"; reframed 2026-07-17 under the
+   endpoint-breadth scope principle, §1 — deferred, never excluded). GeoTab
    `exception_events` shipped 2026-07-15 per its §8 decision block — the
    first bisected endpoint (`WindowBisection` + `BisectingWindowDriver`,
    §14). The GeoTab `users` snapshot followed (2026-07-16, id-sort and the
    full-population shape proven live per §8's rows): the second seek-walk
    consumer, so the walk's spec builder and `GetCountOfCheck` promoted out
    of the devices leaf into the shared `_seek_walk` module. Second half
-   (the feed vertical) remains.*
+   (the feed vertical) remains. Under the endpoint-breadth scope
+   principle (§1, 2026-07-17) this item's endgame widened: after the
+   Samsara onboarding (foundation, then the legacy four — `vehicles`,
+   `drivers`, `trips`, `idling/events` — then the remaining legacy six),
+   the port queue continues across all three providers — the deferred
+   Motive endpoints, the wider GeoTab entity surface, and
+   beyond-legacy endpoints per provider — endpoint by endpoint, each on
+   the proven probe-then-build vertical.*
 8. **Polish phase, gated on a stable public surface:** full-tree ceremony
    audit, test-coverage audit, documentation audit, the real usage-driven
    README, multi-platform CI (a Windows leg would have caught the
