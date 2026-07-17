@@ -2018,29 +2018,28 @@ tzinfo-construction rules mechanically.
   same-day identical-window re-run is a no-op; the late-arrival margin
   refetch still happens whenever the window shifts.
 
-- **Logging policy (pinned during the concurrency vertical — open questions,
-  deliberately unanswered there).** Three decisions, recorded so no scoped
-  task preempts them with ad-hoc narration:
-  - *Log-line timestamps: UTC vs local-with-offset.* The user leans local
-    (the operator reading a console lives in local time); the counterpoint
-    is that everything the lines describe — windows, watermarks, partitions
-    — is UTC, so mixed clocks invite off-by-a-timezone misreadings.
-  - *Handler scope:* configure the root logger or the `fleetpull` package
-    logger only — and whether third-party verbosity (httpx and kin) becomes
-    a deliberate opt-in rather than an accident of root configuration.
-  - *What `Sync` narrates at INFO during long fan-outs:* the last live run
-    was ~80 minutes and produced two log lines. Progress narration (members
-    completed, pages fetched, penalties waited out) is the open surface; the
-    concurrency vertical added no narration pending this policy (its one new
-    log call is the error-path record of a discarded in-flight failure).
-
-  *Update (2026-07-17): the level semantics are settled — INFO for
-  milestones and progress updates, DEBUG for movement and detail geared
-  toward a developer, WARNING for degraded-but-continuing, ERROR for
-  failures — and a logger is bound only in modules that log (§12,
-  CLAUDE.md). Progress narration therefore belongs at INFO when it is
-  built; its content and cadence, plus the timestamp and handler-scope
-  bullets above, remain the open half.*
+- **Logging policy (settled 2026-07-17 — pinned open during the concurrency
+  vertical so no scoped task could preempt it with ad-hoc narration).** The
+  three pinned decisions, all settled and implemented:
+  - *Timestamps are UTC everywhere* — the `Z`-suffixed `asctime`
+    (`logger/setup.py`). Everything the lines describe — windows,
+    watermarks, partitions — is UTC; log time matches data time so incident
+    correlation never crosses a timezone boundary. Local-with-offset was
+    considered (the operator reading a console lives in local time) and
+    rejected: mixed clocks invite off-by-a-timezone misreadings.
+  - *Handlers configure the `fleetpull` package logger only*, with
+    `propagate = False`. Third-party verbosity (httpx and kin) is a
+    deliberate future opt-in, not an accident of root configuration.
+  - *Narration is INFO milestones-and-progress.* The level semantics — INFO
+    for milestones and progress updates, DEBUG for movement and detail
+    geared toward a developer, WARNING for degraded-but-continuing, ERROR
+    for failures; a logger bound only in modules that log (§12, CLAUDE.md)
+    — carry this content, now built: sync start/end, endpoint
+    start/complete, the watermark plan (window bounds and claimable units),
+    per-unit completion, and the fan-out heartbeat every 100 members, with
+    DEBUG carrying the per-member detail. Never per page or per record —
+    that is flood, not progress. (The motivating incident: the last live
+    pre-narration run was ~80 minutes for two log lines.)
 
 ---
 

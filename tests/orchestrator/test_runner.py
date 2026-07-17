@@ -647,6 +647,98 @@ class TestWatermarkRun:
             runner.run(_watermark_definition(), FailingDriver())
 
 
+def _info_messages(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        log_record.getMessage()
+        for log_record in caplog.records
+        if log_record.levelno == logging.INFO
+    ]
+
+
+class TestNarration:
+    """The runner's INFO progress lines (DESIGN section 13's settled policy).
+
+    Substring assertions on ``getMessage()`` only -- never whole formatted
+    lines -- so format tweaks do not break the pins.
+    """
+
+    def test_snapshot_run_narrates_start_and_completion(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        recorder = _RecordingRecorder()
+        runner = _make_runner(recorder, tmp_path)
+        records: list[JsonObject] = [{'id': 1, 'name': 'a'}, {'id': 2, 'name': 'b'}]
+        with caplog.at_level(logging.INFO):
+            runner.run(_snapshot_definition(), CannedDriver([records]))
+        started_lines = [
+            message
+            for message in _info_messages(caplog)
+            if 'endpoint started:' in message
+        ]
+        assert len(started_lines) == 1
+        assert 'provider=motive' in started_lines[0]
+        assert 'endpoint=vehicles' in started_lines[0]
+        assert 'mode=snapshot' in started_lines[0]
+        completed_lines = [
+            message
+            for message in _info_messages(caplog)
+            if 'endpoint complete:' in message
+        ]
+        assert len(completed_lines) == 1
+        assert 'records_fetched=2' in completed_lines[0]
+        assert 'rows_written=2' in completed_lines[0]
+        assert 'duplicates_dropped=0' in completed_lines[0]
+        assert 'files_written=1' in completed_lines[0]
+        assert 'deleted_partitions=0' in completed_lines[0]
+        assert 'elapsed_seconds=' in completed_lines[0]
+
+    def test_watermark_run_narrates_the_plan_and_each_unit(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        recorder = _RecordingRecorder()
+        runner = _make_runner(recorder, tmp_path, default_start_date=date(2026, 6, 12))
+        batch = _wm_batch(datetime(2026, 6, 13, 9, tzinfo=UTC))
+        with caplog.at_level(logging.INFO):
+            runner.run(_watermark_definition(), CannedDriver([batch]))
+        info_messages = _info_messages(caplog)
+        started_lines = [
+            message for message in info_messages if 'endpoint started:' in message
+        ]
+        assert len(started_lines) == 1
+        assert 'mode=watermark' in started_lines[0]
+        planned_lines = [
+            message for message in info_messages if 'window planned:' in message
+        ]
+        assert len(planned_lines) == 1
+        assert 'provider=motive' in planned_lines[0]
+        assert 'endpoint=locations' in planned_lines[0]
+        assert 'window_start=2026-06-12T00:00:00Z' in planned_lines[0]
+        assert 'window_end=2026-06-15T00:00:00Z' in planned_lines[0]
+        assert 'claimable_units=1' in planned_lines[0]
+        unit_lines = [
+            message for message in info_messages if 'unit complete:' in message
+        ]
+        assert len(unit_lines) == 1
+        assert 'window_start=2026-06-12T00:00:00Z' in unit_lines[0]
+        assert 'window_end=2026-06-15T00:00:00Z' in unit_lines[0]
+        assert 'records_fetched=1' in unit_lines[0]
+
+    def test_caught_up_run_narrates_no_completion_line(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        recorder = _RecordingRecorder()
+        cursor = _StubCursorAccess(
+            DateWatermark(watermark=datetime(2026, 6, 16, 8, tzinfo=UTC))
+        )
+        clock = FrozenClock(start_time_utc=datetime(2026, 6, 16, 12, tzinfo=UTC))
+        runner = _make_runner(recorder, tmp_path, clock=clock, cursor_access=cursor)
+        with caplog.at_level(logging.INFO):
+            runner.run(_watermark_definition(), CannedDriver([[]]))
+        info_messages = _info_messages(caplog)
+        assert any('caught up:' in message for message in info_messages)
+        assert not any('endpoint complete:' in message for message in info_messages)
+
+
 class TestMetadataProjection:
     def test_snapshot_run_writes_metadata_json(self, tmp_path: Path) -> None:
         recorder = _RecordingRecorder()
