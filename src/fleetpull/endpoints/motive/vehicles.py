@@ -17,7 +17,7 @@ endpoint factory it needs no config, so it is a frozen constant -- and a
 public one deliberately: ``build_roster_registry`` discovers public
 module-level ``RosterDefinition`` constants in the same walk that finds
 ``build_endpoint``, so declaring the constant IS the registration
-(AUD-05's close; no hand-maintained list exists to drift).
+(no hand-maintained list exists to drift).
 The include-inactive guarantee binds at the feeder population, not at
 eviction policy: ``/v1/vehicles`` lists inactive and retired vehicles, so
 a fan-out over this roster covers vehicles that were active during a

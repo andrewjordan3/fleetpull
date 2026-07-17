@@ -17,8 +17,8 @@ module: no manifest, no registration, no provider list here.
 ``build_roster_registry`` is its sibling over the same walk: rosters are declared
 as public module-level ``RosterDefinition`` constants beside their feeders, in
 exactly the leaf modules the endpoint walk visits, so they are discovered the
-same way (AUD-05's close -- no hand-maintained registration list, no per-provider
-export to drift). Adding a roster is declaring one constant in its feeder's
+same way -- no hand-maintained registration list, no per-provider export
+to drift. Adding a roster is declaring one constant in its feeder's
 module.
 
 Discovery reaches the leaf modules dynamically rather than through each provider

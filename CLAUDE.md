@@ -8,6 +8,8 @@ fleetpull pulls fleet telematics data from provider APIs (Motive, GeoTab, Samsar
 
 Endpoint coverage is deliberately broad: as many endpoints per provider as practical, built into a large default library. "No assumed end use" includes not assuming which endpoints are useful — an endpoint is deferred, never excluded for lacking a known consumer. fleet-telemetry-hub is a porting aid, not a scope ceiling.
 
+**`ENDPOINTS.md` at the repo root is the endpoint manifest** — the shipped-endpoint inventory and the port queue. Adding, renaming, or re-scoping an endpoint updates it in the same change.
+
 **`DESIGN.md` at the repo root is the design of record.** Read it before implementing any module — it carries the cross-module rationale (storage layout, incremental semantics, the rate-limiter protocol) that no single scoped task can see. It is a living document, not scripture. When implementation reveals a better idea, surface it (see Think Before Coding) instead of silently implementing it; once a divergence is settled, updating the affected DESIGN.md section is part of the same change. Stale design docs compound exactly like stale docstrings. A task prompt governs what to build; DESIGN.md governs how the pieces fit together — if they conflict, stop and say so rather than quietly reinterpreting either one.
 
 ## Hard Scope Boundaries
