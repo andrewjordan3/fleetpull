@@ -8,7 +8,10 @@ and the first-page shape (``sortBy: id``, ascending, an EXPLICIT null
 """
 
 from fleetpull.config import GeotabAuthConfig, GeotabConfig
-from fleetpull.endpoints.geotab._seek_walk import GeotabGetSpecBuilder, GetCountOfCheck
+from fleetpull.endpoints.geotab._get_requests import (
+    GeotabGetSpecBuilder,
+    GetCountOfCheck,
+)
 from fleetpull.endpoints.geotab.users import build_endpoint
 from fleetpull.endpoints.shared import (
     EndpointDefinition,

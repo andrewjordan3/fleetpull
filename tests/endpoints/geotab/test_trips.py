@@ -13,10 +13,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from fleetpull.config import GeotabAuthConfig, GeotabConfig
-from fleetpull.endpoints.geotab.trips import (
-    _GeotabWindowedGetSpecBuilder,
-    build_endpoint,
-)
+from fleetpull.endpoints.geotab._get_requests import GeotabWindowedGetSpecBuilder
+from fleetpull.endpoints.geotab.trips import build_endpoint
 from fleetpull.endpoints.shared import (
     EndpointDefinition,
     StorageKind,
@@ -40,7 +38,14 @@ def _build_endpoint() -> EndpointDefinition[Trip]:
     return build_endpoint(GeotabConfig())
 
 
-class TestGeotabWindowedGetSpecBuilder:
+class TestTripsSpecBuilder:
+    def test_composes_the_shared_builder_with_id_sort(self) -> None:
+        # id_sort is the per-type declared capability: sort-beside-search
+        # is live-verified for Trip, never assumed across types.
+        endpoint = _build_endpoint()
+        assert isinstance(endpoint.spec_builder, GeotabWindowedGetSpecBuilder)
+        assert endpoint.spec_builder.id_sort is True
+
     def test_builds_the_windowed_sorted_get(self) -> None:
         endpoint = _build_endpoint()
         spec = endpoint.spec_builder.build_spec(resume=_window(), path_values={})
@@ -64,10 +69,11 @@ class TestGeotabWindowedGetSpecBuilder:
         }
 
     def test_requires_a_date_window(self) -> None:
-        builder = _GeotabWindowedGetSpecBuilder(
+        builder = GeotabWindowedGetSpecBuilder(
             server='my.geotab.com',
             type_name='Trip',
             results_limit=5000,
+            id_sort=True,
         )
         with pytest.raises(TypeError):
             builder.build_spec(resume=None, path_values={})

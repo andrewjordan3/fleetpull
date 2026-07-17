@@ -15,14 +15,18 @@ never built here; the strategy also retargets each prepared request to
 the session's resolved host, so the host this module writes is a
 pre-auth placeholder that never reaches the wire on its own (DESIGN
 section 8). The seek walk and the ``GetCountOfCheck`` truth instrument
-live in the shared ``_seek_walk`` module (promoted when the users leaf
-became their second consumer); this leaf binds them to ``Device``.
+live in the shared ``_get_requests`` module (promoted when the users
+leaf became their second consumer); this leaf binds them to ``Device``.
 """
 
 from typing import Final
 
 from fleetpull.config import GeotabConfig
-from fleetpull.endpoints.geotab._seek_walk import GeotabGetSpecBuilder, GetCountOfCheck
+from fleetpull.endpoints.geotab._get_requests import (
+    GeotabGetSpecBuilder,
+    GetCountOfCheck,
+    server_host,
+)
 from fleetpull.endpoints.shared import (
     EndpointDefinition,
     SnapshotMode,
@@ -34,33 +38,10 @@ from fleetpull.vocabulary import Provider, QuotaScope
 
 __all__: list[str] = ['build_endpoint']
 
-# Pre-auth placeholder host for a default-constructed (credential-less)
-# config -- mirrors GeotabAuthConfig's server default; the session
-# strategy retargets every prepared request, so no request ever leaves
-# for this host un-retargeted.
-_DEFAULT_SERVER: Final[str] = 'my.geotab.com'
-
 # The largest sound page under Get's silent 5,000-record cap.
 _RESULTS_LIMIT: Final[int] = 5000
 
 _DEVICE_TYPE_NAME: Final[str] = 'Device'
-
-
-def _server_host(config: GeotabConfig) -> str:
-    """The authentication host the spec URLs are built on.
-
-    Args:
-        config: The validated GeoTab configuration.
-
-    Returns:
-        ``auth.server`` when a credential is configured; the placeholder
-        default otherwise (a credential-less config still builds every
-        discovered leaf -- the registry walk requires it -- but can never
-        fetch, so the placeholder never reaches the wire).
-    """
-    if config.auth is not None:
-        return config.auth.server
-    return _DEFAULT_SERVER
 
 
 def build_endpoint(config: GeotabConfig) -> EndpointDefinition[Device]:
@@ -80,7 +61,7 @@ def build_endpoint(config: GeotabConfig) -> EndpointDefinition[Device]:
     Returns:
         The frozen devices ``EndpointDefinition``.
     """
-    server = _server_host(config)
+    server = server_host(config)
     return EndpointDefinition(
         provider=Provider.GEOTAB,
         name='devices',

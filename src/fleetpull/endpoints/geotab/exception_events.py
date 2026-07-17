@@ -4,12 +4,16 @@
 A date-windowed pull of the ``ExceptionEvent`` entity — the UNFILTERED
 stream, every rule (DESIGN §8's 2026-07-15 decision block: no
 server-side rule filter in version one; rule selection is the
-consumer's one-expression job on the delivered stream). The trips seek
-template is structurally unavailable here — id-sort is rejected
-outright for this type (captured 2026-07-15: ``ArgumentException``,
-"Can not sort by id") — so the binding declares ``WindowBisection`` and
-the orchestrator's bisecting driver fetches each unit window whole,
-halving on the exactly-full overflow signal down to the floor.
+consumer's one-expression job on the delivered stream). The seek walk
+is structurally unavailable here — id-sort is rejected outright for
+this type (captured 2026-07-15: ``ArgumentException``, "Can not sort by
+id"), and any sort composed with a search degrades to the deterministic
+``-32000 GenericException`` — so the leaf composes the shared
+``GeotabWindowedGetSpecBuilder`` (``_get_requests``) with
+``id_sort=False`` (no ``sort`` member ever written), declares
+``WindowBisection``, and the orchestrator's bisecting driver fetches
+each unit window whole, halving on the exactly-full overflow signal
+down to the floor.
 
 ``ExceptionEventSearch`` window matching is OVERLAP-anchored (captured
 2026-07-15): retrieval supersets start-anchored ownership, so
@@ -23,38 +27,25 @@ resolved host are the session strategy's injections (the devices-leaf
 convention); the host this module writes is a pre-auth placeholder.
 """
 
-from collections.abc import Mapping
-from dataclasses import dataclass
 from datetime import timedelta
 from typing import Final
 
 from fleetpull.config import GeotabConfig
+from fleetpull.endpoints.geotab._get_requests import (
+    GeotabWindowedGetSpecBuilder,
+    server_host,
+)
 from fleetpull.endpoints.shared import (
     EndpointDefinition,
-    ResumeValue,
     StorageKind,
     WatermarkMode,
     WindowBisection,
 )
-from fleetpull.incremental import DateWindow
 from fleetpull.models.geotab import ExceptionEvent
-from fleetpull.network.contract import HttpMethod, RequestSpec
 from fleetpull.network.decoders import SinglePageDecoder
-from fleetpull.timing import to_iso8601
-from fleetpull.vocabulary import JsonValue, Provider, QuotaScope
+from fleetpull.vocabulary import Provider, QuotaScope
 
 __all__: list[str] = ['build_endpoint']
-
-# The JSON-RPC ingress path every GeoTab method POSTs to.
-_API_PATH: Final[str] = '/apiv1'
-
-# Pre-auth placeholder host for a default-constructed (credential-less)
-# config -- mirrors GeotabAuthConfig's server default; the session
-# strategy retargets every prepared request, so no request ever leaves
-# for this host un-retargeted. Duplicated from the devices leaf per its
-# stated colocation policy (module-private constants, deliberately
-# unshared).
-_DEFAULT_SERVER: Final[str] = 'my.geotab.com'
 
 # The per-request record limit AND the bisection overflow threshold.
 # The silent cap is Captured on this type (2026-07-15: GetCountOf
@@ -71,103 +62,12 @@ _FLOOR: Final[timedelta] = timedelta(minutes=1)
 # The wire key the bisecting driver anchors leaf ownership by.
 _EVENT_TIME_WIRE_KEY: Final[str] = 'activeFrom'
 
-# Wire-protocol tokens: module-private Final constants, colocated with
-# the strategy that emits them (the constants-scope precedent;
-# deliberately unshared, even with the sibling leaves' own copies).
-_METHOD_KEY: Final[str] = 'method'
-_PARAMS_KEY: Final[str] = 'params'
-_TYPE_NAME_KEY: Final[str] = 'typeName'
-_SEARCH_KEY: Final[str] = 'search'
-_FROM_DATE_KEY: Final[str] = 'fromDate'
-_TO_DATE_KEY: Final[str] = 'toDate'
-_RESULTS_LIMIT_KEY: Final[str] = 'resultsLimit'
-_GET_METHOD: Final[str] = 'Get'
+# The JSON-RPC envelope key the single-page decoder reads records from
+# (the constants-scope precedent: module-private, colocated with the
+# decoder composition that consumes it).
 _RESULT_KEY: Final[str] = 'result'
 
 _EXCEPTION_EVENT_TYPE_NAME: Final[str] = 'ExceptionEvent'
-
-
-def _server_host(config: GeotabConfig) -> str:
-    """The authentication host the spec URLs are built on.
-
-    Args:
-        config: The validated GeoTab configuration.
-
-    Returns:
-        The configured auth server, or the placeholder default for a
-        credential-less config (the session strategy retargets every
-        prepared request, so the placeholder never reaches the wire).
-    """
-    if config.auth is not None:
-        return config.auth.server
-    return _DEFAULT_SERVER
-
-
-@dataclass(frozen=True, slots=True)
-class _GeotabUnsortedWindowedGetSpecBuilder:
-    """Build one windowed, unsorted, capped ``Get`` request.
-
-    The bisecting driver's request shape (captured 2026-07-15 as the
-    composition that SUCCEEDS on this type): the window as
-    ``search.fromDate`` / ``search.toDate`` beside ``resultsLimit``,
-    and deliberately NO ``sort`` member — id-sort is rejected outright
-    for ExceptionEvent, and any sort composed with a search degrades to
-    the deterministic ``-32000 GenericException``. The driver re-invokes
-    this builder per sub-window; there is no page advance.
-
-    Attributes:
-        server: The pre-auth authentication host (retargeted by the
-            session strategy after Authenticate).
-        type_name: The GeoTab entity to fetch (``'ExceptionEvent'``).
-        results_limit: The per-request record limit — the bisection
-            overflow threshold.
-    """
-
-    server: str
-    type_name: str
-    results_limit: int
-
-    def build_spec(
-        self, resume: ResumeValue, path_values: Mapping[str, str]
-    ) -> RequestSpec:
-        """Build one window's request.
-
-        Args:
-            resume: The window to fetch. Must be a ``DateWindow`` — the
-                unit's resume window at the recursion top, a bisected
-                half below it; any other value is a wiring bug.
-            path_values: Accepted to satisfy the protocol; unused —
-                there is no URL-path fan-out.
-
-        Returns:
-            A credential-less JSON-RPC POST carrying the window as
-            ``search.fromDate`` / ``search.toDate`` (UTC ISO-8601 ``Z``
-            strings) with ``resultsLimit`` and no ``sort``.
-
-        Raises:
-            TypeError: ``resume`` is not a ``DateWindow``.
-        """
-        if not isinstance(resume, DateWindow):
-            raise TypeError(
-                '_GeotabUnsortedWindowedGetSpecBuilder requires a DateWindow '
-                f'resume, got {type(resume).__name__}.'
-            )
-        json_body: dict[str, JsonValue] = {
-            _METHOD_KEY: _GET_METHOD,
-            _PARAMS_KEY: {
-                _TYPE_NAME_KEY: self.type_name,
-                _SEARCH_KEY: {
-                    _FROM_DATE_KEY: to_iso8601(resume.start),
-                    _TO_DATE_KEY: to_iso8601(resume.end),
-                },
-                _RESULTS_LIMIT_KEY: self.results_limit,
-            },
-        }
-        return RequestSpec(
-            method=HttpMethod.POST,
-            url=f'https://{self.server}{_API_PATH}',
-            json_body=json_body,
-        )
 
 
 def build_endpoint(config: GeotabConfig) -> EndpointDefinition[ExceptionEvent]:
@@ -196,10 +96,11 @@ def build_endpoint(config: GeotabConfig) -> EndpointDefinition[ExceptionEvent]:
     return EndpointDefinition(
         provider=Provider.GEOTAB,
         name='exception_events',
-        spec_builder=_GeotabUnsortedWindowedGetSpecBuilder(
-            server=_server_host(config),
+        spec_builder=GeotabWindowedGetSpecBuilder(
+            server=server_host(config),
             type_name=_EXCEPTION_EVENT_TYPE_NAME,
             results_limit=_RESULTS_LIMIT,
+            id_sort=False,
         ),
         page_decoder=SinglePageDecoder(records_key=_RESULT_KEY),
         response_model=ExceptionEvent,
