@@ -63,8 +63,8 @@ logger = logging.getLogger(__name__)
 # at the boundary. GeoTab's arms carry the four-field credential whole.
 type AuthInput = str | SecretStr | Mapping[str, str] | GeotabAuthConfig
 
-# Provider knowledge no consumer should type (AUDIT row 20): the header
-# a Motive static key travels in.
+# Provider knowledge no consumer should type: the header a Motive
+# static key travels in.
 _MOTIVE_AUTH_HEADER: str = 'X-API-Key'
 
 # Samsara's bearer credential: the header and the value prefix. The

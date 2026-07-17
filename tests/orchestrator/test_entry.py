@@ -339,7 +339,7 @@ def test_caught_up_feeder_run_applies_nothing() -> None:
 
 
 def test_watermark_definition_sourcing_a_roster_raises_before_anything_runs() -> None:
-    # AUD-06's tap-route guard, kept as the permanent negative shape: a
+    # The feeder-mode tap-route guard, kept as the permanent negative shape: a
     # watermark-mode definition the catalog says sources a roster is a wiring
     # bug -- reconcile is only correct over a complete listing -- rejected
     # before the run, the refresh, or any observer is constructed.

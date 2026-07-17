@@ -69,7 +69,7 @@ _CURSORS_TABLE_DDL: Final[str] = """
 # (and a feed run's ``to_version``) at completion, ``error_detail`` only on failure.
 # ``row_count`` means "records the run produced"; the sink those records landed in
 # (a roster for a coordinator harvest, parquet for a runner-driven fetch) follows
-# from the run's ``mode`` and origin, which the row already carries (AUD-16).
+# from the run's ``mode`` and origin, which the row already carries.
 # Three table CHECKs are the DB-layer backstop behind the RunLedger API guards — a
 # mode-keyed range shape (snapshot carries no range; watermark carries a window;
 # feed carries ``from_version``; ``to_version`` is admissible only on a feed run, so

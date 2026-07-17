@@ -161,7 +161,7 @@ class RunLedger:
     Runs after ``migrate_to_head`` (the ``runs`` table must exist).
     ``row_count`` uniformly means "records the run produced"; the sink those
     records landed in (a roster for a coordinator harvest, parquet for a
-    runner-driven fetch) follows from the run's mode and origin (AUD-16).
+    runner-driven fetch) follows from the run's mode and origin.
 
     Args:
         database: The initialized, migrated state database supplying connections.

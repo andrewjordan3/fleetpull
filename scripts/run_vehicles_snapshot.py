@@ -1,8 +1,8 @@
 # scripts/run_vehicles_snapshot.py
 """Hand-run driver: fetch the Motive vehicles snapshot through the public API.
 
-The after-picture of the roadmap item-5 build, and the closed half of the
-audit's consumer-cost evidence (AUDIT.md): the hand composition this
+The after-picture of the roadmap item-5 build, and the closed half of
+the pre-API audit's consumer-cost evidence: the hand composition this
 script used to carry -- provider config, endpoint definition, provider
 profile, client runtime, transport client, request spec, page loop,
 validation, frame construction -- is now one public ``fetch`` call. The
