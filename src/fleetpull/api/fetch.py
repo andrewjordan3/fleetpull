@@ -47,6 +47,7 @@ from fleetpull.config import (
     MotiveConfig,
     ProviderConfig,
     RetryConfig,
+    SamsaraConfig,
 )
 from fleetpull.endpoints import build_endpoint_registry
 from fleetpull.exceptions import ConfigurationError
@@ -68,14 +69,13 @@ def _default_provider_configs() -> list[ProviderConfig]:
     One instance per provider package under ``endpoints/`` -- the
     registry walk builds every discovered leaf, so each provider with
     leaves needs its config here even when the requested endpoint
-    belongs to another. Extends as provider endpoint packages land
-    (GeoTab: roadmap item 7).
+    belongs to another. Extends as provider endpoint packages land.
 
     Returns:
         The default-constructed provider configs, ready for both
         ``build_endpoint_registry`` and ``rate_limits_from_configs``.
     """
-    return [MotiveConfig(), GeotabConfig()]
+    return [MotiveConfig(), GeotabConfig(), SamsaraConfig()]
 
 
 # typing-justified: ingress guard; input unknowable by design; object forces narrowing

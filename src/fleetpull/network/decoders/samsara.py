@@ -1,12 +1,18 @@
 # src/fleetpull/network/decoders/samsara.py
 """Samsara page decoder: top-level-list records, cursor pagination
 (sources: scrubbed provider-behavior verification, June 2026; cursor
-contract from provider documentation).
+contract from provider documentation, proven live 2026-07-17 -- the
+advance continued across a real page boundary with no overlap or loss,
+and the terminal page carried ``hasNextPage: false`` beside an
+EMPTY-STRING ``endCursor``, the shape the continuation guard below is
+calibrated against).
 
 Records arrive as a top-level list under a per-endpoint key; the
 ``pagination`` block carries ``endCursor``/``hasNextPage``. The first
-page sends no ``after``; subsequent pages send ``after=<endCursor>``.
-Decoder logic deliberately resembles its siblings without sharing code.
+page sends ``limit`` and no ``after``; subsequent pages send
+``after=<endCursor>`` (merged onto the sent spec, so ``limit``
+persists). Decoder logic deliberately resembles its siblings without
+sharing code.
 """
 
 from dataclasses import dataclass
@@ -26,8 +32,9 @@ from fleetpull.vocabulary import JsonValue
 
 __all__: list[str] = ['SamsaraCursorPageDecoder']
 
-# Wire-protocol token: Final constant, not an enum. Deliberately unshared.
+# Wire-protocol tokens: Final constants, not an enum. Deliberately unshared.
 _AFTER_PARAM: Final[str] = 'after'
+_LIMIT_PARAM: Final[str] = 'limit'
 
 
 class _SamsaraPageEcho(BaseModel):
@@ -54,13 +61,21 @@ class SamsaraCursorPageDecoder:
 
     Attributes:
         records_key: The top-level key holding the record list.
+        results_limit: The per-page record count requested via the
+            ``limit`` query parameter (pagination parameters are the
+            decoder's, per the ``StaticGetSpecBuilder`` seam).
     """
 
     records_key: str
+    results_limit: int
 
     def first_request(self, spec: RequestSpec) -> RequestSpec:
-        """Return the spec unchanged; page one must NOT carry ``after``."""
-        return spec
+        """Send page one with ``limit`` and NO ``after``.
+
+        The ``after`` merge in ``decode_page`` layers onto this spec, so
+        the limit persists across every subsequent page.
+        """
+        return spec.with_merged_params({_LIMIT_PARAM: str(self.results_limit)})
 
     def decode_page(self, sent: RequestSpec, envelope: JsonValue) -> DecodedPage:
         """Extract the records and compute the cursor verdict.
