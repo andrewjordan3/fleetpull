@@ -1,6 +1,6 @@
 # fleetpull — Design Document
 
-**Status:** Design settled through the two-verb public API (§10) and config-driven sync. Shipped end-to-end: the `fetch` API; `Sync(config_path).run()`; work-unit planning with crash resume and the per-provider fan-out executor; Motive `vehicles` (snapshot), `vehicle_locations` (date-partitioned watermark, live-run), and the fleet-wide event pair `driving_periods` / `idle_events` (windowed watermark); GeoTab `devices` (snapshot, live-run), `users` (snapshot), `trips` (windowed watermark, stop-anchored), and `exception_events` (windowed watermark, bisected). The Samsara foundation is wired ahead of its first endpoint (2026-07-17): `SamsaraConfig` with the `SAMSARA_API_KEY` fallback, the bearer auth-ingress arm, and full `Sync` dispatch — the first Samsara vertical is purely endpoint work. The GeoTab feed arm (`GetFeed` runner, storage cells, token commit) remains unbuilt — trips ships windowed until it lands (§8). See §15 for run status and the build roadmap.
+**Status:** Design settled through the two-verb public API (§10) and config-driven sync. Shipped end-to-end: the `fetch` API; `Sync(config_path).run()`; work-unit planning with crash resume and the per-provider fan-out executor; Motive `vehicles` (snapshot), `vehicle_locations` (date-partitioned watermark, live-run), and the fleet-wide event pair `driving_periods` / `idle_events` (windowed watermark); GeoTab `devices` (snapshot, live-run), `users` (snapshot), `trips` (windowed watermark, stop-anchored), and `exception_events` (windowed watermark, bisected). The Samsara foundation is wired (2026-07-17): `SamsaraConfig` with the `SAMSARA_API_KEY` fallback, the bearer auth-ingress arm, and full `Sync` dispatch; Samsara `vehicles` (snapshot, cursor walk) is the first Samsara vertical, built from the same-day probe session. The GeoTab feed arm (`GetFeed` runner, storage cells, token commit) remains unbuilt — trips ships windowed until it lands (§8). See §15 for run status and the build roadmap.
 **Name:** `fleetpull` — final. Describes exactly what the package does and nothing more (PyPI availability confirmed 2026-06-10).
 **Relationship to fleet-telemetry-hub:** New package, not a rewrite. fleet-telemetry-hub remains in production untouched while fleetpull is built.
 
@@ -1229,6 +1229,9 @@ budgets → `RetriesExhaustedError`, failed auth paths →
 | GeoTab | User supports id-sort seek paging — proven live, never assumed from Device: a `resultsLimit: 3` first page returned ascending ids, and the offset advance continued past the boundary with no overlap or loss. Third per-type sortability datum (Device yes, ExceptionEvent no, User yes) — sortability is probed per type, every time (captured 2026-07-16). |
 | GeoTab | The full User population sweep (bare `Get`): 157 records, equal to `GetCountOf` exactly; no null value and no type variance on any of the 75 observed keys — GeoTab omits keys rather than sending nulls, so User optionality is absence-shaped. The driver-only block (`licenseNumber`, `licenseProvince`, `viewDriversOwnDataOnly`, plus the `driverGroups`/`keys` lists) sits at exactly the 129-driver count; `maxPCDistancePerDay` (126/157) does NOT align with the driver split; `accessGroupFilter` appears on exactly one record; `iAMMetadata` on 42/157 (captured 2026-07-16). |
 | Samsara | 429 with fractional `Retry-After` (e.g. `0.40235`); 401 body is `{"message": ...}`; 5xx bodies are plain strings, never JSON. |
+| Samsara | Success responses carry NO rate-limit headers (`Date`/`Content-Type`/`Content-Length`/`Connection`/`Request-Id`/`Strict-Transport-Security` only) — the Motive posture: the real budget is unobservable outside a 429, so the config's self-limiting default carries the load. `Request-Id` is the support correlation handle (captured 2026-07-17). |
+| Samsara | `/fleet/vehicles` cursor mechanics proven live: the `after` advance continued across a real page boundary with no overlap or loss (ids ascend numerically straight across it), a fresh `endCursor` per page, and the TERMINAL page carries `hasNextPage: false` beside an EMPTY-STRING `endCursor` — not absent, not null — the shape the decoder's promised-continuation guard is calibrated against. The documented 512 `limit` maximum was honored exactly (608-vehicle fleet: 512 + 96) (captured 2026-07-17). |
+| Samsara | Vehicle-record optionality is absence-shaped: no null value and no type variance across all 608 swept records (20-key union) — Samsara omits keys, like GeoTab, while also using empty strings (`notes: ""` everywhere). Partial-presence keys omit blockwise (the minimal 7-key shape is an unplugged unit with a serial-shaped default name). `externalIds` is an OPEN user-definable map with dotted namespace keys (`samsara.serial`, `samsara.vin`), each mirroring its top-level sibling; `year` is a quoted integer (captured 2026-07-17). |
 | Motive | 401 body is `{"error_message": ...}`; the documented /vehicle_locations limit was not observed to enforce — generic 429 posture. |
 | Motive | `/v3/vehicle_locations/{vehicle_id}` verified live: envelope `{"vehicle_locations": [{"vehicle_location": {...}}]}`, `located_at` is UTC ISO-8601 (`Z`-suffixed), one non-paginated page per fetch (so `SinglePageDecoder` fits), and a single per-vehicle fetch spans multiple calendar dates (the sample crossed two) — confirming `split_by_date`'s multi-partition output is load-bearing in production, not a theoretical edge: one fetch genuinely fans into several partitions. |
 | Motive | `/v3/vehicle_locations/{vehicle_id}` date bounds pinned by direct probing: day-granular `start_date`/`end_date` are honored inclusively on both bounds — a single-day request returns that full day, a two-day request both complete days. The documented 3-month maximum range is real: long backfills will eventually need request chunking (a range limit, unrelated to the §15 item-1 window defect). |
@@ -1564,7 +1567,8 @@ fleetpull/
     motive/
       vehicles.py  # build_endpoint — the Motive vehicles snapshot factory
       vehicle_locations.py  # MotiveVehicleLocationsSpecBuilder + build_endpoint — the watermark binding
-    samsara/       # leafless package (the discovery walk visits it); leaves land per vertical
+    samsara/
+      vehicles.py  # build_endpoint — the vehicles cursor-walk snapshot factory
     geotab/
       _seek_walk.py  # GeotabGetSpecBuilder + GetCountOfCheck — the shared snapshot
                    #   seek-walk machinery (promoted from the devices leaf when the
@@ -1594,7 +1598,9 @@ fleetpull/
       shared.py    # DriverSummary, EldDeviceInfo — embedded shapes shared across endpoints
       vehicles.py  # Vehicle snapshot record (+ AvailabilityDetails / AvailabilityStatus / VehicleStatus)
       vehicle_locations.py # VehicleLocation breadcrumb record (/v3/vehicle_locations)
-    samsara/       # net-new when its endpoints land
+    samsara/
+      vehicle.py   # Vehicle (+ the gateway/driver refs and the open-map
+                   #   externalIds slice) — the fleet-vehicle snapshot record
     geotab/
       shared.py    # GeotabTimeSpan (.NET TimeSpan ingress) + bare_id_to_reference
                    #   (the sentinel-or-object reference coercion) — shared across entities
@@ -2352,7 +2358,10 @@ resolution (item 1, done).
    the port queue continues across all three providers — the deferred
    Motive endpoints, the wider GeoTab entity surface, and
    beyond-legacy endpoints per provider — endpoint by endpoint, each on
-   the proven probe-then-build vertical.*
+   the proven probe-then-build vertical. Samsara `vehicles` shipped
+   2026-07-17 (the third provider's first vertical, same-day
+   probe-to-build: cursor walk proven live per §8's rows, the
+   foundation and the vertical in one branch).*
 8. **Polish phase, gated on a stable public surface:** full-tree ceremony
    audit, test-coverage audit, documentation audit, the real usage-driven
    README, multi-platform CI (a Windows leg would have caught the
