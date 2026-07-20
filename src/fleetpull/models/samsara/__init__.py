@@ -9,6 +9,13 @@ from fleetpull.models.samsara.driver import (
     DriverStaticAssignedVehicleRef,
     DriverTagRef,
 )
+from fleetpull.models.samsara.idling_event import (
+    AssetRef,
+    FuelCost,
+    IdlingAddress,
+    IdlingEvent,
+    OperatorRef,
+)
 from fleetpull.models.samsara.trip import (
     Trip,
     TripAddress,
@@ -22,12 +29,17 @@ from fleetpull.models.samsara.vehicle import (
 )
 
 __all__: list[str] = [
+    'AssetRef',
     'Driver',
     'DriverActivationStatus',
     'DriverCarrierSettings',
     'DriverHosSetting',
     'DriverStaticAssignedVehicleRef',
     'DriverTagRef',
+    'FuelCost',
+    'IdlingAddress',
+    'IdlingEvent',
+    'OperatorRef',
     'Trip',
     'TripAddress',
     'TripCoordinates',

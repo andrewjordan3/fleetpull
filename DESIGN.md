@@ -1277,6 +1277,43 @@ trips build implements them.
 5. **No completeness check** — windowed, deliberately partial (the
    standing snapshot-only rule).
 
+### Samsara `idling_events` probe-settled decisions (2026-07-20)
+
+Settled by the 2026-07-20 live probe session (the captured rows below); the
+idling_events build implements them.
+
+1. **The Motive driving_periods template on the Samsara cursor decoder —
+   the first windowed+cursor pairing, composed entirely from existing
+   parts.** Windowed watermark / `DATE_PARTITIONED` / SAMSARA scope /
+   `event_time_column='start_time'`, with the fleet-wide default
+   `SingleFetch` shape (events carry per-record asset attribution —
+   `asset: {id: int}` on every record — so there is no fan-out and the
+   binding declares nothing). Retrieval is START-anchored on UTC (the
+   captured row), so the retrieval anchor and the routing anchor coincide
+   natively: no wire pad, and the runner's post-fetch window filter is
+   pure hygiene (the driving_periods situation).
+2. **The leaf spec builder renders the resume window as RFC3339
+   `startTime`/`endTime`** via `require_date_window` and the timing
+   codec's `to_iso8601`; the decoder owns `limit`/`after` — its
+   `first_request` merges `limit=200` (the probed per-endpoint cap, a
+   per-leaf `Final` with provenance), and because the `after` advance
+   merges onto the SENT spec, the window parameters persist across every
+   page of the walk (the mechanism proven live on the drivers sweep, now
+   carrying a window instead of a status). The sub-3-months range cap
+   needs no builder guard: default 7-day backfill chunks sit far inside,
+   and a `backfill_chunk_days` raised past the cap earns the provider's
+   own loud JSON 400 — the Motive driving_periods stance.
+3. **Duration stays `duration_milliseconds: int`** — a verbatim
+   unit-suffixed mirror. No timedelta recovery: the value is directly
+   consumable, and recovery would presume a use (the wire has NO end key
+   — the interval is start plus duration).
+4. **No completeness check** (windowed, deliberately partial — the
+   standing snapshot-only rule); **no enum for `ptoState`** — only
+   `'inactive'` was observed in 2,200 records, but the value set is not
+   closed by evidence (unlike `driverActivationStatus`'s 400-proven
+   closure), so the field is a plain `str` with the openness documented
+   on the model.
+
 ### The exception hierarchy (implemented: `exceptions.py`)
 
 The operational errors consumers catch, mirroring the classification
@@ -1370,6 +1407,11 @@ budgets → `RetriesExhaustedError`, failed auth paths →
 | Samsara | The `/v1/fleet/trips` window range cap is LOUD and exactly 90 days: 91+ days returns HTTP 400 text/plain `rpc error: code = InvalidArgument desc = requested time range cannot exceed 90 days`; a 90-day window succeeded (702 trips, one page). NOTE the wire posture: v1 400 bodies are TEXT/PLAIN rpc-error strings — the known Samsara plain-string-body posture extends beyond 5xx (captured 2026-07-20). |
 | Samsara | Trip-record census (725 trips, 60 vehicles, ZERO nulls anywhere): always present — `startMs`/`endMs` (epoch-ms ints; `endMs` on every observed trip including the two most recent — in-progress trips were never observed and appear to materialize on completion; the lookback absorbs late materialization, an accepted residual), `distanceMeters`, `fuelConsumedMl`, `tollMeters`, `startOdometer`/`endOdometer` (ints, provider units mirrored verbatim), `driverId` (int; 0 is the UNASSIGNED sentinel, 110/725), `startLocation`/`endLocation` (reverse-geocoded strings), `startCoordinates`/`endCoordinates` (`{latitude, longitude}` floats), `assetIds`/`codriverIds` (lists, observed ONLY EMPTY). Partial: `startAddress` 177/725 and `endAddress` 185/725, each `{address: str, id: int, name: str}` — present when the trip endpoint matched a defined address/geofence. The record does NOT echo the requested `vehicleId` (captured 2026-07-20). |
 | Samsara | `/v1/fleet/trips` success responses carry no rate-limit headers either — the provider-wide posture confirmed on a third endpoint, and on the legacy v1 surface (captured 2026-07-20). |
+| Samsara | `GET /idling/events` is a modern-envelope surface: `data` + `pagination {endCursor, hasNextPage}`, terminal page `hasNextPage: false` beside an EMPTY-STRING `endCursor`; the cursor walk proven live — 11 pages at limit=200, 2,200/2,200 unique. Window params `startTime`/`endTime` are RFC3339 UTC. Events are fleet-wide with per-record asset attribution (`asset: {id: int}` on every record — the vehicle reference), so no fan-out exists (captured 2026-07-20). |
+| Samsara | **The `limit` maximum is PER-ENDPOINT: `/idling/events` caps at 200, NOT the 512 of vehicles/drivers** — limit=512 returns a loud JSON 400 `{"message": "limit must be lesser or equal than 200 but got value 512", "requestId": ...}`. The first captured instance of Samsara's per-endpoint limit tiers: never assume a sibling's limit (captured 2026-07-20). |
+| Samsara | `/idling/events` retrieval is START-anchored on UTC, proven by a discriminating pair on a 6.5-hour event: a 60s window strictly inside its span does NOT return it; a 60s window straddling only its start DOES. Fourth distinct anchoring datum across providers (GeoTab Trip: stop; Motive driving_periods: start; GeoTab ExceptionEvent / Samsara v1 trips: overlap; this: start) — and notably NOT the company-local overlap behavior of Motive's `idle_events` sibling: never assume the rule, per endpoint, ever. Consequence: `event_time_column='start_time'`, retrieval anchor == routing anchor natively, no wire pad, the runner's window filter is pure hygiene (captured 2026-07-20). |
+| Samsara | The `/idling/events` range cap is loud and sub-3-months: 91 days accepted; 180 days returns JSON 400 `{"message": "Total duration must be less than 3 months.", ...}`. Default 7-day chunks sit far inside; no builder guard (the Motive driving_periods stance) (captured 2026-07-20). |
+| Samsara | Idling-event census (2,200 events, ZERO real nulls — absence-shaped): always present — `eventUuid` (str, the event id), `startTime` (RFC3339 str), `durationMilliseconds` (int; there is NO end key — the interval is start+duration; events were only ever observed complete, with implied ends in the past even in a last-30-minutes probe: in-progress idles appear to materialize on completion, the lookback absorbs late materialization, accepted residual), `asset {id: int}`, `latitude`/`longitude` (floats), `ptoState` (str; only `'inactive'` observed — the value set is NOT evidence-closed, so modeled plain str, not an enum), `fuelConsumedMilliliters` (MIXED int\|float on the wire — modeled float), `fuelCost {amount: str, currency: str}` (money mirrored verbatim as strings), `gaseousFuelConsumedGrams` (int), `gaseousFuelCost {amount, currency}`. Partial: `operator {id: int}` 1546/2200 (driver attribution when known); `airTemperatureMillicelsius` (int) 1833/2200; `address {id: str, addressTypes: list[str]}` 552/2200 (element `'yard'` observed; `addressTypes` itself absent on ~31/552 blocks). NOTE `address.id` is a STRING while `asset.id`/`operator.id` are BARE INTs — mirrored exactly (captured 2026-07-20). |
 | Motive | 401 body is `{"error_message": ...}`; the documented /vehicle_locations limit was not observed to enforce — generic 429 posture. |
 | Motive | `/v3/vehicle_locations/{vehicle_id}` verified live: envelope `{"vehicle_locations": [{"vehicle_location": {...}}]}`, `located_at` is UTC ISO-8601 (`Z`-suffixed), one non-paginated page per fetch (so `SinglePageDecoder` fits), and a single per-vehicle fetch spans multiple calendar dates (the sample crossed two) — confirming `split_by_date`'s multi-partition output is load-bearing in production, not a theoretical edge: one fetch genuinely fans into several partitions. |
 | Motive | `/v3/vehicle_locations/{vehicle_id}` date bounds pinned by direct probing: day-granular `start_date`/`end_date` are honored inclusively on both bounds — a single-day request returns that full day, a two-day request both complete days. The documented 3-month maximum range is real: long backfills will eventually need request chunking (a range limit, unrelated to the §15 item-1 window defect). |
@@ -2650,8 +2692,12 @@ resolution (item 1, done).
    (the third Samsara vertical and the roster machinery's first
    cross-provider consumer: the v1-only per-vehicle windowed fan-out
    per its §8 decision block, composed entirely from existing
-   machinery; the legacy four now stand 3/4 — `idling_events`
-   remains).* The per-endpoint
+   machinery). Samsara `idling_events` shipped 2026-07-20 (the fourth
+   Samsara vertical and the first windowed+cursor pairing: the
+   fleet-wide windowed leaf on the existing cursor decoder per its §8
+   decision block, zero shared-machinery changes) — the Samsara legacy
+   four are COMPLETE 2026-07-20 (`vehicles`, `drivers`, `trips`,
+   `idling_events`); the remaining legacy six queue next.* The per-endpoint
    inventory and port queue are tracked in `ENDPOINTS.md` (added
    2026-07-17), updated in the same change as any endpoint addition.
 8. **Polish phase, gated on a stable public surface:** full-tree ceremony
