@@ -159,8 +159,24 @@ RETURNING unit_id, partition_key, chunk_start, chunk_end, attempt_count
 
 _MARK_DONE_SQL: Final[str] = """
 UPDATE work_units
-SET status = ?, finished_at = ?
+SET status = ?, finished_at = ?, observed_max = ?
 WHERE unit_id = ? AND status = ?
+"""
+
+# The prefix-advance read (DESIGN section 5, 2026-07-20): the maximum
+# observation across the contiguous done-prefix -- every done unit whose
+# chunk starts before the earliest not-done unit (or all done units when
+# none remains). MAX over ``to_iso8601``'s fixed-width Z-form is
+# chronological; NULL observations (empty units, pre-v3 completions) are
+# ignored by MAX, and an all-NULL prefix returns NULL.
+_DONE_PREFIX_OBSERVATION_SQL: Final[str] = """
+SELECT MAX(observed_max) FROM work_units
+WHERE provider = ? AND endpoint = ? AND status = ?
+  AND chunk_start < COALESCE(
+      (SELECT MIN(chunk_start) FROM work_units
+       WHERE provider = ? AND endpoint = ? AND status != ?),
+      '9999-12-31T23:59:59Z'
+  )
 """
 
 _MARK_FAILED_SQL: Final[str] = """
@@ -404,30 +420,40 @@ class WorkUnitStore:
         )
         return claimed_unit
 
-    def mark_done(self, unit_id: int) -> None:
+    def mark_done(self, unit_id: int, *, observed_max: datetime | None) -> None:
         """
-        Mark a claimed unit ``done``.
+        Mark a claimed unit ``done``, recording its folded observation.
 
         Only a ``claimed`` unit may be completed; the guarded UPDATE matches no row
-        otherwise.
+        otherwise. ``observed_max`` is the unit's folded in-window maximum event
+        time — the prefix-advance watermark rule's datum
+        (``done_prefix_observation`` reads it); ``None`` records an empty unit,
+        which the prefix read ignores.
 
         Args:
             unit_id: The claimed unit to complete.
+            observed_max: The unit's folded in-window maximum event time, or
+                ``None`` when the unit observed no in-window event.
 
         Raises:
             ValueError: No ``claimed`` unit has this ``unit_id`` (it does not exist
-                or is not currently claimed) — a caller bug, kept stdlib.
+                or is not currently claimed) — a caller bug, kept stdlib; or a
+                naive / non-UTC ``observed_max`` (surfaced from the timing codec).
 
         Side Effects:
             Opens a connection, updates the row, and commits.
         """
         finished_at: str = to_iso8601(self._clock.now_utc())
+        serialized_observation: str | None = (
+            to_iso8601(observed_max) if observed_max is not None else None
+        )
         with self._database.connect() as connection:
             affected: int = connection.execute(
                 _MARK_DONE_SQL,
                 (
                     WorkUnitStatus.DONE.value,
                     finished_at,
+                    serialized_observation,
                     unit_id,
                     WorkUnitStatus.CLAIMED.value,
                 ),
@@ -438,6 +464,58 @@ class WorkUnitStore:
                 )
             connection.commit()
         logger.debug('marked work unit done: unit_id=%s', unit_id)
+
+    def done_prefix_observation(
+        self, provider: Provider, endpoint: str
+    ) -> datetime | None:
+        """
+        The maximum observation across the contiguous done-prefix.
+
+        The prefix-advance watermark rule's read (DESIGN §5, 2026-07-20): over
+        this endpoint's units ordered by ``chunk_start``, take every ``done``
+        unit before the earliest not-done one (all of them when none remains)
+        and return the maximum recorded ``observed_max``. Out-of-order parallel
+        completions beyond a gap contribute nothing until the gap closes, so a
+        watermark advanced to this value never overstates coverage.
+
+        Args:
+            provider: The provider whose units to read.
+            endpoint: The endpoint whose units to read.
+
+        Returns:
+            The prefix's maximum observation, or ``None`` when the prefix is
+            empty or holds only empty units.
+
+        Raises:
+            ConfigurationError: The stored observation is unparseable —
+                state-store corruption, the store's uniform stance.
+
+        Side Effects:
+            Opens a connection and reads.
+        """
+        done = WorkUnitStatus.DONE.value
+        with self._database.connect() as connection:
+            row: tuple[SqliteScalar] | None = connection.execute(
+                _DONE_PREFIX_OBSERVATION_SQL,
+                (provider.value, endpoint, done, provider.value, endpoint, done),
+            ).fetchone()
+        observation = row[0] if row is not None else None
+        if observation is None:
+            return None
+        if not isinstance(observation, str):
+            raise RuntimeError(
+                'work_units.observed_max came back non-text, violating the '
+                'schema contract'
+            )
+        try:
+            return from_iso8601(observation)
+        except ValueError as error:
+            raise ConfigurationError(
+                'work unit observation unparseable',
+                provider=provider.value,
+                endpoint=endpoint,
+                detail=f'stored observed_max {observation!r}: {error}',
+            ) from error
 
     def mark_failed(self, unit_id: int, *, error_detail: str) -> None:
         """
