@@ -35,9 +35,10 @@ observer exception fails the run like any other batch-processing failure.
 The runner depends on narrow Protocols rather than the concrete state and network
 classes: ``ClientSource`` (the registry's ``client_for``) and the three
 state-database surfaces bundled as ``RunStateAccess`` -- ``RunRecorder`` (the
-ledger's lifecycle methods), ``CursorAccess`` (the cursor store's get/set), and
-``UnitQueue`` (the work-unit claim queue). It opens no clients and reads no
-credentials -- the already-open client source hands it the provider's client.
+ledger's lifecycle methods), ``CursorAccess`` (the cursor store's read and
+guarded watermark advance), and ``UnitQueue`` (the work-unit claim queue). It
+opens no clients and reads no credentials -- the already-open client source
+hands it the provider's client.
 """
 
 import logging
@@ -79,7 +80,11 @@ from fleetpull.orchestrator.drivers import RequestDriver
 from fleetpull.orchestrator.outcome import CaughtUp, Executed, RunOutcome
 from fleetpull.orchestrator.resume import resolve_watermark_start
 from fleetpull.orchestrator.streaming import stream_processed_batches
-from fleetpull.orchestrator.unit_loop import UnitQueue, drive_claimable_units
+from fleetpull.orchestrator.unit_loop import (
+    UnitCrew,
+    UnitQueue,
+    drive_claimable_units,
+)
 from fleetpull.paths import endpoint_directory
 from fleetpull.storage import (
     DatasetWriter,
@@ -218,13 +223,14 @@ class RunStateAccess:
     """The three state-database surfaces one endpoint run commits through.
 
     They always travel together -- the composition root builds all three
-    over the one state database and the runner's crash order sequences
-    them (parquet -> cursor -> ledger; units bracket the sequence) -- so
-    they ride as one collaborator (the bundle rule).
+    over the one state database and the runner's per-unit crash order
+    sequences them (parquet -> ledger completion -> unit done-mark ->
+    watermark prefix commit) -- so they ride as one collaborator (the
+    bundle rule).
 
     Attributes:
         recorder: The run ledger's lifecycle surface.
-        cursors: The cursor store's get/set surface.
+        cursors: The cursor store's read and guarded-advance surface.
         units: The work-unit claim queue.
     """
 
@@ -518,16 +524,15 @@ class EndpointRunner:
         # commit: the prefix read is cheap and the advance is atomic and
         # forward-only, so an up-to-date cursor makes this a no-op.
         commit_prefix()
-        drive_unit = partial(self._drive_unit, definition, driver, observer)
-        workers = self._sync_config.backfill_unit_workers
-        outcomes = drive_claimable_units(
-            self._state.units,
-            provider,
-            name,
-            drive_unit,
-            workers=workers,
+        crew = UnitCrew(
+            queue=self._state.units,
+            provider=provider,
+            endpoint=name,
+            drive_unit=partial(self._drive_unit, definition, driver, observer),
             commit_prefix=commit_prefix,
         )
+        workers = self._sync_config.backfill_unit_workers
+        outcomes = drive_claimable_units(crew, workers=workers)
         residual = self._resolve_residual_window(definition, mode)
         if residual is not None:
             chunk = timedelta(days=self._sync_config.backfill_chunk_days)
@@ -546,16 +551,7 @@ class EndpointRunner:
                 to_iso8601(residual.end),
                 claimable_units,
             )
-            outcomes.extend(
-                drive_claimable_units(
-                    self._state.units,
-                    provider,
-                    name,
-                    drive_unit,
-                    workers=workers,
-                    commit_prefix=commit_prefix,
-                )
-            )
+            outcomes.extend(drive_claimable_units(crew, workers=workers))
         if not outcomes:
             logger.info('caught up: provider=%s endpoint=%s', provider.value, name)
             return CaughtUp()
@@ -685,8 +681,13 @@ class EndpointRunner:
         mechanics. Opens a window run, writes each batch's in-window frame,
         folds the observed maximum, finalizes, and completes the run. The
         fold rides the returned outcome; the watermark advance belongs to
-        the unit loop's prefix commit (parquet -> unit done -> prefix
-        watermark -> ledger stays the crash order, sequenced one level up).
+        the unit loop's prefix commit. The per-unit crash order is parquet
+        -> ``complete_run`` (the ledger, here) -> ``mark_done`` (observed)
+        -> prefix commit (both one level up): a crash after completion but
+        before the done-mark leaves the unit claimable, so the next
+        invocation re-drives it whole before resolving any residual --
+        unit-gating plus the run-start prefix heal replace the retired
+        cursor-before-completion ordering (DESIGN section 14).
 
         Args:
             definition: The endpoint being run.
@@ -790,8 +791,9 @@ class EndpointRunner:
     ) -> None:
         """Project a committed run's facts into the endpoint's ``metadata.json``.
 
-        Runs only after a successful run has fully committed (parquet,
-        cursor, ledger): the outcome's counts, the run's resolved window,
+        Runs only after a successful run has fully committed (parquet, the
+        ledger rows, the unit done-marks, the watermark prefix): the
+        outcome's counts, the run's resolved window,
         and a cursor read-back from the store flatten into a
         ``MetadataSnapshot`` the storage face renders and atomically writes
         (DESIGN §3).
@@ -829,7 +831,7 @@ class EndpointRunner:
             self._dataset_root, definition.provider.value, definition.name
         )
         # Only the file write is guarded, and only for OSError: the run is
-        # already committed (parquet, cursor, ledger), and the file is a
+        # already committed (parquet, ledger, units, watermark), and the file is a
         # cosmetic projection the next successful run rewrites -- failing a
         # committed run over it would be worse than a stale file. A render
         # failure is a bug and propagates.

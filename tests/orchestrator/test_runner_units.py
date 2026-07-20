@@ -1,16 +1,21 @@
 """The plan-and-drive unit loop through the real runner and work-unit store.
 
-Every windowed run is planned as work units and driven serially ascending;
-these tests prove the loop's settled semantics end to end against real
-parquet and a real migrated work-units store: boundary invariance (unit
-count never changes the bytes), per-day commits under the degenerate
-one-day chunk, crash resume from the units ledger (no completed unit
-refetched), orphan re-claim, fail-fast with the completed prefix intact,
-and persisted-boundary stability across a ``backfill_chunk_days`` change.
-Deterministic throughout: canned drivers, a frozen clock, pinned shard
-names for the byte comparisons.
+Every windowed run is planned as work units, driven ``backfill_unit_workers``
+at a time, and watermarked by the prefix-advance rule (DESIGN section 5,
+2026-07-20); these tests prove the loop's settled semantics end to end
+against real parquet and a real migrated work-units store: boundary
+invariance (unit count never changes the bytes), per-day prefix commits
+under the degenerate one-day chunk, crash resume from the units ledger (no
+completed unit refetched), the run-start prefix heal, orphan re-claim,
+fail-fast with the completed prefix intact, persisted-boundary stability
+across a ``backfill_chunk_days`` change, serial/parallel equivalence, and
+the concurrent-prefix-commit guard. Deterministic throughout: canned
+drivers, a frozen clock, pinned shard names for the byte comparisons, and
+``workers=1`` wherever an assertion pins drive order (the parallel path has
+its own order-free tests).
 """
 
+import threading
 from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -36,7 +41,14 @@ from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import FetchedPage, TransportClient
 from fleetpull.orchestrator.outcome import Executed
 from fleetpull.orchestrator.runner import EndpointRunner, RunStateAccess
-from fleetpull.state import WorkUnitSpec, WorkUnitStore
+from fleetpull.state import (
+    ClaimedWorkUnit,
+    CursorStore,
+    StateDatabase,
+    WorkUnitSpec,
+    WorkUnitStore,
+    migrate_to_head,
+)
 from fleetpull.timing import FrozenClock
 from fleetpull.vocabulary import JsonObject, Provider, QuotaScope
 from tests.orchestrator.doubles import (
@@ -61,9 +73,11 @@ class _WatermarkModel(ResponseModel):
 
 
 class _RecordingRecorder:
-    """A RunRecorder capturing the per-unit run lifecycle."""
+    """A RunRecorder capturing the per-unit run lifecycle (lock-guarded --
+    parallel unit workers open and close runs concurrently)."""
 
     def __init__(self) -> None:
+        self._lock = threading.Lock()
         self.windows: list[tuple[datetime, datetime]] = []
         self.completed: list[tuple[int, int]] = []
         self.failed: list[tuple[int, str]] = []
@@ -74,34 +88,51 @@ class _RecordingRecorder:
     def start_window_run(
         self, provider: Provider, endpoint: str, *, window: tuple[datetime, datetime]
     ) -> int:
-        self.windows.append(window)
-        return len(self.windows)
+        with self._lock:
+            self.windows.append(window)
+            return len(self.windows)
 
     def complete_run(self, run_id: int, *, row_count: int) -> None:
-        self.completed.append((run_id, row_count))
+        with self._lock:
+            self.completed.append((run_id, row_count))
 
     def fail_run(self, run_id: int, *, error_detail: str) -> None:
-        self.failed.append((run_id, error_detail))
+        with self._lock:
+            self.failed.append((run_id, error_detail))
 
     def coverage_frontier(self, provider: Provider, endpoint: str) -> datetime | None:
         return None
 
 
 class _FaithfulCursorAccess:
-    """A CursorAccess whose reads reflect its writes (the real store's shape)."""
+    """A CursorAccess mirroring the real store: reads reflect writes, and the
+    advance carries the store's forward-only guard, lock-guarded because
+    parallel unit workers commit prefixes concurrently.
+
+    ``applied_advances`` lists exactly the advances that moved the cursor, in
+    commit order; a refused (not-strictly-forward) advance leaves no trace,
+    as in the store.
+    """
 
     def __init__(self, cursor: IncrementalCursor | None = None) -> None:
+        self._lock = threading.Lock()
         self._cursor = cursor
-        self.set_calls: list[IncrementalCursor] = []
+        self.applied_advances: list[datetime] = []
 
     def get_cursor(self, provider: Provider, endpoint: str) -> IncrementalCursor | None:
-        return self._cursor
+        with self._lock:
+            return self._cursor
 
-    def set_cursor(
-        self, provider: Provider, endpoint: str, cursor: IncrementalCursor
-    ) -> None:
-        self._cursor = cursor
-        self.set_calls.append(cursor)
+    def advance_watermark_forward(
+        self, provider: Provider, endpoint: str, observed: datetime
+    ) -> bool:
+        with self._lock:
+            stored = self._cursor
+            if isinstance(stored, DateWatermark) and observed <= stored.watermark:
+                return False
+            self._cursor = DateWatermark(watermark=observed)
+            self.applied_advances.append(observed)
+            return True
 
 
 class _WindowRecordingDriver:
@@ -159,14 +190,20 @@ def _make_runner(
     root: Path,
     cursors: _FaithfulCursorAccess,
     chunk_days: int,
+    workers: int = 1,
 ) -> EndpointRunner:
+    # Serial units by default: the drive-order and request-log assertions
+    # need the deterministic path. The equivalence test drives the same plan
+    # with workers=4 to prove the prefix rule's order-independence.
     return EndpointRunner(
         StubClientSource(),
         RunStateAccess(recorder=recorder, cursors=cursors, units=_open_store(root)),
         FrozenClock(start_time_utc=_CLOCK_NOW),
         FleetpullConfig(
             sync=SyncConfig(
-                default_start_date=date(2026, 6, 10), backfill_chunk_days=chunk_days
+                default_start_date=date(2026, 6, 10),
+                backfill_chunk_days=chunk_days,
+                backfill_unit_workers=workers,
             ),
             storage=StorageConfig(dataset_root=root),
             providers=ProvidersConfig(),
@@ -239,7 +276,7 @@ def test_single_and_multi_unit_plans_write_identical_bytes(
         'date=2026-06-14',
     ]
     assert _partition_bytes(tmp_path / 'multi') == single_bytes
-    assert multi_cursors.set_calls[-1] == single_cursors.set_calls[-1]
+    assert multi_cursors.applied_advances[-1] == single_cursors.applied_advances[-1]
     assert single_outcome.records_fetched == multi_outcome.records_fetched == 5
 
 
@@ -247,8 +284,9 @@ def test_one_day_chunks_commit_per_day_with_identical_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # The degenerate config: one-day units mean one ledger row per day and a
-    # watermark advance as each ascending day completes (the truth
-    # invariant, observable), with the same final bytes as one big unit.
+    # prefix commit advancing the watermark as each ascending day completes
+    # (the truth invariant, observable), with the same final bytes as one
+    # big unit.
     reference_root = tmp_path / 'reference'
     _run_to_completion(reference_root, chunk_days=7, monkeypatch=monkeypatch)
     recorder, cursors, _ = _run_to_completion(
@@ -257,12 +295,14 @@ def test_one_day_chunks_commit_per_day_with_identical_bytes(
     assert recorder.windows == [
         (_daily_window(day).start, _daily_window(day).end) for day in range(10, 15)
     ]
-    # 2026-06-13 held no rows: its unit completes without advancing.
-    assert cursors.set_calls == [
-        DateWatermark(watermark=datetime(2026, 6, 10, 20, tzinfo=UTC)),
-        DateWatermark(watermark=datetime(2026, 6, 11, 9, tzinfo=UTC)),
-        DateWatermark(watermark=datetime(2026, 6, 12, 10, tzinfo=UTC)),
-        DateWatermark(watermark=datetime(2026, 6, 14, 12, tzinfo=UTC)),
+    # 2026-06-13 held no rows: its unit records a NULL observation, the
+    # prefix maximum is unchanged, and the forward-only guard applies
+    # nothing for it.
+    assert cursors.applied_advances == [
+        datetime(2026, 6, 10, 20, tzinfo=UTC),
+        datetime(2026, 6, 11, 9, tzinfo=UTC),
+        datetime(2026, 6, 12, 10, tzinfo=UTC),
+        datetime(2026, 6, 14, 12, tzinfo=UTC),
     ]
     assert _partition_bytes(tmp_path / 'daily') == _partition_bytes(reference_root)
 
@@ -290,9 +330,7 @@ def test_crash_resume_drives_only_the_remaining_units(
         _daily_window(11),
         _daily_window(12),
     ]
-    assert cursors.set_calls[-1] == DateWatermark(
-        watermark=datetime(2026, 6, 11, 9, tzinfo=UTC)
-    )
+    assert cursors.applied_advances[-1] == datetime(2026, 6, 11, 9, tzinfo=UTC)
     assert len(first_recorder.failed) == 1
     assert sorted(_partition_bytes(root)) == ['date=2026-06-10', 'date=2026-06-11']
     progress = _open_store(root).progress(Provider.MOTIVE, _ENDPOINT)
@@ -312,9 +350,7 @@ def test_crash_resume_drives_only_the_remaining_units(
         _daily_window(13),
         _daily_window(14),
     ]
-    assert cursors.set_calls[-1] == DateWatermark(
-        watermark=datetime(2026, 6, 14, 12, tzinfo=UTC)
-    )
+    assert cursors.applied_advances[-1] == datetime(2026, 6, 14, 12, tzinfo=UTC)
     final_progress = _open_store(root).progress(Provider.MOTIVE, _ENDPOINT)
     assert (final_progress.done, final_progress.failed, final_progress.pending) == (
         5,
@@ -326,7 +362,7 @@ def test_crash_resume_drives_only_the_remaining_units(
         uninterrupted_root, chunk_days=1, monkeypatch=monkeypatch
     )
     assert _partition_bytes(root) == _partition_bytes(uninterrupted_root)
-    assert cursors.set_calls[-1] == uninterrupted_cursors.set_calls[-1]
+    assert cursors.applied_advances[-1] == uninterrupted_cursors.applied_advances[-1]
 
 
 def test_orphaned_claimed_unit_is_reclaimed_and_rerun_whole(
@@ -365,8 +401,9 @@ def test_orphaned_claimed_unit_is_reclaimed_and_rerun_whole(
         DateWindow(start=_WINDOW_START, end=_WINDOW_END),
         DateWindow(start=datetime(2026, 6, 13, tzinfo=UTC), end=_WINDOW_END),
     ]
-    # Neither drive observed anything past the seeded watermark: no advance.
-    assert cursors.set_calls == []
+    # Neither drive observed anything past the seeded watermark: every
+    # prefix commit is refused by the forward-only guard, nothing applies.
+    assert cursors.applied_advances == []
     progress = _open_store(root).progress(Provider.MOTIVE, _ENDPOINT)
     assert (progress.done, progress.claimed) == (2, 0)
 
@@ -404,3 +441,211 @@ def test_persisted_unit_boundaries_survive_a_chunk_size_change(
         _daily_window(13),
         _daily_window(14),
     ]
+
+
+def test_startup_prefix_heal_advances_the_cursor_before_any_claim(
+    tmp_path: Path,
+) -> None:
+    # A crash between a unit's done-mark and its prefix commit leaves the
+    # observation recorded but the cursor behind -- simulated by driving the
+    # store directly (mark_done recorded, no commit ever ran). The fresh
+    # invocation's run-start commit_prefix heals the cursor BEFORE any
+    # claim: the healed advance is the first applied, ahead of every
+    # unit-completion commit, even with a claimable unit waiting.
+    root = tmp_path / 'healed'
+    store = _open_store(root)
+    store.enqueue(
+        [
+            WorkUnitSpec(
+                provider=Provider.MOTIVE,
+                endpoint=_ENDPOINT,
+                partition_key=None,
+                chunk_start=datetime(2026, 6, 10, tzinfo=UTC),
+                chunk_end=datetime(2026, 6, 11, tzinfo=UTC),
+            ),
+            WorkUnitSpec(
+                provider=Provider.MOTIVE,
+                endpoint=_ENDPOINT,
+                partition_key=None,
+                chunk_start=datetime(2026, 6, 11, tzinfo=UTC),
+                chunk_end=datetime(2026, 6, 12, tzinfo=UTC),
+            ),
+        ]
+    )
+    crashed = store.claim_next(Provider.MOTIVE, _ENDPOINT, max_attempts=10)
+    assert crashed is not None
+    store.mark_done(crashed.unit_id, observed_max=datetime(2026, 6, 10, 20, tzinfo=UTC))
+
+    cursors = _FaithfulCursorAccess()
+    driver = _WindowRecordingDriver(_fleet_batches())
+    runner = _make_runner(_RecordingRecorder(), root, cursors, chunk_days=1)
+    outcome = runner.run(_definition(), driver)
+
+    assert isinstance(outcome, Executed)
+    # The heal's advance lands first; the pending unit is only claimed and
+    # driven afterward (its window is the first the driver sees).
+    assert cursors.applied_advances[0] == datetime(2026, 6, 10, 20, tzinfo=UTC)
+    assert driver.windows[0] == _daily_window(11)
+    # The rest of the run proceeds normally: the pending unit and the
+    # residual advance the prefix past the healed value.
+    assert cursors.applied_advances == [
+        datetime(2026, 6, 10, 20, tzinfo=UTC),
+        datetime(2026, 6, 11, 9, tzinfo=UTC),
+        datetime(2026, 6, 12, 10, tzinfo=UTC),
+        datetime(2026, 6, 14, 12, tzinfo=UTC),
+    ]
+
+
+def test_multi_worker_run_matches_the_serial_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The prefix rule's order-independence end to end: workers=1 runs
+    # inline on the calling thread (no pool); a 4-worker run of the same
+    # five-unit plan must land identical bytes, an identical merged
+    # outcome, and the same final watermark, whatever the completion order.
+    pin_shard_names(monkeypatch)
+    serial_cursors = _FaithfulCursorAccess()
+    serial_runner = _make_runner(
+        _RecordingRecorder(), tmp_path / 'serial', serial_cursors, chunk_days=1
+    )
+    serial_outcome = serial_runner.run(
+        _definition(), _WindowRecordingDriver(_fleet_batches())
+    )
+
+    pin_shard_names(monkeypatch)
+    parallel_cursors = _FaithfulCursorAccess()
+    parallel_runner = _make_runner(
+        _RecordingRecorder(),
+        tmp_path / 'parallel',
+        parallel_cursors,
+        chunk_days=1,
+        workers=4,
+    )
+    parallel_outcome = parallel_runner.run(
+        _definition(), _WindowRecordingDriver(_fleet_batches())
+    )
+
+    assert isinstance(serial_outcome, Executed)
+    assert isinstance(parallel_outcome, Executed)
+    assert parallel_outcome.records_fetched == serial_outcome.records_fetched == 5
+    assert parallel_outcome.latest_observed == serial_outcome.latest_observed
+    assert parallel_outcome.write.rows_written == serial_outcome.write.rows_written
+    assert _partition_bytes(tmp_path / 'parallel') == _partition_bytes(
+        tmp_path / 'serial'
+    )
+    # The final applied advance is the plan's maximum either way; so is the
+    # cursor a read-back sees.
+    assert (
+        parallel_cursors.applied_advances[-1]
+        == serial_cursors.applied_advances[-1]
+        == datetime(2026, 6, 14, 12, tzinfo=UTC)
+    )
+    assert parallel_cursors.get_cursor(
+        Provider.MOTIVE, _ENDPOINT
+    ) == serial_cursors.get_cursor(Provider.MOTIVE, _ENDPOINT)
+
+
+class _ScriptedUnits:
+    """A UnitQueue serving only scripted prefix observations, in arrival order.
+
+    The race test drives ``_commit_watermark_prefix`` directly, so every
+    other queue method is unreachable and says so loudly.
+    """
+
+    def __init__(self, observations: list[datetime]) -> None:
+        self._lock = threading.Lock()
+        self._observations = observations
+
+    def enqueue(self, units: list[WorkUnitSpec]) -> int:
+        raise AssertionError('the race test never enqueues')
+
+    def reset_claimed_to_pending(self, provider: Provider, endpoint: str) -> int:
+        raise AssertionError('the race test never resets')
+
+    def claim_next(
+        self, provider: Provider, endpoint: str, *, max_attempts: int
+    ) -> ClaimedWorkUnit | None:
+        raise AssertionError('the race test never claims')
+
+    def mark_done(self, unit_id: int, *, observed_max: datetime | None) -> None:
+        raise AssertionError('the race test never completes units')
+
+    def mark_failed(self, unit_id: int, *, error_detail: str) -> None:
+        raise AssertionError('the race test never fails units')
+
+    def done_prefix_observation(
+        self, provider: Provider, endpoint: str
+    ) -> datetime | None:
+        with self._lock:
+            return self._observations.pop(0)
+
+
+def test_concurrent_prefix_commits_cannot_regress_the_cursor(tmp_path: Path) -> None:
+    # Two _commit_watermark_prefix invocations with interleaved prefix
+    # reads: the stale thread's whole advance is held until the fresh
+    # commit lands, proving the runner-level choreography cannot regress
+    # the cursor. The finer race -- a read-compare-write straddling the
+    # fresh commit INSIDE the store method -- is pinned by the store-level
+    # guard-placement test (tests/state/test_cursors.py).
+    stale_observation = datetime(2026, 6, 11, 9, tzinfo=UTC)
+    fresh_observation = datetime(2026, 6, 14, 12, tzinfo=UTC)
+    database = StateDatabase(tmp_path / 'state.sqlite3')
+    database.initialize()
+    migrate_to_head(database)
+    cursor_store = CursorStore(database, FrozenClock(start_time_utc=_CLOCK_NOW))
+    fresh_committed = threading.Event()
+    advance_results: dict[datetime, bool] = {}
+    results_lock = threading.Lock()
+
+    class _GatedCursors:
+        """The real store, with the stale write held until the fresh commit lands."""
+
+        def get_cursor(
+            self, provider: Provider, endpoint: str
+        ) -> IncrementalCursor | None:
+            return cursor_store.get_cursor(provider, endpoint)
+
+        def advance_watermark_forward(
+            self, provider: Provider, endpoint: str, observed: datetime
+        ) -> bool:
+            if observed == stale_observation:
+                assert fresh_committed.wait(timeout=5)
+            advanced = cursor_store.advance_watermark_forward(
+                provider, endpoint, observed
+            )
+            with results_lock:
+                advance_results[observed] = advanced
+            if observed == fresh_observation:
+                fresh_committed.set()
+            return advanced
+
+    runner = EndpointRunner(
+        StubClientSource(),
+        RunStateAccess(
+            recorder=_RecordingRecorder(),
+            cursors=_GatedCursors(),
+            units=_ScriptedUnits([stale_observation, fresh_observation]),
+        ),
+        FrozenClock(start_time_utc=_CLOCK_NOW),
+        FleetpullConfig(
+            sync=SyncConfig(default_start_date=date(2026, 6, 10)),
+            storage=StorageConfig(dataset_root=tmp_path),
+            providers=ProvidersConfig(),
+        ),
+    )
+    commit_threads = [
+        threading.Thread(
+            target=runner._commit_watermark_prefix, args=(Provider.MOTIVE, _ENDPOINT)
+        )
+        for _ in range(2)
+    ]
+    for commit_thread in commit_threads:
+        commit_thread.start()
+    for commit_thread in commit_threads:
+        commit_thread.join(timeout=10)
+        assert not commit_thread.is_alive()
+
+    assert advance_results == {fresh_observation: True, stale_observation: False}
+    assert cursor_store.get_cursor(Provider.MOTIVE, _ENDPOINT) == DateWatermark(
+        watermark=fresh_observation
+    )

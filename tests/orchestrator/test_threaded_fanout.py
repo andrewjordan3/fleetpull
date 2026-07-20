@@ -31,7 +31,7 @@ from fleetpull.endpoints.shared import (
     WatermarkMode,
 )
 from fleetpull.exceptions import ProviderResponseError
-from fleetpull.incremental import DateWatermark, IncrementalCursor
+from fleetpull.incremental import IncrementalCursor
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import FetchedPage, TransportClient
 from fleetpull.network.contract import (
@@ -132,18 +132,19 @@ class _RecordingRecorder:
 
 
 class _StubCursorAccess:
-    """A CursorAccess with no stored cursor, recording its writes."""
+    """A CursorAccess with no stored cursor, recording its advances."""
 
     def __init__(self) -> None:
-        self.set_calls: list[IncrementalCursor] = []
+        self.advance_calls: list[datetime] = []
 
     def get_cursor(self, provider: Provider, endpoint: str) -> IncrementalCursor | None:
         return None
 
-    def set_cursor(
-        self, provider: Provider, endpoint: str, cursor: IncrementalCursor
-    ) -> None:
-        self.set_calls.append(cursor)
+    def advance_watermark_forward(
+        self, provider: Provider, endpoint: str, observed: datetime
+    ) -> bool:
+        self.advance_calls.append(observed)
+        return True
 
 
 class _ClientSourceOf:
@@ -189,7 +190,15 @@ def _make_runner(
         ),
         clock,
         FleetpullConfig(
-            sync=SyncConfig(default_start_date=date(2026, 6, 10)),
+            sync=SyncConfig(
+                default_start_date=date(2026, 6, 10),
+                # This module exercises the fetch fan-out INSIDE one unit;
+                # the unit loop stays serial so the planted failure below
+                # fails the run exactly once (under workers > 1 the
+                # documented same-invocation retry window would re-drive
+                # the failed unit nondeterministically).
+                backfill_unit_workers=1,
+            ),
             storage=StorageConfig(dataset_root=dataset_root),
             providers=ProvidersConfig(),
         ),
@@ -228,7 +237,7 @@ def test_threaded_run_matches_the_serial_run_byte_for_byte(
 
     def run_once(
         dataset_root: Path, pool: FetchPool
-    ) -> tuple[dict[str, bytes], list[IncrementalCursor], int]:
+    ) -> tuple[dict[str, bytes], list[datetime], int]:
         pin_shard_names(monkeypatch)
         recorder = _RecordingRecorder()
         cursor_access = _StubCursorAccess()
@@ -244,7 +253,7 @@ def test_threaded_run_matches_the_serial_run_byte_for_byte(
         endpoint_dir = endpoint_directory(dataset_root, 'motive', 'locations')
         return (
             partition_bytes(endpoint_dir),
-            cursor_access.set_calls,
+            cursor_access.advance_calls,
             (outcome.records_fetched),
         )
 
@@ -261,9 +270,8 @@ def test_threaded_run_matches_the_serial_run_byte_for_byte(
     assert sorted(serial_bytes) == ['date=2026-06-12', 'date=2026-06-13']
     assert threaded_bytes == serial_bytes
     assert threaded_cursors == serial_cursors
-    assert serial_cursors == [
-        DateWatermark(watermark=datetime(2026, 6, 13, 12, tzinfo=UTC))
-    ]
+    # The single unit's prefix commit advances to the folded maximum.
+    assert serial_cursors == [datetime(2026, 6, 13, 12, tzinfo=UTC)]
     assert threaded_rows == serial_rows == 9
 
 
@@ -306,7 +314,7 @@ def test_worker_failure_cancels_pending_cleans_staging_and_fails_the_run(
     assert client.requested == ['veh-0', 'veh-1']
     assert recorder.failed
     assert recorder.completed == []
-    assert cursor_access.set_calls == []
+    assert cursor_access.advance_calls == []
     # Nothing yielded, so nothing was written or staged: the endpoint
     # directory was never even created.
     endpoint_dir = endpoint_directory(dataset_root, 'motive', 'locations')

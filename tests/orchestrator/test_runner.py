@@ -115,7 +115,7 @@ class _FailRunFailingRecorder(_RecordingRecorder):
 
 
 class _StubCursorAccess:
-    """A CursorAccess with a settable stored cursor that records its advances."""
+    """A CursorAccess with a settable stored cursor, recording every attempted advance."""
 
     def __init__(self, cursor: IncrementalCursor | None = None) -> None:
         self._cursor = cursor
@@ -132,7 +132,12 @@ class _StubCursorAccess:
 
 
 class _ApplyingCursorAccess(_StubCursorAccess):
-    """A CursorAccess whose advances apply, mirroring the store's forward guard."""
+    """A CursorAccess mirroring the store's forward-only guard.
+
+    A not-strictly-forward advance is refused and NOT recorded, so
+    ``advance_calls`` here lists exactly the advances that moved the cursor
+    -- the surface the hold-the-cursor tests assert on.
+    """
 
     def advance_watermark_forward(
         self, provider: Provider, endpoint: str, observed: datetime
@@ -209,7 +214,16 @@ def _make_runner(  # noqa: PLR0913
         ),
         run_clock,
         FleetpullConfig(
-            sync=SyncConfig(default_start_date=default_start_date),
+            sync=SyncConfig(
+                default_start_date=default_start_date,
+                # The serial unit path keeps every count and order assertion
+                # exact: under workers > 1 the documented same-invocation
+                # retry window (unit_loop) makes failed-run counts
+                # nondeterministic. Parallel-unit behavior has its own
+                # deterministic coverage in test_unit_loop.py and
+                # test_runner_units.py.
+                backfill_unit_workers=1,
+            ),
             storage=StorageConfig(dataset_root=tmp_path),
             providers=ProvidersConfig(),
         ),
@@ -367,12 +381,10 @@ class TestWatermarkRun:
         assert isinstance(outcome, Executed)
         assert outcome.records_fetched == 3
         assert recorder.windows == [(datetime(2026, 6, 12, tzinfo=UTC), _TRAILING_EDGE)]
-        assert cursor.set_calls == [
-            (
-                Provider.MOTIVE,
-                'locations',
-                DateWatermark(watermark=datetime(2026, 6, 14, 10, tzinfo=UTC)),
-            )
+        # The single unit's completion commits the prefix: one advance, to
+        # the unit's folded in-window maximum.
+        assert cursor.advance_calls == [
+            (Provider.MOTIVE, 'locations', datetime(2026, 6, 14, 10, tzinfo=UTC))
         ]
         assert recorder.completed == [(1, 3)]
         assert (tmp_path / 'motive' / 'locations' / 'date=2026-06-14').exists()
@@ -390,7 +402,7 @@ class TestWatermarkRun:
         )
         assert isinstance(outcome, CaughtUp)
         assert recorder.started == []
-        assert cursor.set_calls == []
+        assert cursor.advance_calls == []
         assert not (tmp_path / 'motive' / 'locations').exists()
 
     def test_steady_advance_window_starts_at_watermark_minus_lookback(
@@ -407,12 +419,8 @@ class TestWatermarkRun:
         )
         runner.run(_watermark_definition(), CannedDriver([batch]))
         assert recorder.windows == [(datetime(2026, 6, 12, tzinfo=UTC), _TRAILING_EDGE)]
-        assert cursor.set_calls == [
-            (
-                Provider.MOTIVE,
-                'locations',
-                DateWatermark(watermark=datetime(2026, 6, 14, 10, tzinfo=UTC)),
-            )
+        assert cursor.advance_calls == [
+            (Provider.MOTIVE, 'locations', datetime(2026, 6, 14, 10, tzinfo=UTC))
         ]
 
     def test_no_cursor_resumes_from_the_coverage_frontier_without_lookback(
@@ -437,12 +445,8 @@ class TestWatermarkRun:
         outcome = runner.run(_watermark_definition(), CannedDriver([batch]))
         assert isinstance(outcome, Executed)
         assert recorder.windows == [(datetime(2026, 6, 13, tzinfo=UTC), _TRAILING_EDGE)]
-        assert cursor.set_calls == [
-            (
-                Provider.MOTIVE,
-                'locations',
-                DateWatermark(watermark=datetime(2026, 6, 14, 9, tzinfo=UTC)),
-            )
+        assert cursor.advance_calls == [
+            (Provider.MOTIVE, 'locations', datetime(2026, 6, 14, 9, tzinfo=UTC))
         ]
 
     def test_late_day_watermark_refetches_the_boundary_day_whole_not_a_sliver(
@@ -457,7 +461,7 @@ class TestWatermarkRun:
         # full refetched day survives; a record before the floored start (the
         # provider-overshoot case) is still dropped.
         recorder = _RecordingRecorder()
-        cursor = _StubCursorAccess(
+        cursor = _ApplyingCursorAccess(
             DateWatermark(watermark=datetime(2026, 6, 14, 23, 59, 59, tzinfo=UTC))
         )
         runner = _make_runner(recorder, tmp_path, cursor_access=cursor)
@@ -476,9 +480,10 @@ class TestWatermarkRun:
         )
         assert part.height == 3
         assert not (tmp_path / 'motive' / 'locations' / 'date=2026-06-12').exists()
-        # Watermark semantics unchanged: max kept event time (2026-06-13) is
-        # not strictly past the stored watermark, so no advance.
-        assert cursor.set_calls == []
+        # Watermark semantics unchanged: the prefix commit offers the max
+        # kept event time (2026-06-13), which is not strictly past the
+        # stored watermark, so the forward-only guard applies nothing.
+        assert cursor.advance_calls == []
 
     def test_boundary_partition_with_data_is_never_pruned_on_resume(
         self, tmp_path: Path
@@ -509,7 +514,7 @@ class TestWatermarkRun:
 
     def test_non_advancing_observation_holds_the_cursor(self, tmp_path: Path) -> None:
         recorder = _RecordingRecorder()
-        cursor = _StubCursorAccess(
+        cursor = _ApplyingCursorAccess(
             DateWatermark(watermark=datetime(2026, 6, 14, 12, tzinfo=UTC))
         )
         runner = _make_runner(recorder, tmp_path, cursor_access=cursor)
@@ -518,7 +523,9 @@ class TestWatermarkRun:
             datetime(2026, 6, 14, 9, tzinfo=UTC),
         )
         runner.run(_watermark_definition(), CannedDriver([batch]))
-        assert cursor.set_calls == []
+        # The prefix commit offers the non-advancing observation; the
+        # forward-only guard refuses it and the cursor holds.
+        assert cursor.advance_calls == []
         assert recorder.completed == [(1, 2)]
 
     def test_empty_fetch_completes_without_advancing(self, tmp_path: Path) -> None:
@@ -533,7 +540,9 @@ class TestWatermarkRun:
         outcome = runner.run(_watermark_definition(), CannedDriver([[]]))
         assert isinstance(outcome, Executed)
         assert outcome.records_fetched == 0
-        assert cursor.set_calls == []
+        # An empty unit records a NULL observation, so the prefix read
+        # yields nothing and no advance is even attempted.
+        assert cursor.advance_calls == []
         assert recorder.completed == [(1, 0)]
 
     def test_out_of_window_rows_are_dropped(self, tmp_path: Path) -> None:
@@ -553,12 +562,8 @@ class TestWatermarkRun:
         outcome = runner.run(_watermark_definition(), CannedDriver([batch]))
         assert isinstance(outcome, Executed)
         assert outcome.records_fetched == 1
-        assert cursor.set_calls == [
-            (
-                Provider.MOTIVE,
-                'locations',
-                DateWatermark(watermark=datetime(2026, 6, 13, 9, tzinfo=UTC)),
-            )
+        assert cursor.advance_calls == [
+            (Provider.MOTIVE, 'locations', datetime(2026, 6, 13, 9, tzinfo=UTC))
         ]
         assert (tmp_path / 'motive' / 'locations' / 'date=2026-06-13').exists()
         assert not (tmp_path / 'motive' / 'locations' / 'date=2026-06-15').exists()
@@ -574,7 +579,7 @@ class TestWatermarkRun:
         with pytest.raises(ConfigurationError, match='future'):
             runner.run(_watermark_definition(), CannedDriver([]))
         assert recorder.started == []
-        assert cursor.set_calls == []
+        assert cursor.advance_calls == []
 
     def test_guard_b_future_event_fails_the_run(self, tmp_path: Path) -> None:
         recorder = _RecordingRecorder()
@@ -590,7 +595,7 @@ class TestWatermarkRun:
             runner.run(_watermark_definition(), CannedDriver([batch]))
         assert len(recorder.failed) == 1
         assert recorder.completed == []
-        assert cursor.set_calls == []
+        assert cursor.advance_calls == []
 
     def test_feed_cursor_on_a_watermark_endpoint_raises(self, tmp_path: Path) -> None:
         recorder = _RecordingRecorder()
@@ -619,9 +624,14 @@ class TestWatermarkRun:
         assert recorder.completed == []
         assert len(recorder.failed) == 1
 
-    def test_cursor_is_written_before_completion(self, tmp_path: Path) -> None:
-        # Crash ordering: set_cursor lands before complete_run; a completion
-        # failure leaves the cursor advanced (and the run merely running).
+    def test_completion_failure_holds_the_cursor_and_the_unit_gates_resume(
+        self, tmp_path: Path
+    ) -> None:
+        # The per-unit crash order: complete_run lands before mark_done and
+        # the prefix commit, so a completion-write failure leaves the
+        # watermark unmoved and the unit un-done. Resume protection is
+        # unit-gating, not a cursor-first write: the persisted unit outranks
+        # the residual plan, and a fresh invocation re-drives it whole.
         recorder = _CompleteFailingRecorder()
         cursor = _StubCursorAccess()
         runner = _make_runner(
@@ -633,15 +643,25 @@ class TestWatermarkRun:
         batch = _wm_batch(datetime(2026, 6, 13, 9, tzinfo=UTC))
         with pytest.raises(RuntimeError, match='completion write failed'):
             runner.run(_watermark_definition(), CannedDriver([batch]))
-        assert cursor.set_calls == [
-            (
-                Provider.MOTIVE,
-                'locations',
-                DateWatermark(watermark=datetime(2026, 6, 13, 9, tzinfo=UTC)),
-            )
-        ]
+        assert cursor.advance_calls == []
         assert recorder.completed == []
         assert len(recorder.failed) == 1
+        # The same tmp_path state database still holds the unit un-done, so
+        # a fresh invocation re-claims it, re-drives the whole window, and
+        # only then commits the prefix.
+        retry_recorder = _RecordingRecorder()
+        retry_runner = _make_runner(
+            retry_recorder,
+            tmp_path,
+            cursor_access=cursor,
+            default_start_date=date(2026, 6, 12),
+        )
+        outcome = retry_runner.run(_watermark_definition(), CannedDriver([batch]))
+        assert isinstance(outcome, Executed)
+        assert retry_recorder.completed == [(1, 1)]
+        assert cursor.advance_calls == [
+            (Provider.MOTIVE, 'locations', datetime(2026, 6, 13, 9, tzinfo=UTC))
+        ]
 
     def test_fail_run_failure_does_not_mask_original_error(
         self, tmp_path: Path
