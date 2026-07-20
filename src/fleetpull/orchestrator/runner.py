@@ -4,17 +4,19 @@
 ``EndpointRunner`` owns one endpoint's run and dispatches on its ``sync_mode``.
 The snapshot arm fetches once and full-replaces. The watermark arm is the
 unified plan-and-drive loop (DESIGN sections 4/5): re-claim any incomplete
-work units and drive them serially ascending, then resolve the residual
-window exactly as before -- watermark less lookback (floored), else coverage
-frontier, else the cold-start anchor, against the cutoff trailing edge --
-plan it into ``backfill_chunk_days`` units, and drive those. Every unit is
-its own transaction: fetch the unit's window (the fan-out threads unchanged
-within it), write parquet, advance the watermark on a strictly-forward
-observation, record the ledger row -- parquet -> cursor -> ledger in that
-crash order -- and mark the unit done. Serial ascending completion keeps
-completed units a contiguous prefix, so every persisted watermark is true at
-every instant; a crash resumes from the work-units ledger instead of
-refetching the window. After a successful run fully commits, either arm
+work units and drive them (``backfill_unit_workers`` concurrently), then
+resolve the residual window exactly as before -- watermark less lookback
+(floored), else coverage frontier, else the cold-start anchor, against the
+cutoff trailing edge -- plan it into ``backfill_chunk_days`` units, and
+drive those. Every unit is its own transaction: fetch the unit's window
+(the fan-out threads unchanged within it), write parquet, record the
+ledger row, and mark the unit done with its folded observation. The
+watermark advances on the PREFIX-ADVANCE rule (2026-07-20): after each
+completion, to the maximum observation across the contiguous done-prefix,
+through the cursor store's atomic forward-only write -- so units may
+complete in any order and every persisted watermark is still true at every
+instant; a crash resumes from the work-units ledger instead of refetching
+the window. After a successful run fully commits, either arm
 projects the run's facts into the endpoint's ``metadata.json`` (DESIGN
 section 3) -- post-commit and best-effort, never part of the transaction.
 The feed arm raises ``NotImplementedError`` until its
@@ -75,10 +77,7 @@ from fleetpull.orchestrator.batch import (
 )
 from fleetpull.orchestrator.drivers import RequestDriver
 from fleetpull.orchestrator.outcome import CaughtUp, Executed, RunOutcome
-from fleetpull.orchestrator.resume import (
-    resolve_watermark_start,
-    should_advance_watermark,
-)
+from fleetpull.orchestrator.resume import resolve_watermark_start
 from fleetpull.orchestrator.streaming import stream_processed_batches
 from fleetpull.orchestrator.unit_loop import UnitQueue, drive_claimable_units
 from fleetpull.paths import endpoint_directory
@@ -207,10 +206,10 @@ class CursorAccess(Protocol):
         """Return the persisted cursor for a (provider, endpoint), or None."""
         ...
 
-    def set_cursor(
-        self, provider: Provider, endpoint: str, cursor: IncrementalCursor
-    ) -> None:
-        """Persist the cursor for a (provider, endpoint)."""
+    def advance_watermark_forward(
+        self, provider: Provider, endpoint: str, observed: datetime
+    ) -> bool:
+        """Atomically advance the date watermark iff strictly forward."""
         ...
 
 
@@ -466,15 +465,18 @@ class EndpointRunner:
         Incomplete units outrank the watermark: orphaned ``claimed`` units are
         reset (an in-progress unit found at run start is by definition
         orphaned -- fleetpull assumes a single driver per state database) and
-        every claimable unit is re-claimed and driven, serially ascending.
-        Then the residual window is resolved exactly as before -- the stored
-        watermark less lookback (floored), else the coverage frontier, else
-        the cold-start anchor, against the cutoff trailing edge -- planned
-        into ``backfill_chunk_days`` units (a window smaller than one chunk is
+        every claimable unit is re-claimed and driven,
+        ``backfill_unit_workers`` at a time. Then the residual window is
+        resolved exactly as before -- the stored watermark less lookback
+        (floored), else the coverage frontier, else the cold-start anchor,
+        against the cutoff trailing edge -- planned into
+        ``backfill_chunk_days`` units (a window smaller than one chunk is
         one unit: the daily run), and driven the same way. Each unit commits
-        independently and advances the watermark on a strictly-forward
-        observation; a failing unit returns to a claimable state and fails the
-        endpoint (fail-fast). An invocation that drove nothing is ``CaughtUp``
+        independently; the watermark advances per completion across the
+        contiguous done-prefix (the prefix-advance rule, so out-of-order
+        completions never overstate it); a failing unit returns to a
+        claimable state and fails the endpoint after in-flight siblings
+        finish. An invocation that drove nothing is ``CaughtUp``
         -- the resume point had reached the trailing edge, or every planned
         unit was already complete. After the last unit commits, the merged
         outcome projects into ``metadata.json`` (post-commit, best-effort);
@@ -511,8 +513,21 @@ class EndpointRunner:
             name,
         )
         self._state.units.reset_claimed_to_pending(provider, name)
+        commit_prefix = partial(self._commit_watermark_prefix, provider, name)
+        # Heal a crash that landed between a unit's done-mark and its prefix
+        # commit: the prefix read is cheap and the advance is atomic and
+        # forward-only, so an up-to-date cursor makes this a no-op.
+        commit_prefix()
         drive_unit = partial(self._drive_unit, definition, driver, observer)
-        outcomes = drive_claimable_units(self._state.units, provider, name, drive_unit)
+        workers = self._sync_config.backfill_unit_workers
+        outcomes = drive_claimable_units(
+            self._state.units,
+            provider,
+            name,
+            drive_unit,
+            workers=workers,
+            commit_prefix=commit_prefix,
+        )
         residual = self._resolve_residual_window(definition, mode)
         if residual is not None:
             chunk = timedelta(days=self._sync_config.backfill_chunk_days)
@@ -532,7 +547,14 @@ class EndpointRunner:
                 claimable_units,
             )
             outcomes.extend(
-                drive_claimable_units(self._state.units, provider, name, drive_unit)
+                drive_claimable_units(
+                    self._state.units,
+                    provider,
+                    name,
+                    drive_unit,
+                    workers=workers,
+                    commit_prefix=commit_prefix,
+                )
             )
         if not outcomes:
             logger.info('caught up: provider=%s endpoint=%s', provider.value, name)
@@ -543,6 +565,29 @@ class EndpointRunner:
         # null window.
         self._write_metadata_snapshot(definition, merged, window=residual)
         return merged
+
+    def _commit_watermark_prefix(self, provider: Provider, name: str) -> None:
+        """Advance the watermark across the contiguous done-prefix.
+
+        The prefix-advance rule's commit (DESIGN section 5, 2026-07-20):
+        read the maximum observation over the endpoint's contiguous
+        done-prefix and advance the watermark to it through the store's
+        atomic forward-only write. Invoked after every unit completion (and
+        once at run start, healing a crash between a done-mark and its
+        commit); concurrent invocations are safe -- the guard lives inside
+        the store's statement, so a stale prefix read can never write the
+        cursor backward.
+
+        Args:
+            provider: The provider whose watermark to commit.
+            name: The endpoint whose watermark to commit.
+
+        Side Effects:
+            May advance the endpoint's cursor row.
+        """
+        observation = self._state.units.done_prefix_observation(provider, name)
+        if observation is not None:
+            self._state.cursors.advance_watermark_forward(provider, name, observation)
 
     def _resolve_residual_window(
         self,
@@ -592,13 +637,14 @@ class EndpointRunner:
         observer: BatchObserver | None,
         window: DateWindow,
     ) -> Executed:
-        """Drive one unit: fetch its window, write, advance, record.
+        """Drive one unit: fetch its window, write, record.
 
         The per-unit transaction the claim loop invokes: build the unit's
         batch stream (the fan-out threads the unit's (member x window) pieces
-        on the ``FetchPool``, unchanged) and run it through the commit spine
-        with the freshly read prior cursor, so each ascending unit's
-        strictly-forward observation advances the watermark as it completes.
+        on the ``FetchPool``, unchanged) and run it through the commit spine.
+        The unit's folded observation rides the returned outcome; the
+        watermark advance is the unit loop's prefix commit, never this
+        drive's.
 
         Args:
             definition: The watermark endpoint being run.
@@ -607,7 +653,8 @@ class EndpointRunner:
             window: The unit's half-open window.
 
         Returns:
-            The unit's ``Executed`` outcome.
+            The unit's ``Executed`` outcome, its ``latest_observed`` carrying
+            the folded in-window maximum (or ``None`` for an empty unit).
 
         Raises:
             FleetpullError: A fetch, validation, write, or completion failure
@@ -616,42 +663,40 @@ class EndpointRunner:
         client = self._client_source.client_for(definition.provider)
         now = self._clock.now_utc()
         context = _window_context(definition, window, now)
-        prior = self._state.cursors.get_cursor(definition.provider, definition.name)
         batches = _observe_batches(
             stream_processed_batches(
                 definition, driver, client, resume=window, context=context
             ),
             observer,
         )
-        return self._execute_window(definition, batches, context, prior)
+        return self._execute_window(definition, batches, context)
 
     def _execute_window(
         self,
         definition: EndpointDefinition[ResponseModel],
         batches: Iterator[ProcessedBatch],
         context: WindowContext,
-        prior: IncrementalCursor | None,
     ) -> Executed:
-        """Run one window: open, consume/write/finalize, advance, complete.
+        """Run one window: open, consume/write/finalize, complete.
 
         The per-unit commit spine. It consumes an already-built
         processed-batch stream (the caller constructs it, wrapping in the
         batch observer where one applies), so the spine is blind to fetch
         mechanics. Opens a window run, writes each batch's in-window frame,
-        folds the observed maximum, finalizes, and -- in the parquet ->
-        cursor -> ledger crash order -- advances the cursor when the fold is
-        a strictly-forward step past ``prior`` before completing the run.
+        folds the observed maximum, finalizes, and completes the run. The
+        fold rides the returned outcome; the watermark advance belongs to
+        the unit loop's prefix commit (parquet -> unit done -> prefix
+        watermark -> ledger stays the crash order, sequenced one level up).
 
         Args:
             definition: The endpoint being run.
             batches: The unit's processed-batch stream, ready to consume.
             context: The window, run instant, and event-time column for the
                 per-batch transform.
-            prior: The cursor read at the unit's start -- the value a
-                strictly-forward observation must out-step to advance.
 
         Returns:
-            ``Executed`` with the fetched-row count and the write report.
+            ``Executed`` with the fetched-row count, the write report, and
+            the folded in-window maximum.
 
         Raises:
             FleetpullError: A fetch, validation, write, or completion failure -- the
@@ -670,16 +715,18 @@ class EndpointRunner:
             )
             records_fetched, latest_observed = _drain_batches(batches, writer)
             write = writer.finalize()
-            if latest_observed is not None and should_advance_watermark(
-                prior, latest_observed
-            ):
-                self._state.cursors.set_cursor(
-                    definition.provider,
-                    definition.name,
-                    DateWatermark(watermark=latest_observed),
-                )
+            # The cursor deliberately does NOT advance here: the unit's
+            # observation rides the outcome to the unit loop, which records
+            # it at mark_done and advances the watermark across the
+            # contiguous done-prefix only (the prefix-advance rule, DESIGN
+            # section 5) -- a per-unit advance would overstate coverage the
+            # moment units complete out of order.
             self._state.recorder.complete_run(run_id, row_count=records_fetched)
-            return Executed(records_fetched=records_fetched, write=write)
+            return Executed(
+                records_fetched=records_fetched,
+                write=write,
+                latest_observed=latest_observed,
+            )
         except Exception as error:
             self._fail_run_safely(run_id, error)
             raise
@@ -810,6 +857,11 @@ def _merge_executed(outcomes: Sequence[Executed]) -> Executed:
     Returns:
         The aggregated ``Executed``.
     """
+    observations = [
+        outcome.latest_observed
+        for outcome in outcomes
+        if outcome.latest_observed is not None
+    ]
     return Executed(
         records_fetched=sum(outcome.records_fetched for outcome in outcomes),
         write=WriteResult(
@@ -824,4 +876,5 @@ def _merge_executed(outcomes: Sequence[Executed]) -> Executed:
                 for deleted_date in outcome.write.deleted_partitions
             ],
         ),
+        latest_observed=max(observations) if observations else None,
     )

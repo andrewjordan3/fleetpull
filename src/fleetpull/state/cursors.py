@@ -148,6 +148,21 @@ ON CONFLICT (provider, endpoint) DO UPDATE SET
     updated_at = excluded.updated_at
 """
 
+# The atomic forward-only advance (DESIGN section 5, 2026-07-20): the
+# monotonicity guard lives INSIDE the statement, so concurrent unit
+# completions racing their prefix commits can never interleave a stale
+# read into a backward write. Lexical > on ``to_iso8601``'s fixed-width
+# Z-form is chronological. The kind guard keeps a feed cursor untouched;
+# the caller distinguishes that case loudly (see advance_watermark_forward).
+_ADVANCE_WATERMARK_SQL: Final[str] = """
+INSERT INTO cursors (provider, endpoint, kind, value, updated_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (provider, endpoint) DO UPDATE SET
+    value = excluded.value,
+    updated_at = excluded.updated_at
+WHERE cursors.kind = excluded.kind AND excluded.value > cursors.value
+"""
+
 
 class CursorStore:
     """
@@ -160,10 +175,13 @@ class CursorStore:
     row's ``kind`` discriminator; ``set_cursor`` is an unconditional single-row
     upsert stamped with the injected ``Clock``.
 
-    The store is deliberately dumb: it never fabricates a cursor, never interprets
-    absence, and applies no advance/monotonicity discipline — the
-    only-persist-a-strictly-forward-watermark rule lives in the caller (the
-    orchestrator), not here (§5).
+    The store is deliberately dumb: it never fabricates a cursor and never
+    interprets absence. ``set_cursor`` applies no advance/monotonicity
+    discipline — that rule lives in the caller (§5) — with one deliberate
+    exception: ``advance_watermark_forward`` carries the strictly-forward
+    guard inside its statement, because the prefix-advance rule's concurrent
+    callers cannot enforce monotonicity race-free from outside (§5,
+    2026-07-20).
 
     Args:
         database: The initialized, migrated state database supplying connections.
@@ -254,3 +272,77 @@ class CursorStore:
             endpoint,
             kind.value,
         )
+
+    def advance_watermark_forward(
+        self, provider: Provider, endpoint: str, observed: datetime
+    ) -> bool:
+        """
+        Advance the date watermark to ``observed`` iff that is strictly forward.
+
+        The one write with the monotonicity guard INSIDE the statement (the
+        deliberate exception to this store's no-discipline stance, added with
+        the prefix-advance rule -- DESIGN §5, 2026-07-20): concurrent unit
+        completions race their prefix commits, and a read-compare-write in the
+        caller could interleave a stale read into a backward write. The
+        guarded upsert inserts when no cursor exists, advances when
+        ``observed`` is strictly beyond the stored watermark, and changes
+        nothing otherwise -- atomically, whatever the caller interleaving.
+
+        Args:
+            provider: The provider whose watermark to advance.
+            endpoint: The endpoint whose watermark to advance.
+            observed: The candidate watermark -- a folded in-window maximum
+                event time.
+
+        Returns:
+            ``True`` when the cursor row was inserted or advanced; ``False``
+            when ``observed`` was not strictly forward of the stored value.
+
+        Raises:
+            ValueError: ``observed`` is naive or not UTC (surfaced from the
+                timing codec).
+            ConfigurationError: The stored cursor is a feed token -- a
+                cross-mode write is a wiring bug upstream, surfaced loudly
+                rather than silently skipped.
+
+        Side Effects:
+            Opens a connection; inserts or updates at most one row; commits.
+        """
+        value: str = to_iso8601(observed)
+        updated_at: str = to_iso8601(self._clock.now_utc())
+        with self._database.connect() as connection:
+            changes_before: int = connection.total_changes
+            connection.execute(
+                _ADVANCE_WATERMARK_SQL,
+                (
+                    provider.value,
+                    endpoint,
+                    CursorKind.DATE_WATERMARK.value,
+                    value,
+                    updated_at,
+                ),
+            )
+            advanced: bool = connection.total_changes > changes_before
+            if not advanced:
+                # Not-forward is normal; a kind mismatch is a bug. One
+                # diagnostic read distinguishes them, outside the write's
+                # atomicity (the write already refused, nothing raced).
+                row: tuple[SqliteScalar, SqliteScalar] | None = connection.execute(
+                    _SELECT_CURSOR_SQL, (provider.value, endpoint)
+                ).fetchone()
+                if row is not None and row[0] != CursorKind.DATE_WATERMARK.value:
+                    raise ConfigurationError(
+                        'cross-mode watermark advance refused',
+                        provider=provider.value,
+                        endpoint=endpoint,
+                        detail=f'stored cursor kind is {row[0]!r}, not a date watermark',
+                    )
+            connection.commit()
+        if advanced:
+            logger.debug(
+                'watermark advanced: provider=%s endpoint=%s watermark=%s',
+                provider.value,
+                endpoint,
+                value,
+            )
+        return advanced

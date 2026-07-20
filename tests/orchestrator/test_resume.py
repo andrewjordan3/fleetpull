@@ -6,10 +6,7 @@ import pytest
 
 from fleetpull.exceptions import ConfigurationError
 from fleetpull.incremental import DateWatermark, FeedToken
-from fleetpull.orchestrator.resume import (
-    resolve_watermark_start,
-    should_advance_watermark,
-)
+from fleetpull.orchestrator.resume import resolve_watermark_start
 from fleetpull.vocabulary import Provider
 
 _NOW = datetime(2026, 6, 16, tzinfo=UTC)
@@ -54,24 +51,3 @@ class TestResolveWatermarkStart:
                 Provider.MOTIVE,
                 'locations',
             )
-
-
-class TestShouldAdvanceWatermark:
-    def test_none_stored_advances(self) -> None:
-        assert should_advance_watermark(None, _NOW) is True
-
-    def test_strictly_greater_advances(self) -> None:
-        stored = DateWatermark(watermark=datetime(2026, 6, 10, tzinfo=UTC))
-        assert should_advance_watermark(stored, datetime(2026, 6, 11, tzinfo=UTC))
-
-    def test_equal_does_not_advance(self) -> None:
-        moment = datetime(2026, 6, 10, tzinfo=UTC)
-        assert (
-            should_advance_watermark(DateWatermark(watermark=moment), moment) is False
-        )
-
-    def test_earlier_does_not_advance(self) -> None:
-        stored = DateWatermark(watermark=datetime(2026, 6, 10, tzinfo=UTC))
-        assert (
-            should_advance_watermark(stored, datetime(2026, 6, 9, tzinfo=UTC)) is False
-        )
