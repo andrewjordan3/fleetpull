@@ -55,6 +55,8 @@ Before committing any change, ask: **"Would a senior engineer accept this in cod
 
 That last point deserves emphasis. **The right change is often a deletion.** When functionality belongs in an existing function, don't create a new one — extend the existing one. When a function is doing too much, don't patch around it — split it. When a pattern is wrong, don't work around it — fix it. Restructuring and removing code is not just acceptable, it's preferred over accumulating workarounds.
 
+**Alpha means settled is provisional.** Pre-1.0 there are no external consumers, so a module's age or shipped status is never an argument against improving it: when implementation reveals a design better than one already built, replacing the built design is preferred over accreting optional fields, special cases, or parallel mechanisms around it. "If it ain't broke, don't fix it" is a post-1.0 stance — right now is exactly the time to fix the sub-optimal implementations of the past. The discipline that survives: surface the divergence (Think Before Coding), and update DESIGN.md in the same change.
+
 ## Think Before Coding
 
 Before implementing, state your assumptions. If multiple interpretations exist, present them — don't pick silently. If a simpler approach exists, say so. Push back when warranted. If something is unclear, stop and ask.
@@ -181,6 +183,7 @@ uv run pytest
 
 ## Naming and Imports
 
+- **Naming is always in scope, and it is yours.** When a name no longer describes the thing — or a better name exists — rename it and sweep every reference in the same change (sub-agents for wide sweeps). Never defer a rename to the maintainer, never work around a stale name, never let a name's age protect it. Names must be clear and self-documenting; the maintainer's involvement is at most a passing mention in your summary.
 - Underscore prefix = file-private. Production code never exports or imports underscore-prefixed names outside their defining module. Tests may import underscore-prefixed names from production modules to exercise private helpers directly — keeping direct coverage of non-trivial internal functions outweighs the boundary rule for test code.
 - Imports organized to ruff standards (`isort`-compatible).
 - `__all__: list[str]` in every module under `src/`. Test modules are never imported as an API; they carry no `__all__`.
