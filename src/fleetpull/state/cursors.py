@@ -14,9 +14,14 @@ not parseable ISO-8601 UTC, is state-store corruption and raises
 ``ConfigurationError``, consistent with the other §5 corruption stances.
 ``get_cursor`` returning ``None`` means exactly "no cursor has been persisted for
 this (provider, endpoint)" — the store never fabricates one and never interprets
-absence; that decision lives in the caller. ``set_cursor`` is an unconditional
-single-row upsert; the only-persist-a-strictly-forward-watermark advance discipline
-likewise lives in the caller (the orchestrator), not here.
+absence; that decision lives in the caller. Two writes, two stances:
+``set_cursor`` is the unconditional single-row upsert with no advance
+discipline — the general write the feed arm will use when it lands (no
+production caller today) — while ``advance_watermark_forward`` is the
+watermark arm's write, carrying the strictly-forward guard inside its
+statement (the recorded §5 exception to the dumb-store stance, 2026-07-20),
+because its concurrent prefix-committing callers cannot enforce monotonicity
+race-free from outside the statement.
 """
 
 import logging
@@ -177,11 +182,12 @@ class CursorStore:
 
     The store is deliberately dumb: it never fabricates a cursor and never
     interprets absence. ``set_cursor`` applies no advance/monotonicity
-    discipline — that rule lives in the caller (§5) — with one deliberate
-    exception: ``advance_watermark_forward`` carries the strictly-forward
-    guard inside its statement, because the prefix-advance rule's concurrent
-    callers cannot enforce monotonicity race-free from outside (§5,
-    2026-07-20).
+    discipline — it is the general upsert the feed arm will write through
+    when it lands, its discipline the caller's (§5) — with one deliberate
+    exception: ``advance_watermark_forward``, the watermark arm's write,
+    carries the strictly-forward guard inside its statement, because the
+    prefix-advance rule's concurrent callers cannot enforce monotonicity
+    race-free from outside (§5, 2026-07-20).
 
     Args:
         database: The initialized, migrated state database supplying connections.
@@ -240,6 +246,9 @@ class CursorStore:
         is overwritten with this cursor's serialized ``kind``/``value`` and a fresh
         ``updated_at`` from the injected clock. No advance or monotonicity check
         happens here — the caller decides whether a write is warranted (§5).
+        This is the general write path the feed arm will use when it lands;
+        the watermark arm writes through ``advance_watermark_forward``
+        instead, so today this method has no production caller.
 
         Args:
             provider: The provider whose cursor to persist.

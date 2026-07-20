@@ -17,7 +17,10 @@ serializes writers, no app-level lock — that takes the lowest claimable ``unit
 (FIFO), increments ``attempt_count``, and clears the prior attempt's outcome.
 Lifecycle: ``pending → claimed → done | failed``; ``failed`` units are re-served on
 a later pass, capped at ``max_attempts`` (``attempt_count`` increments at claim, so
-a crash mid-execution counts) so a poison unit lets the backfill terminate.
+a crash mid-execution counts). The cap is mechanism, not shipped policy: the
+orchestrator passes a never-binding cap so a poison unit fails the endpoint loudly
+every invocation instead of being silently skipped (DESIGN §5, 2026-07-20); the
+machinery is retained for a future bounded retry policy.
 
 Crash recovery is a startup reset: a single ``fleetpull`` invocation runs the whole
 backfill as one process, so at startup any ``claimed`` row is stale (its worker is
@@ -476,7 +479,14 @@ class WorkUnitStore:
         unit before the earliest not-done one (all of them when none remains)
         and return the maximum recorded ``observed_max``. Out-of-order parallel
         completions beyond a gap contribute nothing until the gap closes, so a
-        watermark advanced to this value never overstates coverage.
+        watermark advanced to this value never overstates coverage. The query
+        is gap-blind by design: it sees only rows, so a hole no row represents
+        — a never-enqueued window between done units — would not gate the
+        prefix. Soundness therefore rests on the four §5 invariants (one
+        enqueue site running only after the claim loop drains, the
+        never-binding attempt cap, no row deletion, hole-free planner tiling),
+        which make such a hole unreachable; the state-layer gap-blindness test
+        pins this dependence.
 
         Args:
             provider: The provider whose units to read.
@@ -489,6 +499,8 @@ class WorkUnitStore:
         Raises:
             ConfigurationError: The stored observation is unparseable —
                 state-store corruption, the store's uniform stance.
+            RuntimeError: The observation column came back non-text,
+                violating the STRICT schema contract.
 
         Side Effects:
             Opens a connection and reads.
