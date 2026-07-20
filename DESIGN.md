@@ -2225,6 +2225,11 @@ tzinfo-construction rules mechanically.
     DEBUG carrying the per-member detail. Never per page or per record —
     that is flood, not progress. (The motivating incident: the last live
     pre-narration run was ~80 minutes for two log lines.)
+  - *Every record carries its thread name* (added with provider-parallel
+    `Sync`, 2026-07-20): queue threads are `fleetpull-sync-<provider>` and
+    fetch workers `fleetpull-<provider>-fetch`, so state-layer DEBUG lines
+    that carry only run/unit ids stay attributable at a glance when
+    providers interleave.
 
 ---
 
