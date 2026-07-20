@@ -1,6 +1,12 @@
 # src/fleetpull/models/samsara/__init__.py
 """Samsara response models; the face re-exports each endpoint module's models."""
 
+from fleetpull.models.samsara.address import (
+    Address,
+    AddressGeofence,
+    AddressGeofenceCircle,
+    AddressGeofenceSettings,
+)
 from fleetpull.models.samsara.driver import (
     Driver,
     DriverActivationStatus,
@@ -29,6 +35,10 @@ from fleetpull.models.samsara.vehicle import (
 )
 
 __all__: list[str] = [
+    'Address',
+    'AddressGeofence',
+    'AddressGeofenceCircle',
+    'AddressGeofenceSettings',
     'AssetRef',
     'Driver',
     'DriverActivationStatus',

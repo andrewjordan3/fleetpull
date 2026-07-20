@@ -117,6 +117,7 @@ providers:
       - drivers
       - trips
       - idling_events
+      - addresses
 
     # base_url: https://api.samsara.com    # optional; Samsara's production host
 
