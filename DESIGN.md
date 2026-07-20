@@ -403,7 +403,9 @@ on the next run. For a **start-anchored** provider (the API returns only records
 whose anchor falls in `[start, end]`) this holds automatically. For an
 **overlap-anchored** provider it does not: Samsara `/v1/fleet/trips` returns any
 trip *intersecting* the window, including trips that started before `start`
-(verified by live probes). Appended as-is, those pre-`start` trips are never
+(verified by live probes; live-reconfirmed per-type 2026-07-20 — a 60-second
+window strictly inside a trip's span returned it, start- and end-anchoring
+falsified). Appended as-is, those pre-`start` trips are never
 deleted on a later run — their prior copy lives under the earlier window that
 owns their start — so they accumulate as leading-edge duplicates, and exact
 dedup cannot remove them because the re-emitted copy carries drifted timestamps
@@ -1198,6 +1200,58 @@ drivers build implements them.
    provider-side count would guard that the walk and the enum closure do
    not already make loud.
 
+### Samsara `trips` probe-settled decisions (2026-07-20)
+
+Settled by the 2026-07-20 live probe session (the captured rows below); the
+trips build implements them.
+
+1. **The legacy v1 surface is the only surface, and it is structurally
+   per-vehicle — the roster machinery's first cross-provider consumer.**
+   `GET /v1/fleet/trips` is the one live path (the modern candidates 404:
+   `/fleet/trips`, `/beta/fleet/trips`, `/preview/fleet/trips`) and
+   `vehicleId` is REQUIRED (a loud HTTP 400 when omitted), so the binding
+   ships windowed watermark / `DATE_PARTITIONED` / SAMSARA scope /
+   `event_time_column='start_time'` with `request_shape=RosterFanOut(
+   roster=RosterKey(SAMSARA, 'vehicle_ids'), member_key='vehicleId')` — the
+   Motive vehicle_locations template, crossed to a second provider with no
+   machinery change.
+2. **A new `VEHICLE_IDS_ROSTER` declared beside its feeder**
+   (`endpoints/samsara/vehicles.py`, the Motive precedent verbatim:
+   `source_endpoint='vehicles'`, `source_column='id'` — the vehicles
+   frame's flattened top-level id — 1-day max age, eviction threshold 3;
+   discovered by the registry walk, no registration). On inactive
+   coverage, honestly: the 2026-07-17 capture proves the feeder lists
+   unplugged units, so present-but-inactive vehicles stay fanned over;
+   whether Samsara ever delists a removed vehicle was not probed, and the
+   eviction hysteresis is what retires a member the listing stops
+   returning.
+3. **The leaf builder merges the fan-out member as a QUERY parameter**
+   (the drivers-leaf precedent, not the Motive path-template one) plus the
+   resume window as `startMs`/`endMs` epoch milliseconds —
+   `int(timestamp * 1000)` of the tz-aware bound, `require_utc`-guarded at
+   the serialization point. The half-open `[start, end)` to inclusive-wire
+   mismatch at the millisecond boundary is absorbed by
+   overlap-supersets-ownership plus the runner's post-fetch start filter
+   (documented on the builder). The 90-day cap needs no builder guard:
+   default 7-day backfill chunks sit far inside, and a
+   `backfill_chunk_days` raised past 90 earns the provider's own loud 400
+   — the Motive driving_periods stance.
+4. **Model = the full-census mirror with epoch-ms type recovery.**
+   `start_time`/`end_time` are tz-aware UTC datetimes RECOVERED from the
+   wire's epoch-millisecond ints by a mode='before' validator — type
+   recovery is structural and belongs on the mirror (the GeotabTimeSpan
+   precedent); aliases `startMs`/`endMs`, the field names dropping the
+   unit suffix because the recovered type carries it (naming ownership).
+   Everything else mirrors verbatim under unit-suffixed names; `driverId`
+   0 is the UNASSIGNED sentinel, mirrored untouched;
+   `assetIds`/`codriverIds` (observed ONLY EMPTY across all 725) are typed
+   `list[int]` — the int-id family in the `list[scalar]` form the §9
+   derivation represents (it has no tuple form). Address blocks and the
+   geocoded strings are the PII-adjacent fields — capture fixtures are
+   fully synthetic.
+5. **No completeness check** — windowed, deliberately partial (the
+   standing snapshot-only rule).
+
 ### The exception hierarchy (implemented: `exceptions.py`)
 
 The operational errors consumers catch, mirroring the classification
@@ -1284,7 +1338,13 @@ budgets → `RetriesExhaustedError`, failed auth paths →
 | Samsara | `driverActivationStatus` is a STRICT CLOSED ENUM (`'active'` \| `'deactivated'`): case variants, comma-joined values, repeated keys, and bogus values ALL return HTTP 400 `{"message": "Invalid value for driverActivationStatus. Can only be 'active' or 'deactivated'", "requestId": ...}` — loud, never silent-empty, so a typo'd sweep value can never read as an empty partition (captured 2026-07-20). |
 | Samsara | `after` composes with the status param: a `limit=50` deactivated walk ran 8 pages (50×7+22), 372/372 unique, every record deactivated, a fresh cursor per page, the standard terminal — which is why the existing `SamsaraCursorPageDecoder` needed NO change for the sweep: its advance merges `after` onto the SENT spec, so a first-request query parameter persists across the whole walk (captured 2026-07-20). |
 | Samsara | `/fleet/drivers` success responses carry no rate-limit headers either — the provider-wide posture confirmed on a second endpoint; the request id is the correlation handle (captured 2026-07-20). |
-| Samsara | Driver-record census (union over 832; presence counts per the 460 active; deactivated matches structurally): absence-shaped optionality with ZERO nulls anywhere. Always present: `id`, `name`, `username`, `driverActivationStatus`, `timezone` (IANA), `createdAtTime`/`updatedAtTime` (ISO-8601 `Z` millis), `hasVehicleUnpinningEnabled`, `carrierSettings` (`carrierName`, `dotNumber` a BARE INT, `mainOfficeAddress`, plus `homeTerminalName`/`homeTerminalAddress` empty-string on 204/268 of 460), `hosSetting {heavyHaulExemptionToggleEnabled}`. Partial: `staticAssignedVehicle {id, name}` 102/460; `peerGroupTag` 4 and `vehicleGroupTag` 8, each `{id, name, parentTagId}`; `licenseNumber` 172, `licenseState` 269, `phone` 7, `locale` 1, `notes` 1, `profileImageUrl` 1; booleans `eldExempt` 270, `eldExemptReason` 282 (a boolean flag, not a reason string), `eldAdverseWeatherExemptionEnabled` 191, `eldBigDayExemptionEnabled` 186, `eldPcEnabled` 77, `eldYmEnabled` 100, `waitingTimeDutyStatusEnabled` 8. List-of-object blocks `tags` (441/460) and `eldSettings.rulesets` (190/460) are model-excluded per the Device/User precedent; `externalIds` was NEVER observed — unmodeled as unobserved (captured 2026-07-20). |
+| Samsara | Driver-record census (union over 832; presence counts per the 460 active; deactivated matches structurally): absence-shaped optionality with ZERO nulls anywhere. Always present: `id`, `name`, `username`, `driverActivationStatus`, `timezone` (IANA), `createdAtTime`/`updatedAtTime` (ISO-8601 `Z` millis), `hasVehicleUnpinningEnabled`, `carrierSettings` (`carrierName`, `dotNumber` a BARE INT, `mainOfficeAddress`, plus `homeTerminalName`/`homeTerminalAddress` empty-string on 204/268 of 460), `hosSetting {heavyHaulExemptionToggleEnabled}`. Partial: `staticAssignedVehicle {id, name}` 102/460; `peerGroupTag` 4 and `vehicleGroupTag` 8, each `{id, name, parentTagId}`; `licenseNumber` 172, `licenseState` 269, `phone` 7, `locale` 1, `notes` 1, `profileImageUrl` 1; booleans `eldExempt` 270, `eldExemptReason` 282 (a free-text reason string, despite sitting in the flag family — the model and capture mirror it as `str`), `eldAdverseWeatherExemptionEnabled` 191, `eldBigDayExemptionEnabled` 186, `eldPcEnabled` 77, `eldYmEnabled` 100, `waitingTimeDutyStatusEnabled` 8. List-of-object blocks `tags` (441/460) and `eldSettings.rulesets` (190/460) are model-excluded per the Device/User precedent; `externalIds` was NEVER observed — unmodeled as unobserved (captured 2026-07-20). |
+| Samsara | The trips surface is the LEGACY v1 API only: `GET /v1/fleet/trips`. The modern candidates 404 (`/fleet/trips`, `/beta/fleet/trips`, `/preview/fleet/trips`). `vehicleId` is REQUIRED — omitting it returns a loud HTTP 400 `rpc error: code = InvalidArgument desc = Missing parameter: vehicleId` in a text/plain body. Window params `startMs`/`endMs` are epoch MILLISECONDS (captured 2026-07-20). |
+| Samsara | The `/v1/fleet/trips` envelope is `{"trips": [...]}` — no pagination of any kind; one response per (vehicle, window), so `SinglePageDecoder(records_key='trips')` fits (the exception_events pairing precedent) (captured 2026-07-20). |
+| Samsara | `/v1/fleet/trips` retrieval is OVERLAP-anchored, re-verified per-type: a 60-second window strictly inside a trip's span returned that trip (start- and end-anchoring falsified) — §4's historical record for this exact endpoint confirmed live. Overlap retrieval supersets start-anchored ownership, so `start_time` routing needs no wire pad (captured 2026-07-20). |
+| Samsara | The `/v1/fleet/trips` window range cap is LOUD and exactly 90 days: 91+ days returns HTTP 400 text/plain `rpc error: code = InvalidArgument desc = requested time range cannot exceed 90 days`; a 90-day window succeeded (702 trips, one page). NOTE the wire posture: v1 400 bodies are TEXT/PLAIN rpc-error strings — the known Samsara plain-string-body posture extends beyond 5xx (captured 2026-07-20). |
+| Samsara | Trip-record census (725 trips, 60 vehicles, ZERO nulls anywhere): always present — `startMs`/`endMs` (epoch-ms ints; `endMs` on every observed trip including the two most recent — in-progress trips were never observed and appear to materialize on completion; the lookback absorbs late materialization, an accepted residual), `distanceMeters`, `fuelConsumedMl`, `tollMeters`, `startOdometer`/`endOdometer` (ints, provider units mirrored verbatim), `driverId` (int; 0 is the UNASSIGNED sentinel, 110/725), `startLocation`/`endLocation` (reverse-geocoded strings), `startCoordinates`/`endCoordinates` (`{latitude, longitude}` floats), `assetIds`/`codriverIds` (lists, observed ONLY EMPTY). Partial: `startAddress` 177/725 and `endAddress` 185/725, each `{address: str, id: int, name: str}` — present when the trip endpoint matched a defined address/geofence. The record does NOT echo the requested `vehicleId` (captured 2026-07-20). |
+| Samsara | `/v1/fleet/trips` success responses carry no rate-limit headers either — the provider-wide posture confirmed on a third endpoint, and on the legacy v1 surface (captured 2026-07-20). |
 | Motive | 401 body is `{"error_message": ...}`; the documented /vehicle_locations limit was not observed to enforce — generic 429 posture. |
 | Motive | `/v3/vehicle_locations/{vehicle_id}` verified live: envelope `{"vehicle_locations": [{"vehicle_location": {...}}]}`, `located_at` is UTC ISO-8601 (`Z`-suffixed), one non-paginated page per fetch (so `SinglePageDecoder` fits), and a single per-vehicle fetch spans multiple calendar dates (the sample crossed two) — confirming `split_by_date`'s multi-partition output is load-bearing in production, not a theoretical edge: one fetch genuinely fans into several partitions. |
 | Motive | `/v3/vehicle_locations/{vehicle_id}` date bounds pinned by direct probing: day-granular `start_date`/`end_date` are honored inclusively on both bounds — a single-day request returns that full day, a two-day request both complete days. The documented 3-month maximum range is real: long backfills will eventually need request chunking (a range limit, unrelated to the §15 item-1 window defect). |
@@ -1640,9 +1700,14 @@ fleetpull/
       driving_periods.py  # build_endpoint — the fleet-wide driving-span watermark binding
       idle_events.py  # build_endpoint — the fleet-wide idle-interval watermark binding (padded wire window)
     samsara/
-      vehicles.py  # build_endpoint — the vehicles cursor-walk snapshot factory
+      vehicles.py  # build_endpoint — the vehicles cursor-walk snapshot factory,
+                   #   plus VEHICLE_IDS_ROSTER (the trips fan-out's roster,
+                   #   declared beside its feeder)
       drivers.py   # SamsaraDriversSpecBuilder + build_endpoint — the ParamSweep
                    #   snapshot factory (active ∪ deactivated, §8's 2026-07-20 block)
+      trips.py     # SamsaraTripsSpecBuilder + build_endpoint — the per-vehicle
+                   #   windowed fan-out over the v1-only surface (the roster
+                   #   machinery's first cross-provider consumer, §8's trips block)
     geotab/
       _get_requests.py  # the shared GeoTab Get request machinery: GeotabGetSpecBuilder
                    #   (the snapshot seek walk), GeotabWindowedGetSpecBuilder (the
@@ -1682,6 +1747,9 @@ fleetpull/
       driver.py    # Driver + the carrier/HOS/tag-ref nesteds — the two-sweep
                    #   population record (list-of-object blocks excluded per the
                    #   Device precedent)
+      trip.py      # Trip + the coordinates/address nesteds — the per-vehicle
+                   #   trip record (epoch-ms wire ints recovered to UTC
+                   #   datetimes; the 0 driver sentinel mirrored verbatim)
     geotab/
       shared.py    # GeotabTimeSpan (.NET TimeSpan ingress) + bare_id_to_reference
                    #   (the sentinel-or-object reference coercion) — shared across entities
@@ -2542,7 +2610,12 @@ resolution (item 1, done).
    shipped 2026-07-20 (the second Samsara vertical and the first
    `ParamSweep` consumer: the two-sweep activation-status listing per
    its §8 decision block, riding the unchanged cursor decoder and the
-   member-agnostic fan-out driver).* The per-endpoint
+   member-agnostic fan-out driver). Samsara `trips` shipped 2026-07-20
+   (the third Samsara vertical and the roster machinery's first
+   cross-provider consumer: the v1-only per-vehicle windowed fan-out
+   per its §8 decision block, composed entirely from existing
+   machinery; the legacy four now stand 3/4 — `idling_events`
+   remains).* The per-endpoint
    inventory and port queue are tracked in `ENDPOINTS.md` (added
    2026-07-17), updated in the same change as any endpoint addition.
 8. **Polish phase, gated on a stable public surface:** full-tree ceremony

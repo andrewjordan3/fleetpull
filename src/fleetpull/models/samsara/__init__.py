@@ -9,6 +9,11 @@ from fleetpull.models.samsara.driver import (
     DriverStaticAssignedVehicleRef,
     DriverTagRef,
 )
+from fleetpull.models.samsara.trip import (
+    Trip,
+    TripAddress,
+    TripCoordinates,
+)
 from fleetpull.models.samsara.vehicle import (
     Vehicle,
     VehicleExternalIds,
@@ -23,6 +28,9 @@ __all__: list[str] = [
     'DriverHosSetting',
     'DriverStaticAssignedVehicleRef',
     'DriverTagRef',
+    'Trip',
+    'TripAddress',
+    'TripCoordinates',
     'Vehicle',
     'VehicleExternalIds',
     'VehicleGatewayRef',
