@@ -11,6 +11,7 @@ from fleetpull.config import SamsaraConfig
 from fleetpull.endpoints.samsara.vehicles import build_endpoint
 from fleetpull.endpoints.shared import (
     EndpointDefinition,
+    SingleFetch,
     SnapshotMode,
     StaticGetSpecBuilder,
     StorageKind,
@@ -29,14 +30,14 @@ class TestVehiclesSpecBuilder:
     def test_builds_the_static_get(self) -> None:
         endpoint = _build_endpoint()
         assert isinstance(endpoint.spec_builder, StaticGetSpecBuilder)
-        spec = endpoint.spec_builder.build_spec(resume=None, path_values={})
+        spec = endpoint.spec_builder.build_spec(resume=None, member_values={})
         assert spec.method is HttpMethod.GET
         assert spec.url == 'https://api.samsara.com/fleet/vehicles'
 
     def test_configured_base_url_is_used(self) -> None:
         config = SamsaraConfig(base_url='https://alt.example.test/')
         spec = build_endpoint(config).spec_builder.build_spec(
-            resume=None, path_values={}
+            resume=None, member_values={}
         )
         # The config strips the trailing slash so the path joins cleanly.
         assert spec.url == 'https://alt.example.test/fleet/vehicles'
@@ -51,8 +52,7 @@ class TestBuildVehiclesEndpoint:
         assert endpoint.storage_kind is StorageKind.SINGLE
         assert endpoint.response_model is Vehicle
         assert isinstance(endpoint.sync_mode, SnapshotMode)
-        assert endpoint.fan_out is None
-        assert endpoint.window_bisection is None
+        assert endpoint.request_shape == SingleFetch()
         assert endpoint.completeness_check is None
 
     def test_the_decoder_is_the_cursor_walk_at_the_documented_max(self) -> None:

@@ -1,8 +1,9 @@
 # src/fleetpull/endpoints/shared/__init__.py
 """Shared endpoints-layer surface: the ``EndpointDefinition`` binding, the
 ``SpecBuilder`` protocol and its provider-agnostic implementations, the
-URL-fan-out path renderer, the resume-value type guard, and the sync-mode /
-storage / resume declaration types."""
+``RequestShape`` union (request cardinality), the URL-path renderer for
+fan-out paths, the resume-value type guard, and the sync-mode / storage /
+resume declaration types."""
 
 from fleetpull.endpoints.shared.base import (
     CompletenessCheck,
@@ -15,8 +16,13 @@ from fleetpull.endpoints.shared.base import (
     SyncMode,
     WatermarkMode,
 )
-from fleetpull.endpoints.shared.bisection import WindowBisection
-from fleetpull.endpoints.shared.fan_out import FanOutBinding
+from fleetpull.endpoints.shared.request_shape import (
+    BisectedWindowFetch,
+    ParamSweep,
+    RequestShape,
+    RosterFanOut,
+    SingleFetch,
+)
 from fleetpull.endpoints.shared.resume import require_date_window
 from fleetpull.endpoints.shared.spec_builders import StaticGetSpecBuilder
 from fleetpull.endpoints.shared.url_paths import (
@@ -25,11 +31,15 @@ from fleetpull.endpoints.shared.url_paths import (
 )
 
 __all__: list[str] = [
+    'BisectedWindowFetch',
     'CompletenessCheck',
     'EndpointDefinition',
-    'FanOutBinding',
     'FeedMode',
+    'ParamSweep',
+    'RequestShape',
     'ResumeValue',
+    'RosterFanOut',
+    'SingleFetch',
     'SnapshotMode',
     'SpecBuilder',
     'StaticGetSpecBuilder',
@@ -37,7 +47,6 @@ __all__: list[str] = [
     'SyncMode',
     'UrlPathTemplateError',
     'WatermarkMode',
-    'WindowBisection',
     'render_url_path_template',
     'require_date_window',
 ]

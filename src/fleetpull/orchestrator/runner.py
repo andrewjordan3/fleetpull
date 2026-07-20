@@ -418,7 +418,9 @@ class EndpointRunner:
 
         Args:
             definition: The snapshot endpoint to run.
-            driver: The request driver (a ``SingleRequestDriver`` for a snapshot).
+            driver: The shape-resolved request driver -- a
+                ``SingleRequestDriver`` for a single-fetch snapshot, a
+                ``FanOutRequestDriver`` for a ``ParamSweep`` one.
             observer: The optional per-frame hook, handed each post-validation
                 frame as the run streams.
 

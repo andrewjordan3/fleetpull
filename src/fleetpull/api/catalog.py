@@ -46,6 +46,7 @@ class Endpoints:
         """Samsara endpoint identities."""
 
         vehicles: SnapshotEndpoint = SnapshotEndpoint(Provider.SAMSARA, 'vehicles')
+        drivers: SnapshotEndpoint = SnapshotEndpoint(Provider.SAMSARA, 'drivers')
 
     class Geotab:
         """GeoTab endpoint identities."""
@@ -70,6 +71,7 @@ def available_endpoints() -> tuple[EndpointIdentity, ...]:
         Endpoints.Motive.driving_periods,
         Endpoints.Motive.idle_events,
         Endpoints.Samsara.vehicles,
+        Endpoints.Samsara.drivers,
         Endpoints.Geotab.devices,
         Endpoints.Geotab.users,
         Endpoints.Geotab.trips,

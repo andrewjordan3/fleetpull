@@ -7,11 +7,15 @@ from datetime import datetime, timedelta
 import pytest
 
 from fleetpull.endpoints.shared import (
+    BisectedWindowFetch,
     CompletenessCheck,
     EndpointDefinition,
-    FanOutBinding,
     FeedMode,
+    ParamSweep,
+    RequestShape,
     ResumeValue,
+    RosterFanOut,
+    SingleFetch,
     SnapshotMode,
     StorageKind,
     SyncMode,
@@ -28,7 +32,7 @@ class _StubSpecBuilder:
     """A SpecBuilder double returning a fixed first request."""
 
     def build_spec(
-        self, resume: ResumeValue, path_values: Mapping[str, str]
+        self, resume: ResumeValue, member_values: Mapping[str, str]
     ) -> RequestSpec:
         return RequestSpec(method=HttpMethod.GET, url='https://example.test/v1/items')
 
@@ -51,6 +55,10 @@ class _StubModel(ResponseModel):
     maybe_at: datetime | None = None
 
 
+# A shared frozen marker for the helper's default (B008: no call in defaults).
+_SINGLE_FETCH = SingleFetch()
+
+
 class _StubCompletenessCheck:
     """A CompletenessCheck double returning a fixed count."""
 
@@ -63,7 +71,7 @@ def _make_endpoint(
     *,
     storage_kind: StorageKind = StorageKind.SINGLE,
     event_time_column: str | None = None,
-    fan_out: FanOutBinding | None = None,
+    request_shape: RequestShape = _SINGLE_FETCH,
     completeness_check: CompletenessCheck | None = None,
 ) -> EndpointDefinition[_StubModel]:
     """Build an EndpointDefinition from the stubs and the given axes."""
@@ -77,7 +85,7 @@ def _make_endpoint(
         storage_kind=storage_kind,
         sync_mode=sync_mode,
         event_time_column=event_time_column,
-        fan_out=fan_out,
+        request_shape=request_shape,
         completeness_check=completeness_check,
     )
 
@@ -114,16 +122,27 @@ class TestEndpointDefinition:
     def test_has_slots_no_dict(self) -> None:
         assert not hasattr(_make_endpoint(FeedMode()), '__dict__')
 
-    def test_constructs_with_a_fan_out(self) -> None:
-        binding = FanOutBinding(
+    def test_constructs_with_a_roster_fan_out(self) -> None:
+        shape = RosterFanOut(
             roster=RosterKey(Provider.SAMSARA, 'vehicle_ids'),
-            path_placeholder='vehicle_id',
+            member_key='vehicle_id',
         )
-        endpoint = _make_endpoint(FeedMode(), fan_out=binding)
-        assert endpoint.fan_out == binding
+        endpoint = _make_endpoint(FeedMode(), request_shape=shape)
+        assert endpoint.request_shape == shape
 
-    def test_fan_out_defaults_to_none(self) -> None:
-        assert _make_endpoint(FeedMode()).fan_out is None
+    def test_request_shape_defaults_to_single_fetch(self) -> None:
+        # Constructed WITHOUT the field: single-chain leaves stay undeclared.
+        endpoint = EndpointDefinition(
+            provider=Provider.SAMSARA,
+            name='trips',
+            spec_builder=_StubSpecBuilder(),
+            page_decoder=_StubPageDecoder(),
+            response_model=_StubModel,
+            quota_scope=QuotaScope.SAMSARA,
+            storage_kind=StorageKind.SINGLE,
+            sync_mode=SnapshotMode(),
+        )
+        assert endpoint.request_shape == SingleFetch()
 
 
 class TestSyncMode:
@@ -233,15 +252,97 @@ class TestEndpointDefinitionValidation:
         with pytest.raises(ValueError, match='requires SnapshotMode'):
             _make_endpoint(FeedMode(), completeness_check=_StubCompletenessCheck())
 
-    def test_fan_out_with_completeness_check_raises(self) -> None:
+    def test_roster_fan_out_with_completeness_check_raises(self) -> None:
         # The wiring-error rejection: a fan-out run is per-member, never
-        # the complete listing an expected count describes.
-        with pytest.raises(ValueError, match='requires fan_out=None'):
+        # the one complete listing an expected count describes.
+        with pytest.raises(ValueError, match='requires the SingleFetch'):
             _make_endpoint(
                 SnapshotMode(),
-                fan_out=FanOutBinding(
+                request_shape=RosterFanOut(
                     roster=RosterKey(Provider.SAMSARA, 'trip_ids'),
-                    path_placeholder='trip_id',
+                    member_key='trip_id',
                 ),
                 completeness_check=_StubCompletenessCheck(),
+            )
+
+    def test_param_sweep_with_completeness_check_raises(self) -> None:
+        # A sweep run is per-value, so the same per-member rejection applies.
+        with pytest.raises(ValueError, match='requires the SingleFetch'):
+            _make_endpoint(
+                SnapshotMode(),
+                request_shape=ParamSweep(param='status', values=('active',)),
+                completeness_check=_StubCompletenessCheck(),
+            )
+
+    def test_snapshot_param_sweep_constructs(self) -> None:
+        sweep = ParamSweep(param='status', values=('active', 'inactive'))
+        endpoint = _make_endpoint(SnapshotMode(), request_shape=sweep)
+        assert endpoint.request_shape == sweep
+
+    def test_watermark_param_sweep_raises(self) -> None:
+        # Windowed sweep composition is unprobed against any provider --
+        # rejected loudly until a real consumer proves it (the reopen note).
+        with pytest.raises(ValueError, match='ParamSweep requires SnapshotMode'):
+            _make_endpoint(
+                WatermarkMode(lookback=timedelta(days=1), cutoff=timedelta(days=2)),
+                event_time_column='occurred_at',
+                request_shape=ParamSweep(param='status', values=('active',)),
+            )
+
+    def test_feed_param_sweep_raises(self) -> None:
+        with pytest.raises(ValueError, match='ParamSweep requires SnapshotMode'):
+            _make_endpoint(
+                FeedMode(),
+                request_shape=ParamSweep(param='status', values=('active',)),
+            )
+
+    def test_watermark_partitioned_bisected_constructs(self) -> None:
+        shape = BisectedWindowFetch(
+            results_limit=100, floor=timedelta(minutes=1), event_time_wire_key='at'
+        )
+        endpoint = _make_endpoint(
+            WatermarkMode(lookback=timedelta(days=1), cutoff=timedelta(days=2)),
+            storage_kind=StorageKind.DATE_PARTITIONED,
+            event_time_column='occurred_at',
+            request_shape=shape,
+        )
+        assert endpoint.request_shape == shape
+
+    def test_snapshot_bisected_window_fetch_raises(self) -> None:
+        # Bisection recursively narrows a resume window; a snapshot has none.
+        with pytest.raises(ValueError, match='BisectedWindowFetch requires'):
+            _make_endpoint(
+                SnapshotMode(),
+                request_shape=BisectedWindowFetch(
+                    results_limit=100,
+                    floor=timedelta(minutes=1),
+                    event_time_wire_key='at',
+                ),
+            )
+
+    def test_feed_bisected_window_fetch_raises(self) -> None:
+        # The overflow signal halves a resume window; a feed resumes from a
+        # token and carries no window to halve.
+        with pytest.raises(ValueError, match='BisectedWindowFetch requires'):
+            _make_endpoint(
+                FeedMode(),
+                request_shape=BisectedWindowFetch(
+                    results_limit=100,
+                    floor=timedelta(minutes=1),
+                    event_time_wire_key='at',
+                ),
+            )
+
+    def test_single_storage_bisected_window_fetch_raises(self) -> None:
+        # The leaf ownership filter routes records to date partitions; a
+        # SINGLE layout has none to route to.
+        with pytest.raises(ValueError, match='BisectedWindowFetch requires'):
+            _make_endpoint(
+                WatermarkMode(lookback=timedelta(days=1), cutoff=timedelta(days=2)),
+                event_time_column='occurred_at',
+                request_shape=BisectedWindowFetch(
+                    results_limit=100,
+                    floor=timedelta(minutes=1),
+                    event_time_wire_key='at',
+                ),
             )

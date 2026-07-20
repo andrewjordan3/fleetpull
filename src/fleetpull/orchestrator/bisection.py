@@ -2,8 +2,9 @@
 """The bisecting request driver: complete fetches from capped, unsortable Gets.
 
 The third ``RequestDriver`` (the request-cardinality seam,
-``orchestrator/drivers.py``): for endpoints declaring a
-``WindowBisection``, the unit's resume window is fetched whole; a
+``orchestrator/drivers.py``): for endpoints declaring the
+``BisectedWindowFetch`` request shape, the unit's resume window is
+fetched whole; a
 response of exactly the declared ``results_limit`` is the overflow
 signal — the page is discarded, the window halves at a whole-second
 midpoint, and both halves recurse left-to-right; a floor-width window
@@ -35,9 +36,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from fleetpull.endpoints.shared import (
+    BisectedWindowFetch,
     EndpointDefinition,
     ResumeValue,
-    WindowBisection,
 )
 from fleetpull.exceptions import ProviderResponseError
 from fleetpull.incremental import DateWindow
@@ -74,12 +75,12 @@ class BisectingWindowDriver:
     """Fetch a windowed endpoint completely by adaptive window bisection.
 
     Attributes:
-        bisection: The endpoint's declared bisection facts — the overflow
-            threshold, the floor width, and the wire key that anchors
-            each record to its one owning leaf window.
+        shape: The endpoint's declared ``BisectedWindowFetch`` facts — the
+            overflow threshold, the floor width, and the wire key that
+            anchors each record to its one owning leaf window.
     """
 
-    bisection: WindowBisection
+    shape: BisectedWindowFetch
 
     def record_batches(
         self,
@@ -149,7 +150,7 @@ class BisectingWindowDriver:
         Raises:
             ProviderResponseError: Per ``record_batches``.
         """
-        spec = definition.spec_builder.build_spec(resume=window, path_values={})
+        spec = definition.spec_builder.build_spec(resume=window, member_values={})
         pages = list(
             client.fetch_pages(
                 spec, definition.page_decoder, definition.quota_scope.value
@@ -158,7 +159,7 @@ class BisectingWindowDriver:
         # The endpoint's decoder is single-page (terminal on the first
         # page), so the chain is exactly one page.
         records = [record for page in pages for record in page.records]
-        if len(records) < self.bisection.results_limit:
+        if len(records) < self.shape.results_limit:
             tally.leaves += 1
             yield FetchedPage(
                 records=self._anchored_in(records, window, definition),
@@ -166,7 +167,7 @@ class BisectingWindowDriver:
             )
             return
         width = window.end - window.start
-        if width <= self.bisection.floor:
+        if width <= self.shape.floor:
             raise ProviderResponseError(
                 detail=(
                     f'{definition.provider.value}.{definition.name}: a '
@@ -224,7 +225,7 @@ class BisectingWindowDriver:
                 record without one fails loudly rather than being
                 silently kept or dropped.
         """
-        wire_key = self.bisection.event_time_wire_key
+        wire_key = self.shape.event_time_wire_key
         anchored: list[JsonObject] = []
         for record in records:
             raw_value = record.get(wire_key)

@@ -1,17 +1,17 @@
 # src/fleetpull/endpoints/motive/vehicle_locations.py
-"""The Motive vehicle_locations watermark spec-builder and fan-out binding.
+"""The Motive vehicle_locations watermark spec-builder and roster fan-out shape.
 
-A per-vehicle breadcrumb endpoint. The binding declares its fan-out
-(``fan_out=FanOutBinding(...)``) naming the ``vehicle_ids`` roster by its
+A per-vehicle breadcrumb endpoint. The binding declares its request shape
+(``request_shape=RosterFanOut(...)``) naming the ``vehicle_ids`` roster by its
 opaque ``RosterKey`` -- this module knows nothing about the roster's feeder.
 The orchestration entry (``orchestrator/entry.py``) resolves that key through
 the ``RosterRegistry`` to its ``RosterDefinition``, refreshes the stored
 membership via the ``RosterRefreshCoordinator`` when stale, reads the members
-from the ``RosterStore``, and builds the ``FanOutRequestDriver`` -- which then
-calls ``build_spec`` once per member, passing that vehicle's id in
-``path_values`` and the run's resume ``DateWindow`` as ``resume``. The builder
-renders the per-vehicle path and maps the window to Motive's ``start_date`` /
-``end_date`` query parameters.
+from the ``RosterStore``, and feeds the shape-resolution seam, which builds
+the ``FanOutRequestDriver`` -- that driver then calls ``build_spec`` once per
+member, passing that vehicle's id in ``member_values`` and the run's resume
+``DateWindow`` as ``resume``. The builder renders the per-vehicle path and
+maps the window to Motive's ``start_date`` / ``end_date`` query parameters.
 
 Motive's ``start_date`` / ``end_date`` are inclusive on both ends and day-granular,
 anchored on ``located_at`` -- the endpoint returns every breadcrumb whose date falls
@@ -45,8 +45,8 @@ from typing import Final
 from fleetpull.config import MotiveConfig
 from fleetpull.endpoints.shared import (
     EndpointDefinition,
-    FanOutBinding,
     ResumeValue,
+    RosterFanOut,
     StorageKind,
     WatermarkMode,
     render_url_path_template,
@@ -89,15 +89,15 @@ class MotiveVehicleLocationsSpecBuilder:
     path_template: str
 
     def build_spec(
-        self, resume: ResumeValue, path_values: Mapping[str, str]
+        self, resume: ResumeValue, member_values: Mapping[str, str]
     ) -> RequestSpec:
         """Build the per-vehicle, date-windowed GET.
 
         Args:
             resume: The run's resume window. Must be a ``DateWindow`` -- a watermark
                 endpoint always resumes from one; any other value is a wiring bug.
-            path_values: The path fan-out values; must carry ``vehicle_id`` (the
-                strict template renderer rejects a missing or extra key).
+            member_values: The fan-out member binding; must carry ``vehicle_id``
+                (the strict template renderer rejects a missing or extra key).
 
         Returns:
             A credential-less ``GET`` for the per-vehicle URL, carrying
@@ -106,14 +106,14 @@ class MotiveVehicleLocationsSpecBuilder:
 
         Raises:
             TypeError: ``resume`` is not a ``DateWindow``.
-            UrlPathTemplateError: ``path_values`` does not match the template's
+            UrlPathTemplateError: ``member_values`` does not match the template's
                 placeholders, or a value is empty.
 
         Side Effects:
             None.
         """
         resume_window = require_date_window(resume, type(self).__name__)
-        rendered_path = render_url_path_template(self.path_template, path_values)
+        rendered_path = render_url_path_template(self.path_template, member_values)
         url = f'{self.base_url}{rendered_path}'
         start_date = to_utc_date_string(resume_window.start)
         end_date = to_utc_date_string(resume_window.end - timedelta(microseconds=1))
@@ -128,11 +128,12 @@ def build_endpoint(config: MotiveConfig) -> EndpointDefinition[VehicleLocation]:
     ``DateWindow`` (watermark with the provider's late-arrival lookback from config),
     the fetched whole days are written to ``date=YYYY-MM-DD`` partitions, and each
     refetched partition is replaced. Records arrive wrapped and unpaginated
-    (``{"vehicle_locations": [{"vehicle_location": {...}}]}``). The ``fan_out``
-    declaration names the ``vehicle_ids`` roster; the orchestration entry resolves
-    it to members and fans one request chain per vehicle, passing each
-    ``vehicle_id`` to the spec-builder's ``path_values`` — this binding only
-    declares the strategies and the roster key, never the roster's feeder.
+    (``{"vehicle_locations": [{"vehicle_location": {...}}]}``). The
+    ``request_shape`` declaration (``RosterFanOut``) names the ``vehicle_ids``
+    roster; the orchestration entry resolves it to members and fans one request
+    chain per vehicle, passing each ``vehicle_id`` to the spec-builder's
+    ``member_values`` — this binding only declares the strategies and the
+    roster key, never the roster's feeder.
 
     Args:
         config: The validated Motive configuration; supplies the base URL the
@@ -163,8 +164,8 @@ def build_endpoint(config: MotiveConfig) -> EndpointDefinition[VehicleLocation]:
             cutoff=timedelta(days=config.cutoff_days),
         ),
         event_time_column='located_at',
-        fan_out=FanOutBinding(
+        request_shape=RosterFanOut(
             roster=RosterKey(Provider.MOTIVE, 'vehicle_ids'),
-            path_placeholder='vehicle_id',
+            member_key='vehicle_id',
         ),
     )
