@@ -97,8 +97,8 @@ The same run is available from the shell: `fleetpull sync fleetpull_config.yaml`
 
 Endpoints run and commit independently — one endpoint's failure never halts
 its siblings; a run with failures ends by raising `SyncFailuresError`
-carrying every failure (run order within each provider, providers in
-config order).
+carrying every failure (queue order within each provider — feeders then
+consumers, config order within each — providers in config order).
 
 Output is one folder per endpoint under `dataset_root`:
 
