@@ -20,8 +20,9 @@ know the schema.
 
 This module owns schema evolution only; reading and writing the rows of any table
 (the ``cursors``, ``runs``, ``work_units``, and ``rosters`` tables created here)
-belongs to the store layers built on top. Today the head is version 2: v1 is the
-``cursors``, ``runs``, and ``work_units`` tables; v2 adds the ``rosters`` table.
+belongs to the store layers built on top. Today the head is version 3: v1 is the
+``cursors``, ``runs``, and ``work_units`` tables; v2 adds the ``rosters`` table;
+v3 adds ``work_units.observed_max`` (the prefix-advance watermark rule's datum).
 """
 
 import logging
@@ -267,6 +268,26 @@ def _create_rosters_table(connection: sqlite3.Connection) -> None:
     connection.execute(_ROSTERS_TABLE_DDL)
 
 
+def _add_observed_max_column(connection: sqlite3.Connection) -> None:
+    """
+    Apply schema v3: add ``observed_max`` to ``work_units``.
+
+    A done unit's folded in-window maximum event time (``to_iso8601`` form),
+    NULL for an empty unit or one completed before v3. The prefix-advance
+    watermark rule (DESIGN section 5, 2026-07-20) reads it: the cursor may
+    advance to the maximum observation across the contiguous done-prefix of
+    the plan, so out-of-order parallel unit completions never overstate the
+    watermark.
+
+    Args:
+        connection: An open connection, inside the migration's transaction.
+
+    Side Effects:
+        Executes one ``ALTER TABLE`` on ``connection``.
+    """
+    connection.execute('ALTER TABLE work_units ADD COLUMN observed_max TEXT')
+
+
 def _create_initial_schema(connection: sqlite3.Connection) -> None:
     """
     Apply schema v1: create the initial tables — ``cursors``, ``runs``, ``work_units``.
@@ -292,6 +313,7 @@ def _create_initial_schema(connection: sqlite3.Connection) -> None:
 _MIGRATIONS: Final[tuple[_Migration, ...]] = (
     _Migration(version=1, apply=_create_initial_schema),
     _Migration(version=2, apply=_create_rosters_table),
+    _Migration(version=3, apply=_add_observed_max_column),
 )
 
 

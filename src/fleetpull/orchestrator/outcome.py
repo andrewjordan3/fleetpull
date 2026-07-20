@@ -11,6 +11,7 @@ always executes.
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from fleetpull.storage import WriteResult
 
@@ -26,10 +27,17 @@ class Executed:
             ledger's row count, distinct from ``write.rows_written`` (which dedup
             and partitioning can make a different number).
         write: The storage layer's write report for the run.
+        latest_observed: The folded in-window maximum event time, or ``None``
+            when the run observed no in-window event (an empty unit) or has no
+            event-time axis (a snapshot). The prefix-advance watermark rule's
+            per-unit datum (DESIGN section 5): the unit loop records it at
+            ``mark_done`` and the watermark advances only across the
+            contiguous done-prefix -- never here, never per-unit in isolation.
     """
 
     records_fetched: int
     write: WriteResult
+    latest_observed: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

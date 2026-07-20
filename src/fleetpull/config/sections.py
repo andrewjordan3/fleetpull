@@ -57,12 +57,20 @@ class SyncConfig(ConfigModel):
             override: chunk size is fleetpull's transactional knob, not a
             provider-latency fact. Applies to newly planned units only --
             already-persisted unit boundaries are honored on resume.
+        backfill_unit_workers: How many of a windowed endpoint's work units
+            drive concurrently (DESIGN section 5's prefix-advance rule keeps
+            the watermark truthful under any completion order). ``1`` is the
+            serial path. Sync-level like ``backfill_chunk_days`` -- unit
+            concurrency is fleetpull's execution knob; the per-provider rate
+            budget stays the limiter's job at the transport boundary, so
+            workers beyond a provider's budget simply pace on tokens.
     """
 
     default_start_date: date
     lookback_days: int | None = Field(default=None, ge=0)
     cutoff_days: int | None = Field(default=None, ge=0)
     backfill_chunk_days: int = Field(default=7, ge=1)
+    backfill_unit_workers: int = Field(default=4, ge=1)
 
     @property
     def default_start_datetime(self) -> datetime:
