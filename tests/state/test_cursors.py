@@ -1,6 +1,8 @@
 """Tests for fleetpull.state.cursors."""
 
 import sqlite3
+import threading
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -99,6 +101,155 @@ class TestUpsert:
         cursor_store.set_cursor(Provider.GEOTAB, 'trips', watermark)
         cursor_store.set_cursor(Provider.GEOTAB, 'trips', token)
         assert cursor_store.get_cursor(Provider.GEOTAB, 'trips') == token
+
+
+class TestAdvanceWatermarkForwardGuardPlacement:
+    """The monotonicity guard must live INSIDE the statement (§5).
+
+    A method-internal read-compare-write is serially indistinguishable
+    from the in-statement guard, so this test interleaves at the
+    CONNECTION's execute boundary: the stale thread's first execute
+    proceeds, then it blocks until the fresh commit lands. The
+    in-statement guard performs its whole advance in one execute and
+    never reaches the gate; a read-compare-write regression straddles
+    it — its stale read happens before the fresh commit and its write
+    after — and the final cursor regresses, failing the assertion.
+    """
+
+    def test_in_statement_guard_survives_interleaved_read_write(
+        self, tmp_path: Path
+    ) -> None:
+        stale = datetime(2026, 6, 11, 9, 0, 0, tzinfo=UTC)
+        fresh = datetime(2026, 6, 14, 12, 0, 0, tzinfo=UTC)
+        first_execute_done = threading.Event()
+        fresh_committed = threading.Event()
+
+        class _ExecuteGatedDatabase(StateDatabase):
+            """Gates the armed thread's SECOND execute behind the fresh commit."""
+
+            armed_thread_id: int | None = None
+
+            @contextmanager
+            def connect(self):  # type: ignore[no-untyped-def]  # typing-justified: mirrors the parent contextmanager signature the proxy narrows
+                with super().connect() as real_connection:
+                    if threading.get_ident() != self.armed_thread_id:
+                        yield real_connection
+                        return
+                    calls = {'count': 0}
+
+                    class _GatedConnection:
+                        def execute(
+                            self,
+                            sql: str,
+                            # typing-justified: sqlite3's heterogeneous params
+                            parameters: tuple[object, ...] = (),
+                        ) -> sqlite3.Cursor:
+                            calls['count'] += 1
+                            if calls['count'] == 2:
+                                assert fresh_committed.wait(timeout=5)
+                            result = real_connection.execute(sql, parameters)
+                            if calls['count'] == 1:
+                                first_execute_done.set()
+                            return result
+
+                        # typing-justified: attribute passthrough proxy
+                        def __getattr__(self, name: str) -> object:
+                            return getattr(real_connection, name)
+
+                    yield _GatedConnection()
+
+        database = _ExecuteGatedDatabase(tmp_path / 'state.sqlite3')
+        database.initialize()
+        migrate_to_head(database)
+        store = CursorStore(database, FrozenClock(start_time_utc=FROZEN_INSTANT))
+
+        def advance_stale() -> None:
+            _ExecuteGatedDatabase.armed_thread_id = threading.get_ident()
+            store.advance_watermark_forward(Provider.MOTIVE, 'locations', stale)
+
+        stale_thread = threading.Thread(target=advance_stale, name='stale-advance')
+        stale_thread.start()
+        assert first_execute_done.wait(timeout=5)
+        store.advance_watermark_forward(Provider.MOTIVE, 'locations', fresh)
+        fresh_committed.set()
+        stale_thread.join(timeout=5)
+        assert not stale_thread.is_alive()
+        assert store.get_cursor(Provider.MOTIVE, 'locations') == DateWatermark(
+            watermark=fresh
+        )
+
+
+class TestAdvanceWatermarkForward:
+    """The atomic forward-only advance (DESIGN section 5, 2026-07-20)."""
+
+    def test_inserts_when_no_cursor_exists(self, cursor_store: CursorStore) -> None:
+        assert (
+            cursor_store.advance_watermark_forward(
+                Provider.MOTIVE, 'locations', WATERMARK_INSTANT
+            )
+            is True
+        )
+        assert cursor_store.get_cursor(Provider.MOTIVE, 'locations') == DateWatermark(
+            watermark=WATERMARK_INSTANT
+        )
+
+    def test_advances_when_strictly_forward(self, cursor_store: CursorStore) -> None:
+        cursor_store.set_cursor(
+            Provider.MOTIVE, 'locations', DateWatermark(watermark=WATERMARK_INSTANT)
+        )
+        forward = datetime(2026, 6, 2, 12, 0, 0, tzinfo=UTC)
+        assert (
+            cursor_store.advance_watermark_forward(
+                Provider.MOTIVE, 'locations', forward
+            )
+            is True
+        )
+        assert cursor_store.get_cursor(Provider.MOTIVE, 'locations') == DateWatermark(
+            watermark=forward
+        )
+
+    def test_refuses_an_equal_observation(self, cursor_store: CursorStore) -> None:
+        cursor_store.set_cursor(
+            Provider.MOTIVE, 'locations', DateWatermark(watermark=WATERMARK_INSTANT)
+        )
+        assert (
+            cursor_store.advance_watermark_forward(
+                Provider.MOTIVE, 'locations', WATERMARK_INSTANT
+            )
+            is False
+        )
+        assert cursor_store.get_cursor(Provider.MOTIVE, 'locations') == DateWatermark(
+            watermark=WATERMARK_INSTANT
+        )
+
+    def test_refuses_a_backward_observation(self, cursor_store: CursorStore) -> None:
+        cursor_store.set_cursor(
+            Provider.MOTIVE, 'locations', DateWatermark(watermark=WATERMARK_INSTANT)
+        )
+        backward = datetime(2026, 5, 30, 12, 0, 0, tzinfo=UTC)
+        assert (
+            cursor_store.advance_watermark_forward(
+                Provider.MOTIVE, 'locations', backward
+            )
+            is False
+        )
+        assert cursor_store.get_cursor(Provider.MOTIVE, 'locations') == DateWatermark(
+            watermark=WATERMARK_INSTANT
+        )
+
+    def test_a_stored_feed_token_raises(self, cursor_store: CursorStore) -> None:
+        # A cross-mode advance is a wiring bug upstream: refused loudly, and
+        # the feed cursor is left untouched.
+        cursor_store.set_cursor(
+            Provider.GEOTAB, 'log_records', FeedToken(from_version='v7')
+        )
+        with pytest.raises(ConfigurationError, match='cross-mode'):
+            cursor_store.advance_watermark_forward(
+                Provider.GEOTAB, 'log_records', WATERMARK_INSTANT
+            )
+        assert cursor_store.get_cursor(Provider.GEOTAB, 'log_records') == FeedToken(
+            from_version='v7'
+        )
 
 
 class TestKeyIsolation:

@@ -36,6 +36,7 @@ _WORK_UNIT_COLUMNS: tuple[str, ...] = (
     'claimed_at',
     'finished_at',
     'last_error',
+    'observed_max',
 )
 
 
@@ -105,6 +106,25 @@ def _insert_raw_unit(
             'INSERT INTO work_units (provider, endpoint, chunk_start, chunk_end) '
             'VALUES (?, ?, ?, ?)',
             (provider, endpoint, chunk_start, chunk_end),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _corrupt_unit_observation(database_path: Path, observed_max: str | bytes) -> None:
+    """Force every unit row done with a corrupt observation, bypassing the store.
+
+    ``bytes`` would land as a BLOB; on this STRICT table SQLite refuses
+    it at write time (integers are converted by TEXT affinity on
+    non-STRICT tables, but STRICT rejects both) -- callers passing bytes
+    are asserting that refusal.
+    """
+    connection = sqlite3.connect(database_path)
+    try:
+        connection.execute(
+            "UPDATE work_units SET status = 'done', observed_max = ?",
+            (observed_max,),
         )
         connection.commit()
     finally:
@@ -269,22 +289,164 @@ class TestMarkDone:
         claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
         assert claimed is not None
         frozen_clock.advance(timedelta(minutes=10))
-        work_unit_store.mark_done(claimed.unit_id)
+        work_unit_store.mark_done(claimed.unit_id, observed_max=None)
         row = _read_unit(database_path, claimed.unit_id)
         assert row['status'] == WorkUnitStatus.DONE
         assert row['finished_at'] == to_iso8601(FROZEN_INSTANT + timedelta(minutes=10))
 
+    def test_persists_the_observation(
+        self, work_unit_store: WorkUnitStore, database_path: Path
+    ) -> None:
+        # The prefix-advance rule's datum: mark_done records the unit's
+        # folded in-window maximum in to_iso8601 form.
+        work_unit_store.enqueue([_spec()])
+        claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
+        assert claimed is not None
+        observed = datetime(2026, 6, 1, 18, 45, 0, tzinfo=UTC)
+        work_unit_store.mark_done(claimed.unit_id, observed_max=observed)
+        row = _read_unit(database_path, claimed.unit_id)
+        assert row['observed_max'] == to_iso8601(observed)
+
+    def test_persists_null_for_an_empty_unit(
+        self, work_unit_store: WorkUnitStore, database_path: Path
+    ) -> None:
+        work_unit_store.enqueue([_spec()])
+        claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
+        assert claimed is not None
+        work_unit_store.mark_done(claimed.unit_id, observed_max=None)
+        row = _read_unit(database_path, claimed.unit_id)
+        assert row['observed_max'] is None
+
     def test_rejects_an_unknown_unit(self, work_unit_store: WorkUnitStore) -> None:
         with pytest.raises(ValueError, match='no claimed work unit'):
-            work_unit_store.mark_done(999)
+            work_unit_store.mark_done(999, observed_max=None)
 
     def test_rejects_a_non_claimed_unit(self, work_unit_store: WorkUnitStore) -> None:
         work_unit_store.enqueue([_spec()])
         claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
         assert claimed is not None
-        work_unit_store.mark_done(claimed.unit_id)
+        work_unit_store.mark_done(claimed.unit_id, observed_max=None)
         with pytest.raises(ValueError, match='no claimed work unit'):
-            work_unit_store.mark_done(claimed.unit_id)  # already done, not claimed
+            # already done, not claimed
+            work_unit_store.mark_done(claimed.unit_id, observed_max=None)
+
+
+def _observation(day: int) -> datetime:
+    """A whole-second in-window observation for the day's unit (codec round-trip safe)."""
+    return datetime(2026, 6, day, 12, 0, 0, tzinfo=UTC)
+
+
+class TestDonePrefixObservation:
+    """The prefix-advance rule's read (DESIGN section 5, 2026-07-20)."""
+
+    @staticmethod
+    def _claim_daily_units(store: WorkUnitStore, count: int) -> list[int]:
+        """Enqueue ``count`` consecutive daily units and claim every one."""
+        store.enqueue(
+            [
+                _spec(chunk_start=_day(day), chunk_end=_day(day + 1))
+                for day in range(1, count + 1)
+            ]
+        )
+        unit_ids: list[int] = []
+        for _ in range(count):
+            claimed = store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
+            assert claimed is not None
+            unit_ids.append(claimed.unit_id)
+        return unit_ids
+
+    def test_empty_table_reads_none(self, work_unit_store: WorkUnitStore) -> None:
+        assert (
+            work_unit_store.done_prefix_observation(Provider.SAMSARA, 'trips') is None
+        )
+
+    def test_all_done_reads_the_global_maximum(
+        self, work_unit_store: WorkUnitStore
+    ) -> None:
+        unit_ids = self._claim_daily_units(work_unit_store, 3)
+        work_unit_store.mark_done(unit_ids[0], observed_max=_observation(1))
+        work_unit_store.mark_done(unit_ids[1], observed_max=_observation(3))
+        work_unit_store.mark_done(unit_ids[2], observed_max=_observation(2))
+        assert work_unit_store.done_prefix_observation(
+            Provider.SAMSARA, 'trips'
+        ) == _observation(3)
+
+    def test_a_pending_gap_gates_the_prefix(
+        self, work_unit_store: WorkUnitStore
+    ) -> None:
+        # Units 1 and 3 done, unit 2 pending: the prefix stops at the gap,
+        # so unit 3's later observation is excluded.
+        unit_ids = self._claim_daily_units(work_unit_store, 3)
+        work_unit_store.mark_done(unit_ids[0], observed_max=_observation(1))
+        work_unit_store.mark_done(unit_ids[2], observed_max=_observation(3))
+        assert work_unit_store.reset_claimed_to_pending(Provider.SAMSARA, 'trips') == 1
+        assert work_unit_store.done_prefix_observation(
+            Provider.SAMSARA, 'trips'
+        ) == _observation(1)
+
+    def test_a_failed_gap_gates_the_prefix(
+        self, work_unit_store: WorkUnitStore
+    ) -> None:
+        unit_ids = self._claim_daily_units(work_unit_store, 3)
+        work_unit_store.mark_done(unit_ids[0], observed_max=_observation(1))
+        work_unit_store.mark_failed(unit_ids[1], error_detail='planted')
+        work_unit_store.mark_done(unit_ids[2], observed_max=_observation(3))
+        assert work_unit_store.done_prefix_observation(
+            Provider.SAMSARA, 'trips'
+        ) == _observation(1)
+
+    def test_null_observations_inside_the_prefix_are_skipped(
+        self, work_unit_store: WorkUnitStore
+    ) -> None:
+        # Empty units record NULL; MAX ignores them without gating.
+        unit_ids = self._claim_daily_units(work_unit_store, 3)
+        work_unit_store.mark_done(unit_ids[0], observed_max=None)
+        work_unit_store.mark_done(unit_ids[1], observed_max=_observation(2))
+        work_unit_store.mark_done(unit_ids[2], observed_max=None)
+        assert work_unit_store.done_prefix_observation(
+            Provider.SAMSARA, 'trips'
+        ) == _observation(2)
+
+    def test_an_all_null_prefix_reads_none(
+        self, work_unit_store: WorkUnitStore
+    ) -> None:
+        unit_ids = self._claim_daily_units(work_unit_store, 2)
+        work_unit_store.mark_done(unit_ids[0], observed_max=None)
+        work_unit_store.mark_done(unit_ids[1], observed_max=None)
+        assert (
+            work_unit_store.done_prefix_observation(Provider.SAMSARA, 'trips') is None
+        )
+
+    def test_gap_blindness_a_never_enqueued_hole_does_not_gate(
+        self, work_unit_store: WorkUnitStore
+    ) -> None:
+        # THE DOCUMENTED GAP-BLINDNESS, PINNED DELIBERATELY (the DESIGN
+        # section 5 tripwire): the prefix query sees only rows, so a hole no
+        # row represents -- here the never-enqueued day between the two done
+        # units -- does NOT gate the prefix, and the far observation IS
+        # returned. This is safe in production only because the four section
+        # 5 invariants (one enqueue site running after the claim loop
+        # drains, the never-binding attempt cap, no row deletion, hole-free
+        # planner tiling) make such a hole unreachable. If this test ever
+        # has to change -- a "fix" that gates on holes, or a new caller
+        # relying on gap-blindness -- that change must consciously re-derive
+        # the prefix rule's safety, not land as a drive-by.
+        work_unit_store.enqueue(
+            [
+                _spec(chunk_start=_day(1), chunk_end=_day(2)),
+                # Day 2 -> 3 is a hole: never enqueued, no row anywhere.
+                _spec(chunk_start=_day(3), chunk_end=_day(4)),
+            ]
+        )
+        first = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
+        second = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
+        assert first is not None
+        assert second is not None
+        work_unit_store.mark_done(first.unit_id, observed_max=_observation(1))
+        work_unit_store.mark_done(second.unit_id, observed_max=_observation(3))
+        assert work_unit_store.done_prefix_observation(
+            Provider.SAMSARA, 'trips'
+        ) == _observation(3)
 
 
 class TestMarkFailed:
@@ -307,7 +469,7 @@ class TestMarkFailed:
         work_unit_store.enqueue([_spec()])
         claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
         assert claimed is not None
-        work_unit_store.mark_done(claimed.unit_id)
+        work_unit_store.mark_done(claimed.unit_id, observed_max=None)
         with pytest.raises(ValueError, match='no claimed work unit'):
             work_unit_store.mark_failed(claimed.unit_id, error_detail='x')
 
@@ -340,7 +502,7 @@ class TestResetClaimedToPending:
             Provider.SAMSARA, 'trips', max_attempts=1
         )
         assert done_unit is not None
-        work_unit_store.mark_done(done_unit.unit_id)
+        work_unit_store.mark_done(done_unit.unit_id, observed_max=None)
         failed_unit = work_unit_store.claim_next(
             Provider.SAMSARA, 'trips', max_attempts=1
         )
@@ -393,7 +555,7 @@ class TestLifecycle:
         assert second is not None
         assert second.unit_id == first.unit_id
         assert second.attempt_count == 2
-        work_unit_store.mark_done(second.unit_id)
+        work_unit_store.mark_done(second.unit_id, observed_max=None)
         row = _read_unit(database_path, second.unit_id)
         assert row['status'] == WorkUnitStatus.DONE
         assert row['last_error'] is None  # cleared at the re-claim, never restored
@@ -418,6 +580,44 @@ class TestCrashRecovery:
 
 
 class TestCorruption:
+    def test_unparseable_observed_max_raises_configuration_error(
+        self, work_unit_store: WorkUnitStore, database_path: Path
+    ) -> None:
+        # A done row whose observed_max is not ISO-8601 is state-store
+        # corruption: the prefix read must raise, never freeze the
+        # watermark silently.
+        _insert_raw_unit(
+            database_path,
+            Provider.SAMSARA.value,
+            'trips',
+            '2026-01-01T00:00:00Z',
+            '2026-01-08T00:00:00Z',
+        )
+        _corrupt_unit_observation(database_path, 'not-a-timestamp')
+        with pytest.raises(ConfigurationError):
+            work_unit_store.done_prefix_observation(Provider.SAMSARA, 'trips')
+
+    def test_strict_schema_rejects_non_text_observation_at_write(
+        self, work_unit_store: WorkUnitStore, database_path: Path
+    ) -> None:
+        # The non-text RuntimeError arm in done_prefix_observation is
+        # structurally unreachable: work_units is a STRICT table, so
+        # SQLite itself refuses a non-text observed_max at write time --
+        # pinned here so a schema change that drops STRICT (reopening
+        # the arm) is a conscious decision. The in-code narrowing stays
+        # as the typing-required else-branch.
+        _insert_raw_unit(
+            database_path,
+            Provider.SAMSARA.value,
+            'trips',
+            '2026-01-01T00:00:00Z',
+            '2026-01-08T00:00:00Z',
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            _corrupt_unit_observation(database_path, b'12345')
+
+
+class TestClaimCorruption:
     def test_unparseable_chunk_raises(
         self, work_unit_store: WorkUnitStore, database_path: Path
     ) -> None:

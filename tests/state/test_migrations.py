@@ -67,6 +67,9 @@ class TestMigrateToHead:
         with database.connect() as connection:
             version = fetch_scalar(connection, 'PRAGMA user_version')
         assert version == _MIGRATIONS[-1].version
+        # The head version is pinned explicitly so a schema bump is a
+        # conscious test change, never an accident the dynamic read hides.
+        assert _MIGRATIONS[-1].version == 3
 
     def test_creates_the_cursors_table(self, database_path: Path) -> None:
         database = StateDatabase(database_path)
@@ -235,6 +238,7 @@ class TestMigrateToHead:
             'claimed_at',
             'finished_at',
             'last_error',
+            'observed_max',
         }
 
     def test_work_units_rejects_an_unknown_status(self, database_path: Path) -> None:
@@ -383,6 +387,54 @@ class TestMigrateToHead:
             '(provider, name, member, absence_count)',
             ('motive', 'vehicle_ids', 'V1', -1),
         )
+
+    def test_v3_upgrades_a_v2_database_preserving_rows(
+        self, monkeypatch: pytest.MonkeyPatch, database_path: Path
+    ) -> None:
+        # A genuinely-v2 database (built by running only the first two
+        # migrations) with a live work-units row upgrades in place: the
+        # observed_max column appears NULL on the preserved row and every
+        # pre-existing value survives.
+        database = StateDatabase(database_path)
+        database.initialize()
+        with monkeypatch.context() as v2_only:
+            v2_only.setattr('fleetpull.state.migrations._MIGRATIONS', _MIGRATIONS[:2])
+            migrate_to_head(database)
+        with database.connect() as connection:
+            assert fetch_scalar(connection, 'PRAGMA user_version') == 2
+            v2_columns = {
+                row[1]
+                for row in connection.execute(
+                    'PRAGMA table_info(work_units)'
+                ).fetchall()
+            }
+            assert 'observed_max' not in v2_columns
+            connection.execute(
+                'INSERT INTO work_units '
+                '(provider, endpoint, chunk_start, chunk_end, status) '
+                "VALUES ('samsara', 'trips', "
+                "'2026-06-01T00:00:00Z', '2026-06-02T00:00:00Z', 'done')"
+            )
+            connection.commit()
+
+        migrate_to_head(database)
+
+        with database.connect() as connection:
+            assert fetch_scalar(connection, 'PRAGMA user_version') == 3
+            preserved = connection.execute(
+                'SELECT provider, endpoint, chunk_start, chunk_end, status, '
+                'observed_max FROM work_units'
+            ).fetchall()
+        assert preserved == [
+            (
+                'samsara',
+                'trips',
+                '2026-06-01T00:00:00Z',
+                '2026-06-02T00:00:00Z',
+                'done',
+                None,
+            )
+        ]
 
     def test_is_idempotent(self, database_path: Path) -> None:
         database = StateDatabase(database_path)
