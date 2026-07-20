@@ -718,12 +718,37 @@ allowed to finish and their results discarded (a discarded piece's own
 failure is logged, never raised over the first), and the run fails by
 re-raising the first exception — the same loud outcome as the serial loop.
 
-Explicit non-goals of this cut: `Sync`'s endpoint loop stays sequential (the
-concurrency grain lives inside one endpoint's fan-out); provider-parallel
-activation awaits a second ported provider (the executors are per-provider
-by construction, which is all the shaping this cut does); and page-fanning
-within one member's chain awaits envelope verification and will be recorded
-with its own design when it lands.
+Non-goals of this cut, revised: provider-parallel activation was recorded
+here as deferred ("awaits a second ported provider" — the executors were
+per-provider by construction, which was all the shaping this cut did); with
+three providers shipped it activated 2026-07-20 at the queue-per-provider
+grain — the record below. The non-goal still standing: page-fanning within
+one member's chain awaits envelope verification and will be recorded with
+its own design when it lands.
+
+**Provider-parallel `Sync` (activated 2026-07-20).** `Sync.run` partitions
+the feeder-first ordering into per-provider queues — a stable partition, so
+each queue is exactly its provider's subsequence of the serial order
+(feeders never cross providers) — and runs each queue on its own worker in
+a context-managed `ThreadPoolExecutor` sized to the enabled-provider count;
+each worker renames its thread to the provider so stack traces attribute
+cleanly, and a single enabled provider degenerates to one worker with the
+serial loop's exact behavior. Activation is unconditional — no config knob:
+the queues were already independent by construction (per-provider fetch
+pools and clients, per-scope limiters, provider-scoped rosters,
+`(provider, endpoint)`-scoped claim recovery, connection-per-operation
+SQLite under WAL with a busy timeout), so a knob would be configurability
+nobody asked for. Failure semantics: within a queue, unchanged — a
+`FleetpullError` records an `EndpointFailure` and the queue continues, and
+any other exception is a bug that stops that queue's remaining endpoints;
+across queues, independent — one provider's failures never touch another's
+queue. After all workers join, the first bug by provider order re-raises;
+otherwise failures raise `SyncFailuresError` in the two-level order — run
+order within each provider, provider config order across providers (§10's
+"in run order" contract, updated). The `sync finished` elapsed time stays
+the run's wall clock — now the slowest queue, not the queues' sum.
+
+Accepted residual (recorded at activation): a KeyboardInterrupt landing while the main thread joins the queue workers abandons the remaining joins, so the client/pool context managers can close while a worker still fetches -- noisy worker tracebacks and bounded exit latency, never corruption (the per-unit parquet -> cursor -> ledger ordering keeps state sound, exactly the crash story §5 already tells). The same window existed under the serial loop; signal hardening is polish-phase work (§15 item 8).
 
 ### Acquisition protocol
 
@@ -1276,7 +1301,7 @@ FleetpullError
 | `AuthenticationError` | Fix credentials / account access. |
 | `ProviderResponseError` | Provider response was non-retryable or contract-violating; do not blindly rerun. |
 | `RetriesExhaustedError` | The transient/rate-limit budget ran out; rerunning later is reasonable. |
-| `SyncFailuresError` | One or more endpoints failed inside a sync run whose siblings continued; inspect `failures` (per-endpoint, in run order) and act per member. |
+| `SyncFailuresError` | One or more endpoints failed inside a sync run whose siblings continued; inspect `failures` (per-endpoint, run order within each provider, providers in config order) and act per member. |
 
 Members are plain data carriers: typed fields for programmatic handling, a
 composed human message for `str()`. Instances never carry raw request or
@@ -1484,7 +1509,8 @@ Polars is the only supported frame library for now; others are out of scope.
 `AuthenticationError`, `RetriesExhaustedError`, `ProviderResponseError` (§8),
 and `SyncFailuresError`, the aggregate a sync run raises after letting
 siblings continue: it carries the per-endpoint failures (`EndpointFailure`:
-provider, endpoint, the caught exception) in run order, and is deliberately
+provider, endpoint, the caught exception) in run order within each provider,
+providers in config order (§7's provider-parallel record), and is deliberately
 not an `ExceptionGroup` so the documented `except FleetpullError:` contract
 keeps catching it. Every other exception type is internal and renameable.
 
@@ -1507,15 +1533,20 @@ the validated config: the state database at the resolved
 `state.database_path`, the stores, the discovered endpoint and roster
 registries, the limiter registry from the precedence-resolved provider
 configs, and per-provider client profiles through the auth ingress (which
-accepts the config's `SecretStr` directly). Endpoints run sequentially
-(concurrency is the next vertical) in feeder-first order derived from the
+accepts the config's `SecretStr` directly). Endpoints run as one serial
+queue per enabled provider, the queues concurrent (§7's provider-parallel
+record, activated 2026-07-20): the feeder-first order derived from the
 roster bindings via `sourced_by` — never a user-facing key; config order
-stands within ties — and commit independently: an endpoint's
-`FleetpullError` is recorded while siblings continue, any other exception is
-a bug and propagates immediately, and a run with failures ends by raising
-`SyncFailuresError` with every failure in run order. Only the selected set
-runs — an unselected feeder is never run on a consumer's behalf; roster
-freshness stays the refresh coordinator's job at fan-out time.
+stands within ties — is partitioned stably by provider, so nothing reorders
+within a provider. Endpoints commit independently: an endpoint's
+`FleetpullError` is recorded while its queue continues, any other exception
+is a bug that stops that queue's remaining endpoints while the other queues
+finish (the first bug by provider order re-raises after all queues join),
+and a run with failures ends by raising `SyncFailuresError` with the
+failures in run order within each provider, providers in config order. Only
+the selected set runs — an unselected feeder is never run on a consumer's
+behalf; roster freshness stays the refresh coordinator's job at fan-out
+time.
 
 **The settled YAML schema (rebuilt — `FleetpullConfig.from_yaml` is the
 loading API).** One frozen nested model family IS the schema: the sections

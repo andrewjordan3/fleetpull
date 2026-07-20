@@ -30,6 +30,7 @@ from fleetpull.endpoints.shared.request_shape import (
     BisectedWindowFetch,
     ParamSweep,
     RequestShape,
+    RosterFanOut,
     SingleFetch,
 )
 from fleetpull.incremental import DateWindow, FeedToken
@@ -320,7 +321,10 @@ class EndpointDefinition[ModelT: ResponseModel]:
 
         Mutual exclusion between cardinality patterns is structural (one
         ``request_shape`` field); what remains here are the semantic
-        pairings. ``BisectedWindowFetch`` recursively narrows a resume
+        pairings. ``RosterFanOut`` requires its roster to share the
+        endpoint's provider -- provider-parallel ``Sync`` (§7) runs one
+        thread per provider, and queue independence rests on no two
+        threads reconciling one roster. ``BisectedWindowFetch`` recursively narrows a resume
         window, so it requires a windowed (``WatermarkMode``),
         date-partitioned endpoint. A ``completeness_check`` requires
         ``SnapshotMode`` AND ``SingleFetch`` -- an expected-count comparison
@@ -338,6 +342,19 @@ class EndpointDefinition[ModelT: ResponseModel]:
             None.
         """
         match self.request_shape:
+            case RosterFanOut() if self.request_shape.roster.provider is not (
+                self.provider
+            ):
+                # Provider-parallel Sync runs one thread per provider; the
+                # queue-independence argument (§7) rests on rosters never
+                # crossing providers -- a cross-provider roster would let two
+                # threads reconcile one roster's rows concurrently.
+                raise ValueError(
+                    f'{self.provider.value}.{self.name}: RosterFanOut roster '
+                    f'{self.request_shape.roster.provider.value}/'
+                    f'{self.request_shape.roster.name} crosses the provider '
+                    f'boundary -- a roster and its consumer share one provider.'
+                )
             case BisectedWindowFetch():
                 if not isinstance(self.sync_mode, WatermarkMode) or (
                     self.storage_kind is not StorageKind.DATE_PARTITIONED
