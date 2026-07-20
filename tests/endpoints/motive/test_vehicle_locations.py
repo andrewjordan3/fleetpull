@@ -11,6 +11,7 @@ from fleetpull.endpoints.motive.vehicle_locations import (
 )
 from fleetpull.endpoints.shared import (
     EndpointDefinition,
+    RosterFanOut,
     SpecBuilder,
     StorageKind,
     UrlPathTemplateError,
@@ -51,7 +52,7 @@ class TestMotiveVehicleLocationsSpecBuilder:
 
     def test_renders_the_per_vehicle_url(self) -> None:
         spec = _build_builder().build_spec(
-            resume=_window(), path_values={'vehicle_id': '543180'}
+            resume=_window(), member_values={'vehicle_id': '543180'}
         )
         assert spec.method is HttpMethod.GET
         assert spec.url == 'https://api.example.test/v3/vehicle_locations/543180'
@@ -60,7 +61,7 @@ class TestMotiveVehicleLocationsSpecBuilder:
         # end_date is the window's last covered date -- the day before the
         # exclusive midnight end, not the date of end itself.
         spec = _build_builder().build_spec(
-            resume=_window(), path_values={'vehicle_id': '543180'}
+            resume=_window(), member_values={'vehicle_id': '543180'}
         )
         assert spec.params == {
             'start_date': '2026-06-01',
@@ -69,15 +70,15 @@ class TestMotiveVehicleLocationsSpecBuilder:
 
     def test_requires_a_date_window(self) -> None:
         with pytest.raises(TypeError):
-            _build_builder().build_spec(resume=None, path_values={'vehicle_id': '1'})
+            _build_builder().build_spec(resume=None, member_values={'vehicle_id': '1'})
 
-    def test_strict_path_values_propagate(self) -> None:
+    def test_strict_member_values_propagate(self) -> None:
         with pytest.raises(UrlPathTemplateError):
-            _build_builder().build_spec(resume=_window(), path_values={})
+            _build_builder().build_spec(resume=_window(), member_values={})
 
     def test_no_credentials_or_body(self) -> None:
         spec = _build_builder().build_spec(
-            resume=_window(), path_values={'vehicle_id': '543180'}
+            resume=_window(), member_values={'vehicle_id': '543180'}
         )
         assert spec.headers == {}
         assert spec.json_body is None
@@ -98,7 +99,7 @@ class TestMotiveVehicleLocationsSpecBuilder:
         window = window_or_none(start, end)
         assert window is not None
         spec = _build_builder().build_spec(
-            resume=window, path_values={'vehicle_id': '543180'}
+            resume=window, member_values={'vehicle_id': '543180'}
         )
         assert spec.params is not None
         start_date = date.fromisoformat(spec.params['start_date'])
@@ -141,14 +142,14 @@ class TestBuildVehicleLocationsEndpoint:
 
     def test_spec_builder_fans_out_per_vehicle(self) -> None:
         spec = _build_endpoint().spec_builder.build_spec(
-            resume=_window(), path_values={'vehicle_id': '543180'}
+            resume=_window(), member_values={'vehicle_id': '543180'}
         )
         assert spec.url == 'https://api.example.test/v3/vehicle_locations/543180'
 
     def test_base_url_default_flows_through(self) -> None:
         endpoint = build_endpoint(MotiveConfig())
         spec = endpoint.spec_builder.build_spec(
-            resume=_window(), path_values={'vehicle_id': '1'}
+            resume=_window(), member_values={'vehicle_id': '1'}
         )
         assert spec.url.startswith('https://api.gomotive.com')
 
@@ -158,11 +159,12 @@ class TestBuildVehicleLocationsEndpoint:
         endpoint = build_endpoint(MotiveConfig())
         assert endpoint.name == 'vehicle_locations'
 
-    def test_declares_the_vehicle_ids_fan_out(self) -> None:
-        binding = _build_endpoint().fan_out
-        assert binding is not None
-        assert binding.roster == RosterKey(Provider.MOTIVE, 'vehicle_ids')
-        # The placeholder must match the spec-builder's URL template; the
-        # strict renderer enforces it (test_spec_builder_fans_out_per_vehicle
-        # exercises the pairing end to end).
-        assert binding.path_placeholder == 'vehicle_id'
+    def test_declares_the_vehicle_ids_roster_fan_out(self) -> None:
+        shape = _build_endpoint().request_shape
+        assert isinstance(shape, RosterFanOut)
+        assert shape.roster == RosterKey(Provider.MOTIVE, 'vehicle_ids')
+        # The member key must match the spec-builder's URL template
+        # placeholder; the strict renderer enforces it
+        # (test_spec_builder_fans_out_per_vehicle exercises the pairing end
+        # to end).
+        assert shape.member_key == 'vehicle_id'

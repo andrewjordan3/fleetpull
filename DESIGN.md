@@ -235,8 +235,9 @@ BigQuery external tables and `scan_parquet` badly — so each date folds to one
 `part.parquet`.
 
 The fan-out key source is settled: a provider-listed roster in SQLite, not the
-feeder parquet. An endpoint that fans out declares a `FanOutBinding`
-(`EndpointDefinition.fan_out`, `None` = fetch once) naming a `RosterKey`; the
+feeder parquet. An endpoint that fans out over a roster declares the
+`RosterFanOut` request shape (`EndpointDefinition.request_shape`; the default
+`SingleFetch` fetches once) naming a `RosterKey`; the
 `RosterRegistry` maps that key to a `RosterDefinition` — the feeder endpoint and
 frame column its members come from, plus the staleness and eviction policy. The
 consumer carries only the key, never the feeder. Keys are listed from the
@@ -1159,6 +1160,44 @@ port build prompt implements them.
    the legacy `groups` and `users` endpoints. All queue behind the
    Samsara wave (§15 item 7).*
 
+### Samsara `drivers` probe-settled decisions (2026-07-20)
+
+Settled by the 2026-07-20 live probe session (the captured rows below); the
+drivers build implements them.
+
+1. **One dataset: the complete listing is active ∪ deactivated, and the
+   `driverActivationStatus` column carries the split.** The default listing
+   is only the active set (45% of the population invisible to it), so
+   completeness requires both sweeps. Rejected: splitting into two
+   endpoints (`drivers_active` / `drivers_deactivated`) — the partition is
+   a provider filter quirk over one entity, not two entities; two datasets
+   would push the union onto every consumer and double the state surface
+   for no semantic gain.
+2. **The sweep is DECLARED, not implemented: `request_shape=ParamSweep`,
+   resolved to the existing fan-out driver at the shared seam.** The
+   member-agnostic `FanOutRequestDriver` fans one cursor chain per declared
+   value with the sweep's param as the member key — no new decoder, no new
+   driver. Rejected: a sweeping *decoder* (a Samsara decoder that would
+   iterate statuses inside the page walk) — request cardinality belongs to
+   the driver seam (§14's unification), the decoder sees exactly one chain
+   by contract, and a per-provider sweeping decoder would not generalize
+   to the next provider's partitioned listing, where the fan-out driver
+   already does.
+3. **Model = union-of-observed with the Device/User list-block exclusion.**
+   The `tags` list (441/460) and `eldSettings.rulesets` (190/460) are
+   list-of-object blocks the §9 pipeline does not represent — excluded and
+   recorded in the model docstring; `externalIds` was never observed in
+   832 records and is unmodeled as *unobserved*, not excluded. Only `id`
+   is required: per-key presence was fully enumerated on the active sweep
+   only (the deactivated sweep matched structurally), so the
+   always-present-in-capture keys stay optional.
+4. **No completeness check.** Continuation is explicit per page (the
+   cursor contract, proven per-type) and the sweep vocabulary is
+   API-enforced — every malformed `driverActivationStatus` value returns a
+   loud HTTP 400, never a silent empty listing — so there is nothing a
+   provider-side count would guard that the walk and the enum closure do
+   not already make loud.
+
 ### The exception hierarchy (implemented: `exceptions.py`)
 
 The operational errors consumers catch, mirroring the classification
@@ -1240,6 +1279,12 @@ budgets → `RetriesExhaustedError`, failed auth paths →
 | Samsara | Success responses carry NO rate-limit headers (`Date`/`Content-Type`/`Content-Length`/`Connection`/`Request-Id`/`Strict-Transport-Security` only) — the Motive posture: the real budget is unobservable outside a 429, so the config's self-limiting default carries the load. `Request-Id` is the support correlation handle (captured 2026-07-17). |
 | Samsara | `/fleet/vehicles` cursor mechanics proven live: the `after` advance continued across a real page boundary with no overlap or loss (ids ascend numerically straight across it), a fresh `endCursor` per page, and the TERMINAL page carries `hasNextPage: false` beside an EMPTY-STRING `endCursor` — not absent, not null — the shape the decoder's promised-continuation guard is calibrated against. The documented 512 `limit` maximum was honored exactly (608-vehicle fleet: 512 + 96) (captured 2026-07-17). |
 | Samsara | Vehicle-record optionality is absence-shaped: no null value and no type variance across all 608 swept records (20-key union) — Samsara omits keys, like GeoTab, while also using empty strings (`notes: ""` everywhere). Partial-presence keys omit blockwise (the minimal 7-key shape is an unplugged unit with a serial-shaped default name). `externalIds` is an OPEN user-definable map with dotted namespace keys (`samsara.serial`, `samsara.vin`), each mirroring its top-level sibling; `year` is a quoted integer (captured 2026-07-17). |
+| Samsara | `/fleet/drivers` carries the vehicles envelope (`data` list + `pagination {endCursor, hasNextPage}`) and honors `limit` 512; the terminal page is `hasNextPage: false` beside an EMPTY-STRING `endCursor`. Cursor mechanics proven per-type: a `limit=5` walk of 92 pages returned 460/460 unique ascending ids with no boundary overlap or loss (captured 2026-07-20). |
+| Samsara | The default `/fleet/drivers` listing IS the active set exactly — 460 records, identical ids to `driverActivationStatus=active`. The deactivated sweep returns 372 fully disjoint records INVISIBLE to the default listing: 45% of the 832-driver population. The complete listing is the union of both sweeps (captured 2026-07-20). |
+| Samsara | `driverActivationStatus` is a STRICT CLOSED ENUM (`'active'` \| `'deactivated'`): case variants, comma-joined values, repeated keys, and bogus values ALL return HTTP 400 `{"message": "Invalid value for driverActivationStatus. Can only be 'active' or 'deactivated'", "requestId": ...}` — loud, never silent-empty, so a typo'd sweep value can never read as an empty partition (captured 2026-07-20). |
+| Samsara | `after` composes with the status param: a `limit=50` deactivated walk ran 8 pages (50×7+22), 372/372 unique, every record deactivated, a fresh cursor per page, the standard terminal — which is why the existing `SamsaraCursorPageDecoder` needed NO change for the sweep: its advance merges `after` onto the SENT spec, so a first-request query parameter persists across the whole walk (captured 2026-07-20). |
+| Samsara | `/fleet/drivers` success responses carry no rate-limit headers either — the provider-wide posture confirmed on a second endpoint; the request id is the correlation handle (captured 2026-07-20). |
+| Samsara | Driver-record census (union over 832; presence counts per the 460 active; deactivated matches structurally): absence-shaped optionality with ZERO nulls anywhere. Always present: `id`, `name`, `username`, `driverActivationStatus`, `timezone` (IANA), `createdAtTime`/`updatedAtTime` (ISO-8601 `Z` millis), `hasVehicleUnpinningEnabled`, `carrierSettings` (`carrierName`, `dotNumber` a BARE INT, `mainOfficeAddress`, plus `homeTerminalName`/`homeTerminalAddress` empty-string on 204/268 of 460), `hosSetting {heavyHaulExemptionToggleEnabled}`. Partial: `staticAssignedVehicle {id, name}` 102/460; `peerGroupTag` 4 and `vehicleGroupTag` 8, each `{id, name, parentTagId}`; `licenseNumber` 172, `licenseState` 269, `phone` 7, `locale` 1, `notes` 1, `profileImageUrl` 1; booleans `eldExempt` 270, `eldExemptReason` 282 (a boolean flag, not a reason string), `eldAdverseWeatherExemptionEnabled` 191, `eldBigDayExemptionEnabled` 186, `eldPcEnabled` 77, `eldYmEnabled` 100, `waitingTimeDutyStatusEnabled` 8. List-of-object blocks `tags` (441/460) and `eldSettings.rulesets` (190/460) are model-excluded per the Device/User precedent; `externalIds` was NEVER observed — unmodeled as unobserved (captured 2026-07-20). |
 | Motive | 401 body is `{"error_message": ...}`; the documented /vehicle_locations limit was not observed to enforce — generic 429 posture. |
 | Motive | `/v3/vehicle_locations/{vehicle_id}` verified live: envelope `{"vehicle_locations": [{"vehicle_location": {...}}]}`, `located_at` is UTC ISO-8601 (`Z`-suffixed), one non-paginated page per fetch (so `SinglePageDecoder` fits), and a single per-vehicle fetch spans multiple calendar dates (the sample crossed two) — confirming `split_by_date`'s multi-partition output is load-bearing in production, not a theoretical edge: one fetch genuinely fans into several partitions. |
 | Motive | `/v3/vehicle_locations/{vehicle_id}` date bounds pinned by direct probing: day-granular `start_date`/`end_date` are honored inclusively on both bounds — a single-day request returns that full day, a two-day request both complete days. The documented 3-month maximum range is real: long backfills will eventually need request chunking (a range limit, unrelated to the §15 item-1 window defect). |
@@ -1297,8 +1342,8 @@ stay config-phase). Returns an eager Polars DataFrame, end-to-end in memory —
 it touches no SQLite, no disk, no cursor, no run ledger, no roster. The
 governing principle is normative: **fetch is a convenience and deliberately limits options —
 anything beyond its minimal surface belongs to the config path.** A user who
-wants windows, incremental resume, partitioned storage, or fan-out is not a
-`fetch` user with missing parameters; they are a `sync` user.
+wants windows, incremental resume, partitioned storage, or roster fan-out is
+not a `fetch` user with missing parameters; they are a `sync` user.
 
 **Snapshot-only `fetch`, and why.** `fetch` exposes snapshot-mode endpoints
 only; windowed retrieval is config/sync territory. The in-memory contract is
@@ -1312,7 +1357,13 @@ statement of `fetch` raises `ConfigurationError` naming the endpoint and its
 mode, before any client construction), because the convenience verb's
 audience includes notebooks where mypy never runs. Starting narrow is the
 reversible choice — adding windowed fetch later would be an additive
-extension, while shipping it now and retracting it would be a break.
+extension, while shipping it now and retracting it would be a break. Within
+the snapshot subset, `fetch` is shape-polymorphic with a stateless boundary
+(2026-07-20): its driver comes from the same `resolve_request_driver` seam
+sync uses (§14), called with no roster source, so every stateless
+`RequestShape` — `SingleFetch`, `ParamSweep` — serves identically on both
+verbs, while a `RosterFanOut` is refused with a loud `ConfigurationError`
+(roster membership is durable state, and fetch's contract is no state).
 
 **The `Endpoints` catalog.** Endpoint addressing is a public catalog of inert
 typed identities: `from fleetpull import Endpoints`, then
@@ -1573,12 +1624,13 @@ fleetpull/
       base.py      # EndpointDefinition: frozen kw-only dataclass generic over its
                    #   response model (spec_builder, page_decoder, response_model,
                    #   quota_scope, storage_kind, sync_mode, event_time_column,
-                   #   completeness_check) + the SpecBuilder and CompletenessCheck
-                   #   Protocols, the SyncMode union (SnapshotMode / WatermarkMode /
-                   #   FeedMode), ResumeValue, and StorageKind
-      fan_out.py   # FanOutBinding — the per-endpoint fan-out declaration (names a RosterKey)
+                   #   request_shape, completeness_check) + the SpecBuilder and
+                   #   CompletenessCheck Protocols, the SyncMode union (SnapshotMode /
+                   #   WatermarkMode / FeedMode), ResumeValue, and StorageKind
+      request_shape.py  # the RequestShape union — SingleFetch / RosterFanOut /
+                   #   BisectedWindowFetch / ParamSweep: request cardinality as one
+                   #   closed axis (§14's shape resolution matches over it)
       spec_builders.py  # StaticGetSpecBuilder — the shared snapshot spec-builder
-      bisection.py  # WindowBisection — the per-endpoint bisection declaration (§14's driver reads it)
       resume.py    # require_date_window — the shared windowed-resume guard
       url_paths.py  # render_url_path_template — strict {placeholder} URL-path rendering (fan-out)
     motive/
@@ -1589,6 +1641,8 @@ fleetpull/
       idle_events.py  # build_endpoint — the fleet-wide idle-interval watermark binding (padded wire window)
     samsara/
       vehicles.py  # build_endpoint — the vehicles cursor-walk snapshot factory
+      drivers.py   # SamsaraDriversSpecBuilder + build_endpoint — the ParamSweep
+                   #   snapshot factory (active ∪ deactivated, §8's 2026-07-20 block)
     geotab/
       _get_requests.py  # the shared GeoTab Get request machinery: GeotabGetSpecBuilder
                    #   (the snapshot seek walk), GeotabWindowedGetSpecBuilder (the
@@ -1625,6 +1679,9 @@ fleetpull/
     samsara/
       vehicle.py   # Vehicle (+ the gateway/driver refs and the open-map
                    #   externalIds slice) — the fleet-vehicle snapshot record
+      driver.py    # Driver + the carrier/HOS/tag-ref nesteds — the two-sweep
+                   #   population record (list-of-object blocks excluded per the
+                   #   Device precedent)
     geotab/
       shared.py    # GeotabTimeSpan (.NET TimeSpan ingress) + bare_id_to_reference
                    #   (the sentinel-or-object reference coercion) — shared across entities
@@ -1669,6 +1726,9 @@ fleetpull/
     outcome.py     # RunOutcome: Executed | CaughtUp — the run result carrier (§14)
     drivers.py     # RequestDriver Protocol + SingleRequestDriver + FanOutRequestDriver — yields FetchedPage per batch (§14)
     bisection.py   # BisectingWindowDriver — capped, unsortable Gets fetched whole via adaptive window halving (§14)
+    shape_resolution.py  # resolve_request_driver — the RequestShape -> RequestDriver
+                   #   seam both composition roots call (§14); RosterFanOut members
+                   #   are fed in by the caller
     runner.py      # EndpointRunner — one endpoint's run transaction: the snapshot arm,
                    #   the plan-and-drive watermark arm, and the post-success
                    #   metadata projection (§14, §3)
@@ -1679,7 +1739,7 @@ fleetpull/
     resume.py      # resolve_watermark_start + should_advance_watermark (§14)
     backfill.py    # plan_backfill_units: whole-UTC-day chunk -> WorkUnitSpecs (§5)
     unit_loop.py   # the claim-and-drive loop over work units (§13's settled transaction boundary)
-    entry.py       # run_endpoint — the orchestration entry: driver resolution, roster refresh, feeder tap (§14)
+    entry.py       # run_endpoint — the orchestration entry: roster-fed driver resolution, roster refresh, feeder tap (§14)
     executors.py   # FetchPoolRegistry — per-provider executors, context-managed (§7)
     fanout.py      # stream_pieces — the bounded-channel threaded fan-out (§7)
   api/             # the public-surface tier: the two verbs and their machinery (§10)
@@ -1779,7 +1839,8 @@ data — provider and name; the `SpecBuilder`; the `PageDecoder` (which yields e
 page's records and its pagination verdict from one validated view of the
 envelope); the per-record response model; the `quota_scope`; the `SyncMode` (a
 marker `SnapshotMode`, a `WatermarkMode` carrying its lookback, or a marker
-`FeedMode`); the storage kind; and — settled with `vehicle_locations` — the
+`FeedMode`); the storage kind; the `request_shape` (below); and — settled with
+`vehicle_locations` — the
 `event_time_column` the watermark and date-partitioning read (§3/§5), `'located_at'`
 for `vehicle_locations`. Constructed keyword-only, it is the single source of truth
 per endpoint, and each tier reads only its slice — the client reads spec-builder,
@@ -1792,12 +1853,37 @@ config; the per-run `DateWindow` is cooked fresh each run by the driver (§4) an
 never on the frozen definition. The one remaining excluded concern is the records
 `schema_overrides` hatch (§9), attaching when that layer needs it.
 
+**Request cardinality is one closed axis: the `RequestShape` union (unified
+2026-07-20).** How one endpoint run decomposes into request chains is a single
+concept and a single closed choice, exactly like `SyncMode` — so it is one
+tagged union on one field (`request_shape`, default `SingleFetch()` so
+single-chain leaves declare nothing), not a field per pattern. The members:
+`SingleFetch` (one chain), `RosterFanOut` (one chain per roster member —
+names a `RosterKey` and the `member_key` each member binds under; the source
+endpoint and column live in the roster registry, never on the shape),
+`BisectedWindowFetch` (the unit window fetched whole, halved adaptively on
+the capped-response overflow signal — the declaration carries the provider
+facts: `results_limit`, `floor`, `event_time_wire_key`), and `ParamSweep`
+(one chain per declared query-param value, for providers that partition the
+population behind a mandatory closed-enum filter with no all-values request;
+the union of the sweeps is the endpoint's one complete dataset). Mutual
+exclusion between patterns is structural — one field holds one member — and
+the semantic sync-mode pairings (bisected requires watermark/partitioned; a
+completeness check requires snapshot + `SingleFetch`; `ParamSweep` requires
+snapshot until a windowed sweep is probed) are validated at construction.
+The closed-extension contract: a future cardinality pattern is a new union
+member plus its arm in the §14 shape resolution — `EndpointDefinition`'s
+field set never changes for one again.
+
 **The spec-builder is the only genuine per-endpoint behavior.** A `SpecBuilder`
-is a Protocol with one method, `build_spec(resume, path_values) -> RequestSpec`,
-where `resume` is a `ResumeValue` (`DateWindow | FeedToken | None`, §4) and `path_values` carries
-a partition key for URL-path fan-out (for example, a per-vehicle locations
-endpoint). It builds only the first request — URL, base params, and the resume
-injection; the page decoder produces every request after it.
+is a Protocol with one method, `build_spec(resume, member_values) -> RequestSpec`,
+where `resume` is a `ResumeValue` (`DateWindow | FeedToken | None`, §4) and
+`member_values` carries the per-chain member binding the request shape supplies
+— empty for a single chain, one `{member_key: member}` entry per fan-out or
+sweep chain, with the spec builder owning its interpretation (a URL-path
+placeholder value for a per-vehicle locations endpoint, a query-parameter value
+for a sweep). It builds only the first request — URL, base params, and the
+resume injection; the page decoder produces every request after it.
 
 A snapshot's spec-builder is shared, and bindings are factories over config. A
 snapshot endpoint translates no resume value (`SnapshotMode` always passes
@@ -1859,7 +1945,7 @@ no provider face or manifest to update.
 
 **Fetch assembly: the endpoint declares, the machinery is generic, the caller
 sequences.** For one fetch the caller looks up the `EndpointDefinition`, turns the
-stored cursor into a resume value (the resume resolver, §4) and a `path_values`,
+stored cursor into a resume value (the resume resolver, §4) and a `member_values`,
 calls `build_spec` for the first `RequestSpec`, and hands that spec plus the
 endpoint's `PageDecoder`, the provider's `ProviderProfile`, and the
 `quota_scope` to the client. The client streams
@@ -1989,7 +2075,7 @@ tzinfo-construction rules mechanically.
   "`write` called ≥1 time" precondition intact without a separate "tolerate
   zero writes" path (a snapshot always yields ≥1 page-batch, a fan-out with ≥1
   member yields ≥1 batch, and the only zero-batch case never reaches the
-  runner). The `FanOutBinding.allow_empty_roster` escape is deliberately not
+  runner). The `RosterFanOut.allow_empty_roster` escape is deliberately not
   built — it joins the binding when an endpoint genuinely needs it, not before.
   *Transaction boundary — settled and implemented:* neither of the two
   candidates, but the third the `WorkUnitStore` was built for — per **unit**
@@ -2054,15 +2140,19 @@ unbuilt.
 polymorphic — provider-agnostic and endpoint-agnostic.** A caller invoking an
 endpoint never knows, or branches on, the provider, whether the endpoint fans
 out, its sync mode, its storage cell, or its record identity; every dispatch
-keys off `EndpointDefinition` declarations. `FanOutBinding` (fan-out is a
-declared fact, never an identity branch), `select_writer` (the declared
-storage/sync cell routes), and the runner's `sync_mode` match all state this
-for their seams; `run_endpoint` (`orchestrator/entry.py`) extends it to driver
-resolution — the caller boundary that resolves a definition's declared driver
-(fan-out via the roster machinery, else single-fetch) and runs. Driver
-resolution is module-private inside the entry: exposing a resolve-driver step
-to callers would leak exactly the fan-out/single-fetch distinction the
-declarations hide. The entry never reasons about roster freshness (the refresh
+keys off `EndpointDefinition` declarations. The `RequestShape` union (request
+cardinality is a declared fact, never an identity branch), `select_writer`
+(the declared storage/sync cell routes), and the runner's `sync_mode` match
+all state this for their seams; `run_endpoint` (`orchestrator/entry.py`)
+extends it to driver resolution — the caller boundary that resolves a
+definition's declared driver through the shared shape seam
+(`resolve_request_driver`, `orchestrator/shape_resolution.py`: one match over
+the union, called by both composition roots — the entry with a roster member
+source, `fetch` with none) and runs. To `run_endpoint`'s callers the
+resolution stays hidden: exposing a resolve-driver step there would leak
+exactly the shape distinctions the declarations hide; what the entry
+contributes to the seam is the roster half only the stateful composition has.
+The entry never reasons about roster freshness (the refresh
 coordinator owns that policy whole), and an empty roster after refresh raises
 `ConfigurationError` — error-by-default (§13): a feeder that listed nothing is
 a failure to surface, and the short-circuit keeps the writer's
@@ -2101,12 +2191,15 @@ orchestration splits into three nested layers, by concern:
   yields the run's fetched pages (records and durable progress) as a stream of
   batches — the run executor reads the records to validate/frame/write and the
   durable progress to advance a feed cursor. `SingleRequestDriver` issues one
-  request chain (`path_values={}`) and yields its pages a page at a time;
+  request chain (`member_values={}`) and yields its pages a page at a time;
   `FanOutRequestDriver` issues one request chain per member
-  (`path_values={path_placeholder: member}`), yielding each member's pages — the
-  member list the caller's, one member per backfill unit, the whole roster per
-  incremental run. `BisectingWindowDriver` (`orchestrator/bisection.py`, added
-  2026-07-15) serves capped, unsortable Gets declaring a `WindowBisection`:
+  (`member_values={member_key: member}`), yielding each member's pages — the
+  member list the caller's, and the driver member-agnostic: a `RosterFanOut`
+  fans the whole roster (one member per backfill unit's chain set, the whole
+  roster per incremental run) and a `ParamSweep` fans its declared values
+  with `member_key=param` — no separate sweep driver exists.
+  `BisectingWindowDriver` (`orchestrator/bisection.py`, added
+  2026-07-15) serves capped, unsortable Gets declaring `BisectedWindowFetch`:
   it fetches the unit window whole, halves on the exactly-full overflow
   signal down to the declared floor (then fails loudly), and filters each
   leaf's page to the records anchored in that leaf — one owner per record
@@ -2114,7 +2207,7 @@ orchestration splits into three nested layers, by concern:
   driver yields one page per batch; the runner consumes batches uniformly. A
   driver touches only the client (from the registry) and the
   endpoint's `SpecBuilder`, and yields whole fetched pages; it does no validation,
-  framing, or writing. **`path_values` live only in the driver** — the runner never
+  framing, or writing. **`member_values` live only in the driver** — the runner never
   writes them and the coordinator never supplies them.
 
 **`stream_processed_batches`** (`orchestrator/streaming.py`) is the fetch-and-frame
@@ -2135,13 +2228,18 @@ endpoint and degrading to the existing roster when a refresh attempt fails
 (re-raising only on cold start, where there is no roster to fall back to). It is
 handed the resolved `RosterDefinition`, the way the runner is handed a resolved
 `EndpointDefinition`. **The orchestration entry** (`run_endpoint`,
-`orchestrator/entry.py`) is the consume half: it reads the refreshed members,
-builds a `FanOutRequestDriver` from them, and hands it to the runner.
-`EndpointDefinition.fan_out` is read in exactly one place: there.
+`orchestrator/entry.py`) is the consume half: it reads the refreshed members
+and feeds them to the shape seam, which builds the `FanOutRequestDriver` the
+runner receives. `EndpointDefinition.request_shape` is matched in exactly one
+place — `resolve_request_driver` — and `fetch` calls the same seam with no
+roster source, so every stateless shape (`SingleFetch`, `ParamSweep`, and
+structurally `BisectedWindowFetch`) serves on both verbs while a
+`RosterFanOut` under `fetch` is refused with a loud `ConfigurationError`
+naming the endpoint and the roster (fetch's in-memory, no-state contract).
 
 The driver is the missing adapter between one endpoint run and one-or-many request
 chains, and it matches grain the existing layers already have: a `SpecBuilder`
-builds one first request from `path_values`, `TransportClient.fetch_pages` drives
+builds one first request from `member_values`, `TransportClient.fetch_pages` drives
 one chain from one first spec, and a `DatasetWriter` accepts one-or-many frames and
 finalizes once. This resolves the §13 question on how a date partition's rows
 assemble across the per-vehicle fan-out: the driver yields per vehicle, the runner
@@ -2269,7 +2367,23 @@ interim.
 `vehicles`; (3) the staging crash-clean; (4) the watermark arm — window resolution,
 both guards, the incremental fold, the parquet -> cursor -> ledger ordering, and a
 watermark stub endpoint to exercise it without fan-out. `FanOutRequestDriver` and
-the coordinator follow, wiring `vehicle_locations.fan_out`.
+the coordinator follow, wiring `vehicle_locations`'s roster fan-out shape.
+
+**Request cardinality unified (decided 2026-07-20).** `EndpointDefinition`
+had accreted one optional field per cardinality pattern (`fan_out:
+FanOutBinding | None`, `window_bisection: WindowBisection | None`) with
+pairwise mutual-exclusion validators, and driver resolution was split between
+the entry's private resolver and a hard-coded `SingleRequestDriver` inside
+`fetch` — both symptoms of a missing abstraction. The fix is the `SyncMode`
+precedent applied to cardinality: one closed tagged union (`RequestShape`,
+§11) on one field, structural mutual exclusion, the semantic pairings
+consolidated into one construction validator, and one polymorphic resolution
+seam (`resolve_request_driver`) both composition roots call. `ParamSweep`
+joined as the first new member under the closed-extension contract (first
+consumer: Samsara drivers, whose provider partitions the population behind a
+mandatory activation-status filter). The contract going forward: a new
+cardinality pattern is a new union member plus its resolution arm — never a
+new definition field, never a second resolver.
 
 ## 15. Next Steps
 
@@ -2330,12 +2444,12 @@ resolution (item 1, done).
    `resolve_resume_start` and in §4).
 2. **Fan-out composition root (done — the orchestration entry, §14).**
    `run_endpoint` (`orchestrator/entry.py`) resolves a definition's declared
-   `fan_out` through the roster machinery — registry → coordinator refresh →
-   store members → `FanOutRequestDriver` — or hands a `fan_out=None`
+   roster fan-out shape through the roster machinery — registry → coordinator
+   refresh → store members → `FanOutRequestDriver` — or hands a single-chain
    definition the single-fetch driver; the caller never sees the distinction
    (the orchestrator-boundary principle, §14). The `vehicle_ids` roster is
    declared beside its feeder (`endpoints/motive/vehicles.py`,
-   `VEHICLE_IDS_ROSTER`), vehicle_locations declares its binding, and the
+   `VEHICLE_IDS_ROSTER`), vehicle_locations declares its shape, and the
    (since-retired) diagnostic script composed the entry instead of
    hand-harvesting. The
    settled constraint holds at the feeder population: `/v1/vehicles` lists
@@ -2406,8 +2520,9 @@ resolution (item 1, done).
    as "deliberately unported"; reframed 2026-07-17 under the
    endpoint-breadth scope principle, §1 — deferred, never excluded). GeoTab
    `exception_events` shipped 2026-07-15 per its §8 decision block — the
-   first bisected endpoint (`WindowBisection` + `BisectingWindowDriver`,
-   §14). The GeoTab `users` snapshot followed (2026-07-16, id-sort and the
+   first bisected endpoint (`BisectedWindowFetch` + `BisectingWindowDriver`,
+   §14; the shape was named `WindowBisection` until the 2026-07-20
+   cardinality unification). The GeoTab `users` snapshot followed (2026-07-16, id-sort and the
    full-population shape proven live per §8's rows): the second seek-walk
    consumer, so the walk's spec builder and `GetCountOfCheck` promoted out
    of the devices leaf into the shared `_seek_walk` module — unified
@@ -2423,7 +2538,11 @@ resolution (item 1, done).
    the proven probe-then-build vertical. Samsara `vehicles` shipped
    2026-07-17 (the third provider's first vertical, same-day
    probe-to-build: cursor walk proven live per §8's rows, the
-   foundation and the vertical in one branch).* The per-endpoint
+   foundation and the vertical in one branch). Samsara `drivers`
+   shipped 2026-07-20 (the second Samsara vertical and the first
+   `ParamSweep` consumer: the two-sweep activation-status listing per
+   its §8 decision block, riding the unchanged cursor decoder and the
+   member-agnostic fan-out driver).* The per-endpoint
    inventory and port queue are tracked in `ENDPOINTS.md` (added
    2026-07-17), updated in the same change as any endpoint addition.
 8. **Polish phase, gated on a stable public surface:** full-tree ceremony

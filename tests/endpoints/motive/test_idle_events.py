@@ -14,6 +14,7 @@ from fleetpull.endpoints.motive._spec_builders import MotiveFleetDateRangeSpecBu
 from fleetpull.endpoints.motive.idle_events import build_endpoint
 from fleetpull.endpoints.shared import (
     EndpointDefinition,
+    SingleFetch,
     StorageKind,
     WatermarkMode,
 )
@@ -43,7 +44,7 @@ class TestBuildIdleEventsEndpoint:
         assert endpoint.storage_kind is StorageKind.DATE_PARTITIONED
         assert endpoint.response_model is IdleEvent
         assert endpoint.event_time_column == 'start_time'
-        assert endpoint.fan_out is None
+        assert endpoint.request_shape == SingleFetch()
         assert endpoint.completeness_check is None
 
     def test_watermark_knobs_come_from_config(self) -> None:
@@ -74,7 +75,7 @@ class TestIdleEventsWindowPad:
         # timezone's local-day interpretation still covers every record
         # whose UTC start falls in the resume window.
         endpoint = _build_endpoint()
-        spec = endpoint.spec_builder.build_spec(resume=_window(), path_values={})
+        spec = endpoint.spec_builder.build_spec(resume=_window(), member_values={})
         assert spec.params == {
             'start_date': '2026-05-31',
             'end_date': '2026-06-04',

@@ -17,12 +17,11 @@ import pytest
 from fleetpull.config import GeotabConfig
 from fleetpull.endpoints.geotab.exception_events import build_endpoint
 from fleetpull.endpoints.shared import (
+    BisectedWindowFetch,
     EndpointDefinition,
     ResumeValue,
-    SnapshotMode,
     StorageKind,
     WatermarkMode,
-    WindowBisection,
 )
 from fleetpull.exceptions import ProviderResponseError
 from fleetpull.incremental import DateWindow
@@ -32,11 +31,8 @@ from fleetpull.network.contract import HttpMethod, PageDecoder, RequestSpec
 from fleetpull.network.decoders import SinglePageDecoder
 from fleetpull.orchestrator.bisection import BisectingWindowDriver
 from fleetpull.orchestrator.drivers import SingleRequestDriver
-from fleetpull.orchestrator.entry import (
-    FetchPoolSource,
-    RosterMachinery,
-    _resolve_driver,
-)
+from fleetpull.orchestrator.entry import RosterMachinery, _resolve_driver
+from fleetpull.orchestrator.shape_resolution import FetchPoolSource
 from fleetpull.vocabulary import JsonObject, Provider, QuotaScope
 
 _LIMIT = 3
@@ -54,7 +50,7 @@ class _WindowEchoSpecBuilder:
     """Write the resume window into the spec params for the fake to read."""
 
     def build_spec(
-        self, resume: ResumeValue, path_values: Mapping[str, str]
+        self, resume: ResumeValue, member_values: Mapping[str, str]
     ) -> RequestSpec:
         assert isinstance(resume, DateWindow)
         return RequestSpec(
@@ -116,7 +112,7 @@ def _definition() -> EndpointDefinition[_Event]:
         storage_kind=StorageKind.DATE_PARTITIONED,
         sync_mode=WatermarkMode(lookback=timedelta(days=1), cutoff=timedelta(0)),
         event_time_column='active_from',
-        window_bisection=WindowBisection(
+        request_shape=BisectedWindowFetch(
             results_limit=_LIMIT,
             floor=_FLOOR,
             event_time_wire_key='activeFrom',
@@ -126,8 +122,8 @@ def _definition() -> EndpointDefinition[_Event]:
 
 def _driver() -> BisectingWindowDriver:
     definition = _definition()
-    assert definition.window_bisection is not None
-    return BisectingWindowDriver(bisection=definition.window_bisection)
+    assert isinstance(definition.request_shape, BisectedWindowFetch)
+    return BisectingWindowDriver(shape=definition.request_shape)
 
 
 def _at(hour: int, minute: int = 0, second: int = 0) -> datetime:
@@ -330,7 +326,7 @@ class _AnyWindowClient(TransportClient):
 
 
 class TestDriverRouting:
-    def test_a_bisection_binding_routes_to_the_bisecting_driver(self) -> None:
+    def test_a_bisected_shape_routes_to_the_bisecting_driver(self) -> None:
         # The regression this guards is SILENT: mis-routed to the
         # single-fetch driver, a capped endpoint truncates every unit at
         # one page. The roster and pool machinery are never consulted on
@@ -342,7 +338,7 @@ class TestDriverRouting:
             cast(FetchPoolSource, object()),
         )
         assert isinstance(driver, BisectingWindowDriver)
-        assert driver.bisection is definition.window_bisection
+        assert driver.shape is definition.request_shape
 
     def test_an_undeclared_definition_still_routes_single_fetch(self) -> None:
         undeclared = EndpointDefinition(
@@ -362,23 +358,3 @@ class TestDriverRouting:
             cast(FetchPoolSource, object()),
         )
         assert isinstance(driver, SingleRequestDriver)
-
-
-class TestWindowBisectionValidation:
-    def test_rejected_on_a_snapshot_endpoint(self) -> None:
-        with pytest.raises(ValueError, match='window_bisection requires'):
-            EndpointDefinition(
-                provider=Provider.GEOTAB,
-                name='synthetic_invalid',
-                spec_builder=_WindowEchoSpecBuilder(),
-                page_decoder=SinglePageDecoder(records_key='result'),
-                response_model=_Event,
-                quota_scope=QuotaScope.GEOTAB_GET,
-                storage_kind=StorageKind.SINGLE,
-                sync_mode=SnapshotMode(),
-                window_bisection=WindowBisection(
-                    results_limit=_LIMIT,
-                    floor=_FLOOR,
-                    event_time_wire_key='activeFrom',
-                ),
-            )

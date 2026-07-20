@@ -16,18 +16,18 @@ class TestStaticGetSpecBuilder:
         assert isinstance(builder, StaticGetSpecBuilder)
 
     def test_builds_a_get_for_base_url_plus_path(self) -> None:
-        spec = build_builder().build_spec(resume=None, path_values={})
+        spec = build_builder().build_spec(resume=None, member_values={})
         assert spec.method is HttpMethod.GET
         assert spec.url == 'https://api.example.test/v1/vehicles'
 
     def test_carries_no_credentials_or_pagination(self) -> None:
-        spec = build_builder().build_spec(resume=None, path_values={})
+        spec = build_builder().build_spec(resume=None, member_values={})
         assert spec.headers == {}
         assert spec.params is None
         assert spec.json_body is None
 
-    def test_ignores_resume_and_path_values(self) -> None:
+    def test_ignores_resume_and_member_values(self) -> None:
         builder = build_builder()
-        baseline = builder.build_spec(resume=None, path_values={})
-        ignored = builder.build_spec(resume=None, path_values={'id': '999'})
+        baseline = builder.build_spec(resume=None, member_values={})
+        ignored = builder.build_spec(resume=None, member_values={'id': '999'})
         assert ignored.url == baseline.url

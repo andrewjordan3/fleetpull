@@ -6,11 +6,15 @@ discovery, auth ingress, limiter, retry, page decoding, validation,
 frame construction -- runs under every test with no live network
 anywhere. Responses use each provider's real wire shape: Motive's
 ``{"vehicles": [{"vehicle": {...}}], "pagination": {...}}`` envelopes
-(synthetic identifiers) and GeoTab's committed 2026-07-09 capture set
-(``tests/geotab_devices_capture.py``).
+(synthetic identifiers), GeoTab's committed 2026-07-09 capture set
+(``tests/geotab_devices_capture.py``), and Samsara's committed
+2026-07-20 drivers capture set (``tests/samsara_drivers_capture.py``).
 """
 
+import importlib
 import json
+from collections.abc import Mapping
+from dataclasses import dataclass
 
 import httpx
 import polars as pl
@@ -23,10 +27,25 @@ from fleetpull import (
     ProviderResponseError,
     fetch,
 )
-from fleetpull.vocabulary import JsonObject
+from fleetpull.endpoints.shared import (
+    EndpointDefinition,
+    ParamSweep,
+    RequestShape,
+    ResumeValue,
+    RosterFanOut,
+    SingleFetch,
+    SnapshotMode,
+    StorageKind,
+)
+from fleetpull.model_contract import ResponseModel
+from fleetpull.network.contract import HttpMethod, RequestSpec
+from fleetpull.network.decoders import SinglePageDecoder
+from fleetpull.roster import RosterKey
+from fleetpull.vocabulary import JsonObject, Provider, QuotaScope
 from tests.api.conftest import (
     SYNTHETIC_GEOTAB_PASS,
     SYNTHETIC_MOTIVE_KEY,
+    SYNTHETIC_SAMSARA_TOKEN,
     Handler,
     install_transport,
     vehicle_record,
@@ -37,6 +56,7 @@ from tests.geotab_devices_capture import (
     SEEK_PAGE_2_RESPONSE,
     SEEK_TERMINAL_RESPONSE,
 )
+from tests.samsara_drivers_capture import DRIVER_RECORDS
 
 
 def _paged_vehicles_handler(total_pages: int) -> Handler:
@@ -204,6 +224,166 @@ def test_geotab_devices_end_to_end_through_the_session_stack(
         and credentials['database'] == 'exampledb'
         for credentials in handler.data_credentials
     )
+
+
+class _SweepModel(ResponseModel):
+    id: int
+    status: str
+
+
+@dataclass(frozen=True, slots=True)
+class _StatusSweepSpecBuilder:
+    """Merge the sweep's member binding as query parameters (a sweep builder)."""
+
+    base_url: str
+    path: str
+
+    def build_spec(
+        self, resume: ResumeValue, member_values: Mapping[str, str]
+    ) -> RequestSpec:
+        return RequestSpec(
+            method=HttpMethod.GET,
+            url=f'{self.base_url}{self.path}',
+            params=dict(member_values),
+        )
+
+
+def _synthetic_definition(shape: RequestShape) -> EndpointDefinition[_SweepModel]:
+    """A snapshot definition with the given shape, keyed as Motive vehicles."""
+    return EndpointDefinition(
+        provider=Provider.MOTIVE,
+        name='vehicles',
+        spec_builder=_StatusSweepSpecBuilder(
+            base_url='https://x.test', path='/v1/items'
+        ),
+        page_decoder=SinglePageDecoder(records_key='data'),
+        response_model=_SweepModel,
+        quota_scope=QuotaScope.MOTIVE,
+        storage_kind=StorageKind.SINGLE,
+        sync_mode=SnapshotMode(),
+        request_shape=shape,
+    )
+
+
+class _StubRegistry:
+    """A registry double serving one synthetic definition for any key."""
+
+    def __init__(self, definition: EndpointDefinition[_SweepModel]) -> None:
+        self._definition = definition
+
+    def get(self, provider: Provider, name: str) -> EndpointDefinition[_SweepModel]:
+        return self._definition
+
+
+def _install_definition(monkeypatch: pytest.MonkeyPatch, shape: RequestShape) -> None:
+    """Route fetch's registry lookup to a synthetic shaped definition."""
+    fetch_module = importlib.import_module('fleetpull.api.fetch')
+    registry = _StubRegistry(_synthetic_definition(shape))
+
+    # typing-justified: a monkeypatched stand-in mirrors the factory's shape
+    def stub_build_registry(provider_configs: object) -> _StubRegistry:
+        return registry
+
+    monkeypatch.setattr(fetch_module, 'build_endpoint_registry', stub_build_registry)
+
+
+def test_param_sweep_endpoint_is_served_and_unions_the_sweeps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # fetch serves every stateless request shape through the shared seam:
+    # a snapshot ParamSweep fans one chain per declared value and the
+    # returned frame is the union of the sweeps.
+    def sweep_handler(request: httpx.Request) -> httpx.Response:
+        status = request.url.params['status']
+        record_id = {'active': 1, 'deactivated': 2}[status]
+        return httpx.Response(200, json={'data': [{'id': record_id, 'status': status}]})
+
+    install_transport(monkeypatch, sweep_handler)
+    _install_definition(
+        monkeypatch, ParamSweep(param='status', values=('active', 'deactivated'))
+    )
+    frame = fetch(Endpoints.Motive.vehicles, auth=SYNTHETIC_MOTIVE_KEY)
+    assert frame.height == 2
+    assert sorted(frame['status'].to_list()) == ['active', 'deactivated']
+    assert sorted(frame['id'].to_list()) == [1, 2]
+
+
+def test_single_fetch_shape_still_serves_through_the_seam(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def single_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={'data': [{'id': 9, 'status': 'active'}]})
+
+    install_transport(monkeypatch, single_handler)
+    _install_definition(monkeypatch, SingleFetch())
+    frame = fetch(Endpoints.Motive.vehicles, auth=SYNTHETIC_MOTIVE_KEY)
+    assert frame['id'].to_list() == [9]
+
+
+def test_roster_fan_out_endpoint_is_refused_before_any_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # fetch's in-memory contract: no roster state, so a RosterFanOut shape
+    # is refused loudly by the shared seam -- never a silent partial fetch.
+    def no_http_expected(request: httpx.Request) -> httpx.Response:
+        raise AssertionError('the refusal must fire before any request')
+
+    install_transport(monkeypatch, no_http_expected)
+    _install_definition(
+        monkeypatch,
+        RosterFanOut(
+            roster=RosterKey(Provider.MOTIVE, 'vehicle_ids'),
+            member_key='vehicle_id',
+        ),
+    )
+    with pytest.raises(ConfigurationError, match='no roster source') as raised:
+        fetch(Endpoints.Motive.vehicles, auth=SYNTHETIC_MOTIVE_KEY)
+    assert 'sync' in str(raised.value)
+
+
+def test_samsara_drivers_serves_the_two_sweep_snapshot_end_to_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The first REAL ParamSweep endpoint through fetch: the Samsara
+    # drivers binding fans one cursor chain per activation status, both
+    # statuses reach the wire, and the frame is the union of the sweeps
+    # (the two-sweep completeness story, captured 2026-07-20).
+    statuses_requested: list[str] = []
+    bearer_headers: list[str] = []
+
+    def drivers_handler(request: httpx.Request) -> httpx.Response:
+        status = request.url.params['driverActivationStatus']
+        statuses_requested.append(status)
+        bearer_headers.append(request.headers['Authorization'])
+        sweep_records = [
+            record
+            for record in DRIVER_RECORDS
+            if record['driverActivationStatus'] == status
+        ]
+        return httpx.Response(
+            200,
+            json={
+                'data': sweep_records,
+                'pagination': {'endCursor': '', 'hasNextPage': False},
+            },
+        )
+
+    install_transport(monkeypatch, drivers_handler)
+    frame = fetch(Endpoints.Samsara.drivers, auth=SYNTHETIC_SAMSARA_TOKEN)
+    # Both sweeps fired (chains may run concurrently; order-free check)
+    # and every request carried the bearer credential.
+    assert sorted(statuses_requested) == ['active', 'deactivated']
+    assert set(bearer_headers) == {f'Bearer {SYNTHETIC_SAMSARA_TOKEN}'}
+    # The frame is the union, in member order (active chain first).
+    assert frame.height == 3
+    assert frame['driver_activation_status'].to_list() == [
+        'active',
+        'active',
+        'deactivated',
+    ]
+    assert frame.schema['driver_activation_status'] == pl.String
+    assert frame['carrier_settings__dot_number'].to_list() == [100001] * 3
+    assert frame.schema['carrier_settings__dot_number'] == pl.Int64
 
 
 def test_geotab_fetch_failure_never_carries_the_password(

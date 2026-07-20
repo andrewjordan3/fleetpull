@@ -15,10 +15,10 @@ from fleetpull.config import GeotabAuthConfig, GeotabConfig
 from fleetpull.endpoints.geotab._get_requests import GeotabWindowedGetSpecBuilder
 from fleetpull.endpoints.geotab.exception_events import build_endpoint
 from fleetpull.endpoints.shared import (
+    BisectedWindowFetch,
     EndpointDefinition,
     StorageKind,
     WatermarkMode,
-    WindowBisection,
 )
 from fleetpull.incremental import DateWindow
 from fleetpull.models.geotab import ExceptionEvent
@@ -48,7 +48,7 @@ class TestExceptionEventsSpecBuilder:
 
     def test_builds_the_windowed_unsorted_get(self) -> None:
         endpoint = _build_endpoint()
-        spec = endpoint.spec_builder.build_spec(resume=_window(), path_values={})
+        spec = endpoint.spec_builder.build_spec(resume=_window(), member_values={})
         assert spec.method is HttpMethod.POST
         assert spec.url == 'https://my.geotab.com/apiv1'
         assert isinstance(spec.json_body, dict)
@@ -64,7 +64,7 @@ class TestExceptionEventsSpecBuilder:
 
     def test_never_writes_a_sort_member(self) -> None:
         endpoint = _build_endpoint()
-        spec = endpoint.spec_builder.build_spec(resume=_window(), path_values={})
+        spec = endpoint.spec_builder.build_spec(resume=_window(), member_values={})
         assert isinstance(spec.json_body, dict)
         params = spec.json_body['params']
         assert isinstance(params, dict)
@@ -78,13 +78,13 @@ class TestExceptionEventsSpecBuilder:
             id_sort=False,
         )
         with pytest.raises(TypeError):
-            builder.build_spec(resume=None, path_values={})
+            builder.build_spec(resume=None, member_values={})
 
     def test_credentials_are_never_written_here(self) -> None:
         # The session strategy injects params.credentials; the builder
         # must leave the slot untouched.
         endpoint = _build_endpoint()
-        spec = endpoint.spec_builder.build_spec(resume=_window(), path_values={})
+        spec = endpoint.spec_builder.build_spec(resume=_window(), member_values={})
         assert isinstance(spec.json_body, dict)
         params = spec.json_body['params']
         assert isinstance(params, dict)
@@ -100,7 +100,7 @@ class TestExceptionEventsSpecBuilder:
             )
         )
         spec = build_endpoint(config).spec_builder.build_spec(
-            resume=_window(), path_values={}
+            resume=_window(), member_values={}
         )
         assert spec.url == 'https://alt.example.test/apiv1'
 
@@ -114,12 +114,11 @@ class TestBuildExceptionEventsEndpoint:
         assert endpoint.storage_kind is StorageKind.DATE_PARTITIONED
         assert endpoint.response_model is ExceptionEvent
         assert endpoint.event_time_column == 'active_from'
-        assert endpoint.fan_out is None
         assert endpoint.completeness_check is None
 
-    def test_declares_the_bisection_binding(self) -> None:
+    def test_declares_the_bisected_window_shape(self) -> None:
         endpoint = _build_endpoint()
-        assert endpoint.window_bisection == WindowBisection(
+        assert endpoint.request_shape == BisectedWindowFetch(
             results_limit=5000,
             floor=timedelta(minutes=1),
             event_time_wire_key='activeFrom',

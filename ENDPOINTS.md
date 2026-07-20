@@ -41,7 +41,7 @@ fixed 10/min auth budget). Application errors arrive inside HTTP 200;
 | `devices` | `Get Device` | snapshot | — | Id-ascending seek walk under the silent 5,000-record `Get` cap; every harvest verified against `GetCountOf` (mismatch fails the run loudly). Union-of-shapes model (GO7/GO9/trailer variants, everything optional). |
 | `users` | `Get User` | snapshot | — | The devices pattern bound to `User` (seek walk + `GetCountOf`); id-sort proven live for this type. Scalar mirror — list-of-object and IAM blocks excluded per the Device precedent. |
 | `trips` | `Get Trip` + `TripSearch` window | windowed watermark | `stop` | The window rides `search.fromDate`/`toDate` beside the id-sort seek walk. `TripSearch` matches by STOP time (prediction-confirmed), so retrieval and routing coincide on `stop`. Trip recalculation inside the lookback is absorbed by window refetch; beyond-lookback recalcs wait for the feed arm (accepted residual, DESIGN §4). |
-| `exception_events` | `Get ExceptionEvent` + windowed search | windowed watermark | `active_from` | Id-sort rejected outright for this type, so the seek template is unavailable: the binding declares `WindowBisection` (limit 5,000, one-minute floor) and the bisecting driver halves on the exactly-full overflow signal. OVERLAP-anchored matching; unfiltered rule stream by design — rule selection is the consumer's one-expression job. |
+| `exception_events` | `Get ExceptionEvent` + windowed search | windowed watermark | `active_from` | Id-sort rejected outright for this type, so the seek template is unavailable: the binding declares the `BisectedWindowFetch` shape (limit 5,000, one-minute floor) and the bisecting driver halves on the exactly-full overflow signal. OVERLAP-anchored matching; unfiltered rule stream by design — rule selection is the consumer's one-expression job. |
 
 ### Samsara
 
@@ -53,6 +53,7 @@ headers; the configured self-limit is the only budget. 429s carry fractional
 | Endpoint | Wire surface | Mode | Event time | Notes |
 |---|---|---|---|---|
 | `vehicles` | `GET /fleet/vehicles` | snapshot | — | Explicit cursor walk (`limit` 512 — the documented maximum, honored exactly; `after` thereafter), terminal on `hasNextPage: false` beside an empty-string `endCursor`. Continuation is explicit per page, so no completeness check is needed. Optionality is absence-shaped; `externalIds` is an open user-definable map. |
+| `drivers` | `GET /fleet/drivers` | snapshot | — | Two-sweep complete listing (the first `ParamSweep` consumer): the default listing is the ACTIVE set only, so the binding sweeps `driverActivationStatus` over `active`/`deactivated` and the union is the one dataset, split carried by the status column. The status vocabulary is a strict closed enum — any other value is a loud HTTP 400, never silent-empty. Same cursor walk as `vehicles` (limit 512; `after` composes with the status param, so the decoder is unchanged). |
 
 ## Port queue
 
@@ -68,7 +69,7 @@ probe-then-build vertical:
 | Endpoint | Legacy wire surface | Status |
 |---|---|---|
 | `vehicles` | `/fleet/vehicles` | **shipped 2026-07-17** |
-| `drivers` | `/fleet/drivers` | queued (legacy four) |
+| `drivers` | `/fleet/drivers` | **shipped 2026-07-20** |
 | `trips` | `/v1/fleet/trips` | queued (legacy four) — overlap-anchored retrieval verified historically; start-anchored normalization applies (DESIGN §4) |
 | `idling_events` | `/idling/events` | queued (legacy four) |
 | `addresses` | `/addresses` | queued |
