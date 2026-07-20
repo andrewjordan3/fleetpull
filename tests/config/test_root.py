@@ -454,12 +454,16 @@ class TestExampleFile:
     ) -> None:
         monkeypatch.setenv('MOTIVE_API_KEY', 'env-synthetic-key')
         monkeypatch.setenv('GEOTAB_PASSWORD', 'env-synthetic-pass')
+        monkeypatch.setenv('SAMSARA_API_KEY', 'env-synthetic-token')
         example_text = _EXAMPLE_FILE.read_text(encoding='utf-8')
         pointed = example_text.replace('/data/fleetpull', str(tmp_path))
         config = FleetpullConfig.from_yaml(_write(tmp_path, pointed))
         motive = config.providers.motive
         assert motive is not None
         assert motive.endpoints == ('vehicles', 'vehicle_locations')
+        samsara = config.providers.samsara
+        assert samsara is not None
+        assert samsara.endpoints == ('vehicles', 'drivers', 'trips')
         geotab = config.providers.geotab
         assert geotab is not None
         assert geotab.auth is not None

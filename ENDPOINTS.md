@@ -52,8 +52,9 @@ headers; the configured self-limit is the only budget. 429s carry fractional
 
 | Endpoint | Wire surface | Mode | Event time | Notes |
 |---|---|---|---|---|
-| `vehicles` | `GET /fleet/vehicles` | snapshot | — | Explicit cursor walk (`limit` 512 — the documented maximum, honored exactly; `after` thereafter), terminal on `hasNextPage: false` beside an empty-string `endCursor`. Continuation is explicit per page, so no completeness check is needed. Optionality is absence-shaped; `externalIds` is an open user-definable map. |
+| `vehicles` | `GET /fleet/vehicles` | snapshot | — | Explicit cursor walk (`limit` 512 — the documented maximum, honored exactly; `after` thereafter), terminal on `hasNextPage: false` beside an empty-string `endCursor`. Continuation is explicit per page, so no completeness check is needed. Optionality is absence-shaped; `externalIds` is an open user-definable map. Feeds the Samsara `vehicle_ids` roster (1-day max age, eviction after 3 absent listings); lists unplugged units, and eviction hysteresis covers removals. |
 | `drivers` | `GET /fleet/drivers` | snapshot | — | Two-sweep complete listing (the first `ParamSweep` consumer): the default listing is the ACTIVE set only, so the binding sweeps `driverActivationStatus` over `active`/`deactivated` and the union is the one dataset, split carried by the status column. The status vocabulary is a strict closed enum — any other value is a loud HTTP 400, never silent-empty. Same cursor walk as `vehicles` (limit 512; `after` composes with the status param, so the decoder is unchanged). |
+| `trips` | `GET /v1/fleet/trips` | windowed watermark | `start_time` | The LEGACY v1 surface only (the modern candidates 404); `vehicleId` is REQUIRED, so the binding fans out per vehicle over the Samsara `vehicle_ids` roster — the roster machinery's first cross-provider consumer. Unpaginated `{"trips": [...]}` envelope; `startMs`/`endMs` epoch milliseconds. Retrieval is OVERLAP-anchored (re-verified per-type 2026-07-20); ownership is start-anchored via the post-fetch filter, no wire pad. Loud, exactly-90-day range cap — HTTP 400 with a text/plain rpc-error body (the plain-string posture beyond 5xx). |
 
 ## Port queue
 
@@ -70,7 +71,7 @@ probe-then-build vertical:
 |---|---|---|
 | `vehicles` | `/fleet/vehicles` | **shipped 2026-07-17** |
 | `drivers` | `/fleet/drivers` | **shipped 2026-07-20** |
-| `trips` | `/v1/fleet/trips` | queued (legacy four) — overlap-anchored retrieval verified historically; start-anchored normalization applies (DESIGN §4) |
+| `trips` | `/v1/fleet/trips` | **shipped 2026-07-20** |
 | `idling_events` | `/idling/events` | queued (legacy four) |
 | `addresses` | `/addresses` | queued |
 | `vehicle_stats_history` | `/fleet/vehicles/stats/history` | queued |

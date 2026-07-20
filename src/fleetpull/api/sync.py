@@ -15,19 +15,28 @@ a sync that syncs nothing is a configuration failure to surface, not a
 no-op. Nothing global mutates and nothing but the config file is read.
 
 ``run()`` applies the logging section first, then composes and executes.
-Endpoints run sequentially -- the concurrency grain is the fan-out
-within one endpoint, on that provider's fetch pool (DESIGN section 7) --
-in feeder-first order derived from the roster bindings -- never a
-user-facing key -- and commit independently: one endpoint's operational
-failure (the ``FleetpullError`` family) is recorded while its siblings
-continue, and the run ends by raising ``SyncFailuresError`` carrying
-every failure in run order. Any non-``FleetpullError`` is a bug and
-propagates immediately. Only the selected set runs: an unselected feeder
-is never run on a consumer's behalf -- roster freshness stays the
-refresh coordinator's job at fan-out time.
+Endpoints run as one serial queue per enabled provider, providers
+concurrent (DESIGN section 7, activated 2026-07-20): the feeder-first
+order derived from the roster bindings -- never a user-facing key -- is
+partitioned stably by provider, so nothing reorders within a provider
+(feeders never cross providers), and the finer concurrency grain -- the
+fan-out within one endpoint, on that provider's fetch pool -- is
+unchanged. Endpoints commit independently: one endpoint's operational
+failure (the ``FleetpullError`` family) is recorded while its queue
+continues; any other exception is a bug that stops that provider's
+queue while the other queues finish, re-raised -- the first by provider
+order -- once every queue has joined. A run with failures ends by
+raising ``SyncFailuresError`` carrying them in run order within each
+provider, providers in config order. Only the selected set runs: an
+unselected feeder is never run on a consumer's behalf -- roster
+freshness stays the refresh coordinator's job at fan-out time.
 """
 
 import logging
+import threading
+from collections.abc import Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import SecretStr
@@ -46,6 +55,7 @@ from fleetpull.config import (
     SamsaraConfig,
 )
 from fleetpull.endpoints import (
+    EndpointRegistry,
     build_endpoint_registry,
     build_roster_registry,
 )
@@ -138,17 +148,25 @@ class Sync:
         one transport client per enabled provider through the auth
         ingress, and one fetch pool per enabled provider sized by its
         ``rate_limit.max_concurrency`` (the fan-out workers; shut down
-        when the run ends, success or failure). Endpoints run
-        sequentially, feeders before their consumers (derived from the
-        roster bindings; config order within ties), and commit
-        independently -- parquet and state land per endpoint as each
-        finishes, so a sibling's failure never rolls anything back.
+        when the run ends, success or failure). Endpoints run as one
+        serial queue per enabled provider -- feeders before their
+        consumers within it (derived from the roster bindings; config
+        order within ties) -- with the queues concurrent, one worker
+        thread each, and commit independently: parquet and state land
+        per endpoint as each finishes, so a sibling's failure never
+        rolls anything back, in its own queue or another provider's. A
+        non-``FleetpullError`` is a bug that stops its provider's queue
+        (the remaining endpoints in that queue are not run) while the
+        other queues finish; after every queue joins, the first bug by
+        provider order re-raises.
 
         The run narrates at INFO: a start line naming the enabled
         providers, the validated selection, and the dataset root; a
         finish line with the succeeded/failed endpoint counts and the
         elapsed seconds (a ``monotonic_seconds`` delta on the run's own
-        clock, emitted before any failure aggregate raises).
+        clock -- the whole run's wall clock, the slowest queue rather
+        than the queues' sum -- emitted before any failure aggregate
+        raises).
 
         Returns:
             None. Every selected endpoint ran and committed.
@@ -156,7 +174,8 @@ class Sync:
         Raises:
             SyncFailuresError: One or more endpoints failed with an
                 operational (``FleetpullError``-family) error; carries
-                every failure in run order. Successful siblings are
+                the failures in run order within each provider,
+                providers in config order. Successful siblings are
                 already committed.
             FleetpullError: An operational failure outside any single
                 endpoint's run (e.g. a cold-start roster refresh
@@ -168,10 +187,11 @@ class Sync:
         Side Effects:
             Configures the ``fleetpull`` logger from the config's
             logging section; creates/migrates the SQLite state database;
-            fetches over the network (fan-out fetches on per-provider
-            worker threads, all joined before this returns); writes
-            parquet under ``storage.dataset_root``; records runs,
-            cursors, and roster state.
+            fetches over the network (one queue worker thread per
+            enabled provider plus that provider's fan-out fetch
+            workers, all joined before this returns); writes parquet
+            under ``storage.dataset_root``; records runs, cursors, and
+            roster state.
 
         Scope: retrieval, dtype coercion, and light structural
         normalization only -- no cross-endpoint joins, no unified
@@ -215,7 +235,7 @@ class Sync:
             provider: config.rate_limit.max_concurrency
             for provider, config in self._enabled_providers()
         }
-        failures: list[EndpointFailure] = []
+        queues = _partitioned_by_provider(ordered)
         with (
             ProviderClientRegistry(
                 self._provider_profiles(profile_context), runtime
@@ -233,20 +253,31 @@ class Sync:
                 clock,
                 self._config,
             )
-            rosters = RosterMachinery(
-                registry=roster_registry, refresher=coordinator, members=roster_store
+            work = _ProviderQueueWork(
+                registry=endpoint_registry,
+                runner=runner,
+                rosters=RosterMachinery(
+                    registry=roster_registry,
+                    refresher=coordinator,
+                    members=roster_store,
+                ),
+                fetch_pools=fetch_pools,
             )
-            for provider, name in ordered:
-                definition = endpoint_registry.get(provider, name)
-                try:
-                    run_endpoint(definition, runner, rosters, fetch_pools)
-                except FleetpullError as failure:
-                    logger.exception(
-                        'endpoint failed: provider=%s endpoint=%s',
-                        provider.value,
-                        name,
+            # One worker per enabled provider; exiting the block joins them
+            # all, so every queue has finished before anything raises. The
+            # futures dict is keyed in the fixed provider-config order (the
+            # enabled roll-call), which _collected_failures turns into the
+            # documented cross-provider order.
+            with ThreadPoolExecutor(
+                max_workers=len(queues), thread_name_prefix='fleetpull-sync'
+            ) as queue_pool:
+                queue_futures = {
+                    provider: queue_pool.submit(
+                        _run_provider_queue, provider, queues[provider], work
                     )
-                    failures.append(EndpointFailure(provider.value, name, failure))
+                    for provider, _ in self._enabled_providers()
+                }
+        failures = _collected_failures(queue_futures)
         logger.info(
             'sync finished: succeeded=%d failed=%d elapsed_seconds=%.1f',
             len(ordered) - len(failures),
@@ -389,6 +420,129 @@ def _feeders_first(
         return 0 if roster_registry.sourced_by(provider, name) else 1
 
     return sorted(selection, key=_rank)
+
+
+def _partitioned_by_provider(
+    ordered: Sequence[tuple[Provider, str]],
+) -> dict[Provider, list[str]]:
+    """Partition the feeder-first ordering into per-provider queues, stably.
+
+    A stable partition of the already-derived ordering -- never a
+    re-derivation: each provider's queue is exactly its subsequence of
+    ``ordered``, so feeder-first order holds within every queue (feeders
+    never cross providers). Keys land in first-appearance order; the
+    cross-provider order the failure contract documents is imposed by the
+    caller, which keys the queue futures in provider-config order.
+
+    Args:
+        ordered: The feeder-first ``(provider, name)`` sequence.
+
+    Returns:
+        Each provider's endpoint names, in within-provider run order.
+    """
+    queues: dict[Provider, list[str]] = {}
+    for provider, name in ordered:
+        queues.setdefault(provider, []).append(name)
+    return queues
+
+
+@dataclass(frozen=True, slots=True)
+class _ProviderQueueWork:
+    """The shared collaborators every provider queue runs its endpoints through.
+
+    One instance serves every queue worker; the four ride as one parameter
+    because they always travel together into ``run_endpoint`` (the bundle
+    rule). Safe to share by construction: the registry is an immutable
+    catalog, the runner keeps all per-run state local, the roster
+    machinery's state lives in connection-per-operation stores (and rosters
+    are provider-scoped, so one queue's rosters are never another's), and
+    the fetch pools are per-provider.
+
+    Attributes:
+        registry: The discovered endpoint catalog (definition lookup).
+        runner: The run executor, shared by every queue.
+        rosters: The roster catalog, policy coordinator, and member read.
+        fetch_pools: The per-provider fetch pools.
+    """
+
+    registry: EndpointRegistry
+    runner: EndpointRunner
+    rosters: RosterMachinery
+    fetch_pools: FetchPoolRegistry
+
+
+def _run_provider_queue(
+    provider: Provider, endpoint_names: Sequence[str], work: _ProviderQueueWork
+) -> list[EndpointFailure]:
+    """Run one provider's queue serially, collecting its operational failures.
+
+    The per-provider worker: endpoints run in the queue's feeder-first order
+    on this one thread, exactly as the whole selection once ran serially. A
+    ``FleetpullError`` records an ``EndpointFailure`` and the queue
+    continues; any other exception is a bug that stops this queue -- the
+    remaining endpoints are not run -- and propagates through the worker's
+    future, to re-raise after every queue has joined. The thread is renamed
+    to the provider first, so any stack trace attributes cleanly.
+
+    Args:
+        provider: The queue's provider.
+        endpoint_names: The provider's endpoints, in run order.
+        work: The shared collaborators the endpoints run through.
+
+    Returns:
+        The queue's failures, in run order.
+
+    Side Effects:
+        Renames the current thread to ``fleetpull-sync-<provider>``; runs
+        every endpoint (network fetches, parquet writes, state commits);
+        logs each operational failure at ERROR with its traceback.
+    """
+    threading.current_thread().name = f'fleetpull-sync-{provider.value}'
+    failures: list[EndpointFailure] = []
+    for name in endpoint_names:
+        definition = work.registry.get(provider, name)
+        try:
+            run_endpoint(definition, work.runner, work.rosters, work.fetch_pools)
+        except FleetpullError as failure:
+            logger.exception(
+                'endpoint failed: provider=%s endpoint=%s',
+                provider.value,
+                name,
+            )
+            failures.append(EndpointFailure(provider.value, name, failure))
+    return failures
+
+
+def _collected_failures(
+    queue_futures: dict[Provider, Future[list[EndpointFailure]]],
+) -> list[EndpointFailure]:
+    """Fold the joined queues into the documented two-level failure order.
+
+    Iterates the futures in their key order -- provider-config order, the
+    caller's contract -- flattening each queue's run-order failures, so the
+    aggregate reads run order within a provider, provider-config order
+    across providers. A queue that died on a bug re-raises it here
+    (``Future.result``), and the iteration order makes the first bug by
+    provider order win deterministically, never by completion timing. Every
+    future is already done (the pool's ``with`` block joined the workers),
+    so nothing here blocks.
+
+    Args:
+        queue_futures: One joined future per provider queue, keyed in
+            provider-config order.
+
+    Returns:
+        Every queue's failures, in the two-level order.
+
+    Raises:
+        Exception: The first queue's bug in provider order, re-raised
+            unchanged -- never a ``FleetpullError`` (those are collected,
+            not raised, by the workers).
+    """
+    failures: list[EndpointFailure] = []
+    for queue_future in queue_futures.values():
+        failures.extend(queue_future.result())
+    return failures
 
 
 def _required_database_path(config: FleetpullConfig) -> Path:

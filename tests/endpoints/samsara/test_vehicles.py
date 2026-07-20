@@ -4,11 +4,12 @@ The binding rides the shared snapshot spec-builder and the cursor
 decoder proven live 2026-07-17; no completeness check is declared
 because the cursor walk is complete by construction (continuation is
 explicit per page, and the decoder fails loudly on a promised
-continuation without a cursor).
+continuation without a cursor). The module also declares the Samsara
+``vehicle_ids`` roster the trips fan-out reads, beside its feeder.
 """
 
 from fleetpull.config import SamsaraConfig
-from fleetpull.endpoints.samsara.vehicles import build_endpoint
+from fleetpull.endpoints.samsara.vehicles import VEHICLE_IDS_ROSTER, build_endpoint
 from fleetpull.endpoints.shared import (
     EndpointDefinition,
     SingleFetch,
@@ -19,6 +20,7 @@ from fleetpull.endpoints.shared import (
 from fleetpull.models.samsara import Vehicle
 from fleetpull.network.contract import HttpMethod
 from fleetpull.network.decoders import SamsaraCursorPageDecoder
+from fleetpull.roster import RosterKey
 from fleetpull.vocabulary import Provider, QuotaScope
 
 
@@ -61,3 +63,21 @@ class TestBuildVehiclesEndpoint:
         assert isinstance(decoder, SamsaraCursorPageDecoder)
         assert decoder.records_key == 'data'
         assert decoder.results_limit == 512
+
+
+class TestVehicleIdsRoster:
+    def test_is_fed_by_this_modules_listing(self) -> None:
+        assert VEHICLE_IDS_ROSTER.key == RosterKey(Provider.SAMSARA, 'vehicle_ids')
+        assert VEHICLE_IDS_ROSTER.source_endpoint == 'vehicles'
+        # The vehicles frame's id column: the top-level model field
+        # 'id', flattened verbatim.
+        assert VEHICLE_IDS_ROSTER.source_column == 'id'
+
+    def test_declares_hysteresis_not_append_only(self) -> None:
+        # Vehicle ids evict on consecutive absence (an efficiency
+        # lever, not append-only); unplugged units stay covered at the
+        # feeder population (/fleet/vehicles lists them, captured
+        # 2026-07-17), and this hysteresis is what retires a member the
+        # listing stops returning.
+        assert VEHICLE_IDS_ROSTER.eviction_threshold is not None
+        assert VEHICLE_IDS_ROSTER.max_age.total_seconds() > 0
