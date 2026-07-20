@@ -9,6 +9,7 @@ from fleetpull.endpoints.motive._spec_builders import MotiveFleetDateRangeSpecBu
 from fleetpull.endpoints.motive.driving_periods import build_endpoint
 from fleetpull.endpoints.shared import (
     EndpointDefinition,
+    SingleFetch,
     SpecBuilder,
     StorageKind,
     WatermarkMode,
@@ -39,7 +40,7 @@ class TestMotiveFleetDateRangeSpecBuilder:
         # the exclusive midnight end (the vehicle_locations mapping).
         spec = MotiveFleetDateRangeSpecBuilder(
             base_url='https://api.example.test', path='/v1/driving_periods'
-        ).build_spec(resume=_window(), path_values={})
+        ).build_spec(resume=_window(), member_values={})
         assert spec.method is HttpMethod.GET
         assert spec.url == 'https://api.example.test/v1/driving_periods'
         assert spec.params == {
@@ -52,12 +53,12 @@ class TestMotiveFleetDateRangeSpecBuilder:
             base_url='https://api.example.test', path='/v1/driving_periods'
         )
         with pytest.raises(TypeError):
-            builder.build_spec(resume=None, path_values={})
+            builder.build_spec(resume=None, member_values={})
 
     def test_no_credentials_or_body(self) -> None:
         spec = MotiveFleetDateRangeSpecBuilder(
             base_url='https://api.example.test', path='/v1/driving_periods'
-        ).build_spec(resume=_window(), path_values={})
+        ).build_spec(resume=_window(), member_values={})
         assert spec.headers == {}
         assert spec.json_body is None
 
@@ -75,7 +76,7 @@ class TestBuildDrivingPeriodsEndpoint:
         assert endpoint.storage_kind is StorageKind.DATE_PARTITIONED
         assert endpoint.response_model is DrivingPeriod
         assert endpoint.event_time_column == 'start_time'
-        assert endpoint.fan_out is None
+        assert endpoint.request_shape == SingleFetch()
         assert endpoint.completeness_check is None
 
     def test_watermark_knobs_come_from_config(self) -> None:

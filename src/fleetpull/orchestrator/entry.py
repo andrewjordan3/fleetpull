@@ -5,26 +5,24 @@
 resolves the endpoint's declared request driver and runs. The governing
 principle: higher-level orchestrators and tools are polymorphic --
 provider-agnostic and endpoint-agnostic. A caller invoking an endpoint never
-knows or branches on the provider, whether the endpoint fans out, its sync
-mode, its storage cell, or its record identity; every dispatch keys off
-``EndpointDefinition`` declarations (``FanOutBinding`` and ``select_writer``
-already state this for their seams -- this module extends it to driver
-resolution). Driver resolution is therefore module-private: exposing a
-resolve-driver step to callers would leak exactly the fan-out/single-fetch
-distinction the declarations hide.
-
-A ``fan_out=None`` definition gets the ``SingleRequestDriver``; the roster
-machinery is never touched (unless the endpoint sources a roster -- below). A
-declared binding resolves its ``RosterKey`` through the ``RosterRegistry``,
+knows or branches on the provider, its request shape, its sync mode, its
+storage cell, or its record identity; every dispatch keys off
+``EndpointDefinition`` declarations (the ``RequestShape`` union and
+``select_writer`` already state this for their seams -- this module extends
+it to driver resolution). The shape-to-driver dispatch itself lives on the
+shared seam (``shape_resolution.resolve_request_driver``, which ``fetch``
+also calls); what this entry owns is the roster half it feeds that seam: a
+``RosterFanOut`` resolves its ``RosterKey`` through the ``RosterRegistry``,
 refreshes the membership via the coordinator -- which owns the entire
 staleness policy, including best-effort degradation and the loud cold-start
 failure; the entry never reasons about freshness -- then reads the members
-from the store and fans out. An empty roster after the refresh raises
+from the store. An empty roster after the refresh raises
 ``ConfigurationError``, error-by-default (DESIGN section 13): a feeder that
 listed nothing is a failure to surface, not an empty dataset to emit, and the
 short-circuit keeps the writer's write-called-at-least-once precondition
-intact (an ``allow_empty_roster`` escape joins ``FanOutBinding`` only when an
-endpoint genuinely needs one).
+intact (an ``allow_empty_roster`` escape joins ``RosterFanOut`` only when an
+endpoint genuinely needs one). Every other shape touches no roster machinery
+at all (unless the endpoint sources a roster -- below).
 
 The entry also owns the feeder tap (the other half of the coupling rule:
 every execution of a feeder endpoint updates its rosters and records a run;
@@ -45,40 +43,41 @@ snapshot-mode feeder produces, so a watermark-mode source is a wiring bug
 runner stays roster-blind: it sees only the generic observer.
 
 Stateful collaborators are narrow Protocols (``EndpointExecutor``,
-``RosterRefresher``, ``RosterMembersReader``, ``FetchPoolSource``) the
-composition root satisfies with the real runner, coordinator, store, and
-fetch-pool registry; the ``RosterRegistry`` is the immutable catalog passed
-concrete (the run-executor precedent, DESIGN section 14). The three roster
-collaborators always travel together, so they ride as one ``RosterMachinery``
-bundle (the bundle rule).
+``RosterRefresher``, ``RosterMembersReader``, and the seam's
+``FetchPoolSource``) the composition root satisfies with the real runner,
+coordinator, store, and fetch-pool registry; the ``RosterRegistry`` is the
+immutable catalog passed concrete (the run-executor precedent, DESIGN
+section 14). The three roster collaborators always travel together, so they
+ride as one ``RosterMachinery`` bundle (the bundle rule).
 """
 
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import partial
 from typing import Protocol
 
 import polars as pl
 
-from fleetpull.endpoints.shared import EndpointDefinition, SnapshotMode
+from fleetpull.endpoints.shared import (
+    EndpointDefinition,
+    RosterFanOut,
+    SnapshotMode,
+)
 from fleetpull.exceptions import ConfigurationError
 from fleetpull.model_contract import ResponseModel
-from fleetpull.orchestrator.bisection import BisectingWindowDriver
-from fleetpull.orchestrator.drivers import (
-    FanOutRequestDriver,
-    RequestDriver,
-    SingleRequestDriver,
-)
-from fleetpull.orchestrator.fanout import FetchPool
+from fleetpull.orchestrator.drivers import RequestDriver
 from fleetpull.orchestrator.outcome import CaughtUp, Executed, RunOutcome
 from fleetpull.orchestrator.runner import BatchObserver
+from fleetpull.orchestrator.shape_resolution import (
+    FetchPoolSource,
+    resolve_request_driver,
+)
 from fleetpull.records import extract_roster_members
 from fleetpull.roster import RosterDefinition, RosterKey, RosterRegistry
-from fleetpull.vocabulary import Provider
 
 __all__: list[str] = [
     'EndpointExecutor',
-    'FetchPoolSource',
     'RosterMachinery',
     'RosterMembersReader',
     'RosterRefresher',
@@ -118,14 +117,6 @@ class RosterMembersReader(Protocol):
 
     def read_members(self, key: RosterKey) -> list[str]:
         """Return the roster's members, ascending; empty when none stored."""
-        ...
-
-
-class FetchPoolSource(Protocol):
-    """The pool-lookup surface the entry needs (``FetchPoolRegistry``'s shape)."""
-
-    def pool_for(self, provider: Provider) -> FetchPool:
-        """Return the fetch pool for a provider."""
         ...
 
 
@@ -199,15 +190,16 @@ def run_endpoint(
     """Run one endpoint through its declared request driver, tapping feeder runs.
 
     The provider- and endpoint-agnostic entry: dispatch keys off the
-    definition's declared fields and the roster catalog only. ``fan_out=None``
-    runs with the single-fetch driver; a declared binding is resolved to a
-    refreshed roster membership and fanned out over the provider's fetch pool.
-    When the endpoint sources any roster (``sourced_by``), the run is observed
+    definition's declared ``request_shape`` (via the shared shape-resolution
+    seam) and the roster catalog only. A ``RosterFanOut`` shape is fed a
+    refreshed roster membership and fanned out over the provider's fetch
+    pool; every other shape resolves with no roster machinery touched. When
+    the endpoint sources any roster (``sourced_by``), the run is observed
     and -- on ``Executed`` -- each sourced roster is reconciled from the run's
     collected members, so every feeder execution updates its rosters (the
     coupling rule; the run row comes from the runner, and parquet was written
     because the user asked for this endpoint). An endpoint that neither fans
-    out nor sources a roster touches no roster machinery at all.
+    out over a roster nor sources one touches no roster machinery at all.
 
     Args:
         definition: The endpoint to run, already resolved by the caller.
@@ -215,14 +207,14 @@ def run_endpoint(
         rosters: The roster catalog, policy coordinator, and stored-membership
             read, bundled.
         fetch_pools: The per-provider fetch pools (``FetchPoolRegistry``'s
-            ``pool_for`` surface); consulted only on the fan-out path.
+            ``pool_for`` surface); consulted only on the fanned shapes.
 
     Returns:
         The run outcome (``Executed`` or ``CaughtUp``), unchanged from the
         runner.
 
     Raises:
-        ConfigurationError: The binding names an unregistered roster; the
+        ConfigurationError: The shape names an unregistered roster; the
             roster is empty after the refresh (error-by-default -- a feeder
             that listed nothing is a failure to surface); or the definition
             sources a roster but is not snapshot-mode (the feeder-mode guard:
@@ -275,49 +267,82 @@ def _resolve_driver(
     rosters: RosterMachinery,
     fetch_pools: FetchPoolSource,
 ) -> RequestDriver:
-    """Resolve the definition's declared strategy into a request driver.
+    """Resolve the definition's declared request shape into a request driver.
 
-    Module-private by design: the bisection/fan-out/single-fetch
-    distinction is the entry's to hide, not the caller's to compose with.
+    A thin composition over the shared seam
+    (``shape_resolution.resolve_request_driver``): the shape-to-driver
+    dispatch is the seam's; what the entry contributes is the roster member
+    source -- the stateful half only this composition has. Module-private by
+    design: the shape distinctions are the entry's to hide, not the caller's
+    to compose with.
 
     Args:
-        definition: The endpoint whose declarations route.
-        rosters: Resolves a fan-out binding's ``RosterKey``, refreshes the
+        definition: The endpoint whose ``request_shape`` routes.
+        rosters: Resolves a ``RosterFanOut``'s ``RosterKey``, refreshes the
             membership when stale, and reads it back.
-        fetch_pools: Supplies the provider's fetch pool for a fan-out driver.
+        fetch_pools: Supplies the provider's fetch pool for the fanned shapes.
 
     Returns:
-        The ``BisectingWindowDriver`` for a declared ``window_bisection``
-        (construction guarantees it never composes with a fan-out); the
-        ``SingleRequestDriver`` for ``fan_out=None``; otherwise the
-        ``FanOutRequestDriver`` over the roster's members with the binding's
-        declared placeholder and the provider's fetch pool.
+        The seam's resolved driver.
 
     Raises:
-        ConfigurationError: The binding names an unregistered roster (from
+        ConfigurationError: The shape names an unregistered roster (from
             the registry), or the roster is empty after the refresh.
         FleetpullError: A cold-start refresh failure, propagated unswallowed
             from the coordinator.
 
     Side Effects:
-        On the fan-out path: whatever the refresh performs (a feeder listing
-        and a store write when stale).
+        On the roster fan-out path: whatever the refresh performs (a feeder
+        listing and a store write when stale).
     """
-    if definition.window_bisection is not None:
-        return BisectingWindowDriver(bisection=definition.window_bisection)
-    binding = definition.fan_out
-    if binding is None:
-        return SingleRequestDriver()
-    roster_definition = rosters.registry.get(binding.roster)
+    return resolve_request_driver(
+        definition,
+        fetch_pools=fetch_pools,
+        roster_members=partial(_refreshed_roster_members, definition, rosters),
+    )
+
+
+def _refreshed_roster_members(
+    definition: EndpointDefinition[ResponseModel],
+    rosters: RosterMachinery,
+    shape: RosterFanOut,
+) -> Sequence[str]:
+    """Resolve a ``RosterFanOut``'s refreshed membership -- the seam's feed.
+
+    The roster machinery whole: registry lookup, the coordinator's refresh
+    (staleness policy included), the store read, and the empty-roster guard.
+
+    Args:
+        definition: The endpoint being run, for the error context.
+        rosters: The roster catalog, policy coordinator, and stored-membership
+            read, bundled.
+        shape: The declared roster fan-out shape naming the roster.
+
+    Returns:
+        The roster's members, ascending, never empty.
+
+    Raises:
+        ConfigurationError: The shape names an unregistered roster (from the
+            registry), or the roster is empty after the refresh
+            (error-by-default -- a feeder that listed nothing is a failure to
+            surface, not an empty dataset to emit).
+        FleetpullError: A cold-start refresh failure, propagated unswallowed
+            from the coordinator.
+
+    Side Effects:
+        Whatever the refresh performs (a feeder listing and a store write
+        when stale).
+    """
+    roster_definition = rosters.registry.get(shape.roster)
     rosters.refresher.refresh_if_stale(roster_definition)
-    members = rosters.members.read_members(binding.roster)
+    members = rosters.members.read_members(shape.roster)
     if not members:
         raise ConfigurationError(
             'fan-out roster is empty',
             provider=definition.provider.value,
             endpoint=definition.name,
             detail=(
-                f'roster {binding.roster.name!r} holds no members after refresh; '
+                f'roster {shape.roster.name!r} holds no members after refresh; '
                 f'a fan-out over nothing is a failure to surface, not an empty '
                 f'dataset to emit'
             ),
@@ -325,11 +350,7 @@ def _resolve_driver(
     logger.debug(
         'fan-out resolved: endpoint=%s roster=%s members=%d',
         definition.name,
-        binding.roster.name,
+        shape.roster.name,
         len(members),
     )
-    return FanOutRequestDriver(
-        members=members,
-        path_placeholder=binding.path_placeholder,
-        fetch_pool=fetch_pools.pool_for(definition.provider),
-    )
+    return members

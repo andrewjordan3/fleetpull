@@ -69,9 +69,9 @@ class _MemberSpecBuilder:
     """Builds a URL ending in the member key, so the routed client can route."""
 
     def build_spec(
-        self, resume: ResumeValue, path_values: Mapping[str, str]
+        self, resume: ResumeValue, member_values: Mapping[str, str]
     ) -> RequestSpec:
-        member = path_values[_PLACEHOLDER]
+        member = member_values[_PLACEHOLDER]
         return RequestSpec(method=HttpMethod.GET, url=f'https://x.test/v3/loc/{member}')
 
 
@@ -236,7 +236,7 @@ def test_threaded_run_matches_the_serial_run_byte_for_byte(
         runner = _make_runner(recorder, dataset_root, client, cursor_access)
         driver = FanOutRequestDriver(
             members=['veh-1', 'veh-2', 'veh-3'],
-            path_placeholder=_PLACEHOLDER,
+            member_key=_PLACEHOLDER,
             fetch_pool=pool,
         )
         outcome = runner.run(_definition(), driver)
@@ -294,7 +294,7 @@ def test_worker_failure_cancels_pending_cleans_staging_and_fails_the_run(
     runner = _make_runner(recorder, dataset_root, client, cursor_access)
     driver = FanOutRequestDriver(
         members=members,
-        path_placeholder=_PLACEHOLDER,
+        member_key=_PLACEHOLDER,
         fetch_pool=FetchPool(executor=SerialExecutor(), submission_window=2),
     )
 
@@ -363,7 +363,7 @@ def test_writer_consumes_batches_while_later_pieces_are_not_yet_fetched(
     with ThreadPoolExecutor(max_workers=2) as executor:
         driver = FanOutRequestDriver(
             members=members,
-            path_placeholder=_PLACEHOLDER,
+            member_key=_PLACEHOLDER,
             fetch_pool=FetchPool(executor=executor, submission_window=2),
         )
         outcome = runner.run(_definition(), driver, observe)

@@ -3,17 +3,18 @@
 
 A ``RequestDriver`` owns how many request chains one endpoint run issues, and yields
 the run's fetched pages as a stream of batches. ``SingleRequestDriver`` issues
-exactly one request chain (``path_values={}``) and yields its pages one at a time;
-``FanOutRequestDriver`` issues one chain per supplied member
-(``path_values={path_placeholder: member}``), fetching members concurrently on its
+exactly one request chain (``member_values={}``) and yields its pages one at a
+time; ``FanOutRequestDriver`` issues one chain per supplied member
+(``member_values={member_key: member}``), fetching members concurrently on its
 injected ``FetchPool`` and yielding each member's pages in member order -- the
-member list is the caller's (the whole roster, fanned once per work unit's
-window). ``path_values`` live only here -- the run executor never builds them
-and the orchestration entry never supplies them; only the driver does. A
-driver touches just the endpoint's ``SpecBuilder`` and the transport client, and
-yields whole ``FetchedPage`` objects (records and durable progress); validation,
-framing, and writing are the run executor's. The batch granularity is each driver's
-own choice; the runner consumes batches uniformly.
+member list is the caller's (a ``RosterFanOut``'s whole roster, fanned once per
+work unit's window, or a ``ParamSweep``'s declared values; the driver is
+member-agnostic). ``member_values`` live only here -- the run executor never
+builds them and the orchestration entry never supplies them; only the driver
+does. A driver touches just the endpoint's ``SpecBuilder`` and the transport
+client, and yields whole ``FetchedPage`` objects (records and durable
+progress); validation, framing, and writing are the run executor's. The batch
+granularity is each driver's own choice; the runner consumes batches uniformly.
 """
 
 import logging
@@ -81,12 +82,12 @@ def _stream_chain_pages(
     definition: EndpointDefinition[ResponseModel],
     client: TransportClient,
     resume: ResumeValue,
-    path_values: Mapping[str, str],
+    member_values: Mapping[str, str],
 ) -> Iterator[FetchedPage]:
     """Issue one request chain and yield its fetched pages in order.
 
     The chain primitive both drivers compose: build the first request for
-    ``path_values`` and stream every page. Yields each ``FetchedPage`` whole
+    ``member_values`` and stream every page. Yields each ``FetchedPage`` whole
     (records and durable progress), so the feed cursor token survives to the run
     executor; holds nothing across pages, so memory stays bounded by one page
     regardless of how wide the window or how many rows a member has.
@@ -96,14 +97,16 @@ def _stream_chain_pages(
             and ``quota_scope``).
         client: The transport client for this endpoint's provider.
         resume: The resume value injected into the first request.
-        path_values: The path-template substitutions -- empty for a lone chain,
-            ``{path_placeholder: member}`` for one fan-out member.
+        member_values: The per-chain member binding -- empty for a lone chain,
+            ``{member_key: member}`` for one fan-out or sweep member.
 
     Yields:
         Each fetched page in order. ``fetch_pages`` always drives at least one
         page, so at least one (possibly empty) page yields.
     """
-    spec = definition.spec_builder.build_spec(resume=resume, path_values=path_values)
+    spec = definition.spec_builder.build_spec(
+        resume=resume, member_values=member_values
+    )
     yield from client.fetch_pages(
         spec, definition.page_decoder, definition.quota_scope.value
     )
@@ -112,10 +115,11 @@ def _stream_chain_pages(
 class SingleRequestDriver:
     """Issue exactly one request chain and stream its pages one at a time.
 
-    The driver for every endpoint that fetches once (snapshots, and any non-fan-out
-    endpoint). Builds the first request with ``path_values={}`` and yields each
-    page as its own batch -- no per-chain collection, so the run executor writes
-    (and the partitioned writer stages to disk) one page at a time.
+    The driver for every ``SingleFetch``-shaped endpoint (snapshots, and any
+    single-chain windowed endpoint). Builds the first request with
+    ``member_values={}`` and yields each page as its own batch -- no per-chain
+    collection, so the run executor writes (and the partitioned writer stages
+    to disk) one page at a time.
 
     A declared ``completeness_check`` changes none of that streaming: the pages
     flow exactly as on the undeclared path while a running record count
@@ -208,36 +212,40 @@ def _stream_then_verify_pages(
 class FanOutRequestDriver:
     """Issue one request chain per member, fetched concurrently, yielded in order.
 
-    The driver for endpoints that fan a request out over per-entity keys (the
-    per-vehicle ``vehicle_locations`` endpoint). Each member is one piece: a
-    worker on the injected ``fetch_pool`` runs that member's whole chain
-    (``path_values={path_placeholder: member}``, tokens and the concurrency
-    semaphore acquired per attempt exactly as a serial fetch would), and the
-    consuming thread receives the pages through the bounded channel
-    (``stream_pieces``) in member order -- so memory holds at most
+    The driver for endpoints that fan a request out over per-member values --
+    a ``RosterFanOut``'s roster members (the per-vehicle ``vehicle_locations``
+    endpoint) or a ``ParamSweep``'s declared values; the driver is
+    member-agnostic and never knows which shape supplied its list. Each member
+    is one piece: a worker on the injected ``fetch_pool`` runs that member's
+    whole chain (``member_values={member_key: member}``, tokens and the
+    concurrency semaphore acquired per attempt exactly as a serial fetch
+    would), and the consuming thread receives the pages through the bounded
+    channel (``stream_pieces``) in member order -- so memory holds at most
     ``submission_window + 1`` members' pages at once, a function of the pool
-    size, never of the roster. The member list is the caller's: the whole
-    roster, fanned once per work unit's window (units carry no member key).
-    ``path_values`` (and so the fan-out) live only here; the orchestration
-    entry (``entry.py``) supplies the members and the placeholder already
-    extracted, never ``path_values`` and never the endpoint's ``fan_out``.
+    size, never of the member count. The member list is the caller's: the
+    whole roster or value set, fanned once per work unit's window (units carry
+    no member key). ``member_values`` (and so the fan-out) live only here; the
+    shape resolution supplies the members and the member key already
+    extracted, never ``member_values`` and never the endpoint's
+    ``request_shape``.
 
-    ``completeness_check`` is deliberately not consulted: a fan-out definition
+    ``completeness_check`` is deliberately not consulted: a fanned definition
     can never declare one (``EndpointDefinition`` rejects the pairing at
-    construction) -- a per-member fan-out run is not the complete listing an
+    construction) -- a per-member run is not the one complete listing an
     expected-count comparison would be meaningful against.
 
     Attributes:
-        members: The fan-out keys to issue one chain each for, in order.
-        path_placeholder: The URL-path template placeholder each member fills
-            (from the endpoint's ``FanOutBinding.path_placeholder``).
+        members: The member values to issue one chain each for, in order.
+        member_key: The key each member binds under in ``member_values``
+            (``RosterFanOut.member_key`` or ``ParamSweep.param``); the spec
+            builder owns its interpretation.
         fetch_pool: The provider's fetch workers and channel bound (from the
             composition root's ``FetchPoolRegistry``; tests inject a
             synchronous same-thread executor through this same seam).
     """
 
     members: Sequence[str]
-    path_placeholder: str
+    member_key: str
     fetch_pool: FetchPool
 
     def record_batches(
@@ -333,8 +341,6 @@ class FanOutRequestDriver:
             chain order -- at least one (possibly empty) page.
         """
         member_pages = list(
-            _stream_chain_pages(
-                definition, client, resume, {self.path_placeholder: member}
-            )
+            _stream_chain_pages(definition, client, resume, {self.member_key: member})
         )
         return [(member, member_pages)]

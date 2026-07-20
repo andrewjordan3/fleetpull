@@ -2,7 +2,12 @@
 
 from fleetpull.config import MotiveConfig
 from fleetpull.endpoints.motive.vehicles import VEHICLE_IDS_ROSTER, build_endpoint
-from fleetpull.endpoints.shared import EndpointDefinition, SnapshotMode, StorageKind
+from fleetpull.endpoints.shared import (
+    EndpointDefinition,
+    SingleFetch,
+    SnapshotMode,
+    StorageKind,
+)
 from fleetpull.models.motive import Vehicle
 from fleetpull.network.contract import HttpMethod
 from fleetpull.network.decoders import MotiveWrappedListPageDecoder
@@ -44,17 +49,17 @@ class TestBuildVehiclesEndpoint:
         assert decoder.per_page == 100
 
     def test_spec_builder_joins_config_base_url_to_path(self) -> None:
-        spec = _make_endpoint().spec_builder.build_spec(resume=None, path_values={})
+        spec = _make_endpoint().spec_builder.build_spec(resume=None, member_values={})
         assert spec.method is HttpMethod.GET
         assert spec.url == 'https://api.example.test/v1/vehicles'
 
     def test_base_url_default_flows_through(self) -> None:
         endpoint = build_endpoint(MotiveConfig())
-        spec = endpoint.spec_builder.build_spec(resume=None, path_values={})
+        spec = endpoint.spec_builder.build_spec(resume=None, member_values={})
         assert spec.url == 'https://api.gomotive.com/v1/vehicles'
 
-    def test_does_not_fan_out(self) -> None:
-        assert _make_endpoint().fan_out is None
+    def test_declares_the_single_fetch_shape(self) -> None:
+        assert _make_endpoint().request_shape == SingleFetch()
 
 
 class TestVehicleIdsRoster:

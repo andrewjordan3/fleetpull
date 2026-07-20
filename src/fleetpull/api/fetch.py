@@ -26,9 +26,13 @@ provider configs from defaults → the discovery registry → the definition
 by identity key → a ``ClientRuntime`` on internal defaults → the
 auth-ingress profile (its ``ProviderProfileContext`` reusing the
 runtime's HTTP posture and limiter registry, plus a clock held solely
-for GeoTab session aging) → ``TransportClient`` → the single-fetch
-driver (which builds the spec and honors a declared completeness check,
-so a guarded snapshot is verified on this verb exactly as under sync) →
+for GeoTab session aging) → the shape-resolved request driver (the
+shared ``resolve_request_driver`` seam with no roster source: the
+stateless shapes a snapshot can declare -- single fetch, param sweep
+-- resolve (a bisected window is watermark-only by construction and
+never reaches this verb), a ``RosterFanOut`` is refused loudly, and the
+driver honors a declared completeness check, so a guarded snapshot is
+verified on this verb exactly as under sync) → ``TransportClient`` →
 ``validate_records`` → ``models_to_dataframe``.
 """
 
@@ -54,17 +58,17 @@ from fleetpull.endpoints import build_endpoint_registry
 from fleetpull.exceptions import ConfigurationError
 from fleetpull.network.client import ClientRuntime, TransportClient
 from fleetpull.network.limits import RateLimiterRegistry, rate_limits_from_configs
-from fleetpull.orchestrator import SingleRequestDriver
+from fleetpull.orchestrator import FetchPoolRegistry, resolve_request_driver
 from fleetpull.records import models_to_dataframe, validate_records
 from fleetpull.timing import SystemClock
-from fleetpull.vocabulary import JsonObject
+from fleetpull.vocabulary import JsonObject, Provider
 
 __all__: list[str] = ['fetch']
 
 logger = logging.getLogger(__name__)
 
 
-def _default_provider_configs() -> list[ProviderConfig]:
+def _default_provider_configs() -> dict[Provider, ProviderConfig]:
     """Every provider config the discovery registry needs, at pure defaults.
 
     One instance per provider package under ``endpoints/`` -- the
@@ -73,10 +77,16 @@ def _default_provider_configs() -> list[ProviderConfig]:
     belongs to another. Extends as provider endpoint packages land.
 
     Returns:
-        The default-constructed provider configs, ready for both
-        ``build_endpoint_registry`` and ``rate_limits_from_configs``.
+        The default-constructed provider configs by provider, whose
+        values feed ``build_endpoint_registry`` and
+        ``rate_limits_from_configs`` and whose keying sizes the
+        requested provider's fetch pool.
     """
-    return [MotiveConfig(), GeotabConfig(), SamsaraConfig()]
+    return {
+        Provider.MOTIVE: MotiveConfig(),
+        Provider.GEOTAB: GeotabConfig(),
+        Provider.SAMSARA: SamsaraConfig(),
+    }
 
 
 # typing-justified: ingress guard; input unknowable by design; object forces narrowing
@@ -127,8 +137,11 @@ def fetch(
 
     End-to-end in memory: no SQLite, no disk, no cursor, no run ledger,
     no roster. Anything beyond this surface -- windows, incremental
-    resume, partitioned storage, fan-out, member filtering -- is the
-    config-driven sync path's territory, not a missing parameter here.
+    resume, partitioned storage, roster fan-out, member filtering -- is
+    the config-driven sync path's territory, not a missing parameter
+    here. The request driver is shape-resolved through the shared seam,
+    so every stateless request shape (single fetch, param sweep) is
+    served; a roster fan-out needs durable roster state and is refused.
 
     Args:
         endpoint: A snapshot-typed identity from the ``Endpoints``
@@ -157,8 +170,10 @@ def fetch(
             four public subclasses below; every other exception type is
             internal and renameable.
         ConfigurationError: The identity is not snapshot-typed, the auth
-            shape mismatches the endpoint's provider, or the identity
-            resolves to no registered endpoint.
+            shape mismatches the endpoint's provider, the identity
+            resolves to no registered endpoint, or the endpoint declares
+            a ``RosterFanOut`` shape (roster state is sync territory;
+            fetch is stateless by contract).
         AuthenticationError: The provider rejected the credential
             unfixably.
         RetriesExhaustedError: A retryable failure category exhausted
@@ -173,13 +188,13 @@ def fetch(
     """
     _require_snapshot_identity(endpoint)
     provider_configs = _default_provider_configs()
-    registry = build_endpoint_registry(provider_configs)
+    registry = build_endpoint_registry(list(provider_configs.values()))
     definition = registry.get(endpoint.provider, endpoint.name)
     runtime = ClientRuntime(
         http_config=HttpConfig(use_truststore=use_truststore),
         retry_config=RetryConfig(),
         limiter_registry=RateLimiterRegistry(
-            rate_limits_from_configs(provider_configs)
+            rate_limits_from_configs(list(provider_configs.values()))
         ),
     )
     # fetch holds a clock solely for GeoTab session aging; the state-free
@@ -193,16 +208,28 @@ def fetch(
             clock=SystemClock(),
         ),
     )
-    # The driver owns the chain (spec build, page loop) and, when the
-    # definition declares a completeness check, the post-stream count
-    # verification -- fetch must not offer a weaker read of a guarded
-    # endpoint than sync does.
-    with TransportClient(profile, runtime) as client:
-        raw_records: list[JsonObject] = [
-            record
-            for page in SingleRequestDriver().record_batches(definition, client, None)
-            for record in page.records
-        ]
+    fetch_workers = {
+        endpoint.provider: (
+            provider_configs[endpoint.provider].rate_limit.max_concurrency
+        )
+    }
+    with FetchPoolRegistry(fetch_workers) as fetch_pools:
+        # The shared shape seam with no roster source: every stateless
+        # shape resolves; a RosterFanOut is refused loudly before any
+        # transport pool opens. The resolved driver owns the chain (spec
+        # build, page loop) and, when the definition declares a
+        # completeness check, the post-stream count verification -- fetch
+        # must not offer a weaker read of a guarded endpoint than sync
+        # does.
+        driver = resolve_request_driver(
+            definition, fetch_pools=fetch_pools, roster_members=None
+        )
+        with TransportClient(profile, runtime) as client:
+            raw_records: list[JsonObject] = [
+                record
+                for page in driver.record_batches(definition, client, None)
+                for record in page.records
+            ]
     logger.info(
         'Fetched %d %s.%s records across the snapshot listing.',
         len(raw_records),

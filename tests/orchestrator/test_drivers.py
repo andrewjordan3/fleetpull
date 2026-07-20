@@ -41,7 +41,7 @@ def _fan_out(members: list[str]) -> FanOutRequestDriver:
     """A fan-out driver on the deterministic seam: the synchronous executor."""
     return FanOutRequestDriver(
         members=members,
-        path_placeholder=_PLACEHOLDER,
+        member_key=_PLACEHOLDER,
         fetch_pool=FetchPool(executor=SerialExecutor(), submission_window=2),
     )
 
@@ -84,22 +84,22 @@ class _SequencedClient(TransportClient):
 class _RecordingSpecBuilder:
     """Captures the ``build_spec`` arguments and returns a fixed request.
 
-    Keeps ``resume`` / ``path_values`` as the most recent call (for the single-chain
-    tests) and appends every call to ``calls`` (for the fan-out tests, which build
-    one spec per member).
+    Keeps ``resume`` / ``member_values`` as the most recent call (for the
+    single-chain tests) and appends every call to ``calls`` (for the fan-out
+    tests, which build one spec per member).
     """
 
     def __init__(self) -> None:
         self.resume: ResumeValue = None
-        self.path_values: Mapping[str, str] | None = None
+        self.member_values: Mapping[str, str] | None = None
         self.calls: list[tuple[ResumeValue, Mapping[str, str]]] = []
 
     def build_spec(
-        self, resume: ResumeValue, path_values: Mapping[str, str]
+        self, resume: ResumeValue, member_values: Mapping[str, str]
     ) -> RequestSpec:
         self.resume = resume
-        self.path_values = path_values
-        self.calls.append((resume, path_values))
+        self.member_values = member_values
+        self.calls.append((resume, member_values))
         return RequestSpec(method=HttpMethod.GET, url='https://example.test/v1/items')
 
 
@@ -137,13 +137,13 @@ def test_yields_one_batch_per_page_each_holding_that_pages_records() -> None:
     assert [page.records for page in batches] == [page_a, page_b]
 
 
-def test_forwards_resume_and_uses_empty_path_values() -> None:
+def test_forwards_resume_and_uses_empty_member_values() -> None:
     spec_builder = _RecordingSpecBuilder()
     definition = _definition(spec_builder)
     client = _StubClient([])
     list(SingleRequestDriver().record_batches(definition, client, None))
     assert spec_builder.resume is None
-    assert spec_builder.path_values == {}
+    assert spec_builder.member_values == {}
 
 
 def test_fan_out_yields_pages_member_by_member() -> None:
@@ -161,13 +161,13 @@ def test_fan_out_yields_pages_member_by_member() -> None:
     ]
 
 
-def test_fan_out_builds_path_values_per_member() -> None:
+def test_fan_out_builds_member_values_per_member() -> None:
     spec_builder = _RecordingSpecBuilder()
     definition = _definition(spec_builder)
     client = _SequencedClient([[_page([])], [_page([])]])
     driver = _fan_out(['v1', 'v2'])
     list(driver.record_batches(definition, client, None))
-    assert [path_values for _resume, path_values in spec_builder.calls] == [
+    assert [member_values for _resume, member_values in spec_builder.calls] == [
         {_PLACEHOLDER: 'v1'},
         {_PLACEHOLDER: 'v2'},
     ]
@@ -182,7 +182,7 @@ def test_fan_out_forwards_resume_to_every_member() -> None:
     )
     driver = _fan_out(['v1', 'v2'])
     list(driver.record_batches(definition, client, window))
-    assert [resume for resume, _path_values in spec_builder.calls] == [window, window]
+    assert [resume for resume, _member_values in spec_builder.calls] == [window, window]
 
 
 def test_fan_out_single_member_issues_one_chain() -> None:
@@ -192,7 +192,7 @@ def test_fan_out_single_member_issues_one_chain() -> None:
     driver = _fan_out(['v1'])
     pages = list(driver.record_batches(definition, client, None))
     assert [page.records for page in pages] == [[{'id': 1, 'name': 'a'}]]
-    assert [path_values for _resume, path_values in spec_builder.calls] == [
+    assert [member_values for _resume, member_values in spec_builder.calls] == [
         {_PLACEHOLDER: 'v1'}
     ]
 

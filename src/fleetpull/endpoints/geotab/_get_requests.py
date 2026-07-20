@@ -186,15 +186,15 @@ class GeotabGetSpecBuilder:
     results_limit: int
 
     def build_spec(
-        self, resume: ResumeValue, path_values: Mapping[str, str]
+        self, resume: ResumeValue, member_values: Mapping[str, str]
     ) -> RequestSpec:
         """Build the walk's first request.
 
         Args:
             resume: Must be ``None`` -- a snapshot resumes from nothing;
                 any other value is a wiring bug.
-            path_values: Accepted to satisfy the protocol; unused --
-                there is no URL-path fan-out.
+            member_values: Accepted to satisfy the protocol; unused --
+                a single-chain endpoint binds no member.
 
         Returns:
             A credential-less JSON-RPC POST; ``params.credentials`` and
@@ -254,7 +254,7 @@ class GeotabWindowedGetSpecBuilder:
     id_sort: bool
 
     def build_spec(
-        self, resume: ResumeValue, path_values: Mapping[str, str]
+        self, resume: ResumeValue, member_values: Mapping[str, str]
     ) -> RequestSpec:
         """Build one window's request.
 
@@ -262,8 +262,8 @@ class GeotabWindowedGetSpecBuilder:
             resume: The window to fetch. Must be a ``DateWindow`` -- a
                 watermark endpoint always resumes from one; any other
                 value is a wiring bug.
-            path_values: Accepted to satisfy the protocol; unused --
-                there is no URL-path fan-out.
+            member_values: Accepted to satisfy the protocol; unused --
+                a single-chain endpoint binds no member.
 
         Returns:
             A credential-less JSON-RPC POST carrying the window as
