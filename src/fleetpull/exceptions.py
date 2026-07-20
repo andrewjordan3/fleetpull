@@ -294,7 +294,9 @@ class SyncFailuresError(FleetpullError):
     silently bypass.
 
     Attributes:
-        failures: The per-endpoint failures, in run order.
+        failures: The per-endpoint failures, in run order within each
+            provider, providers in config order (a sync runs one serial
+            queue per provider, the queues concurrent).
     """
 
     failures: tuple[EndpointFailure, ...]
@@ -304,7 +306,8 @@ class SyncFailuresError(FleetpullError):
         Compose the message from the failed endpoints.
 
         Args:
-            failures: The per-endpoint failures, in run order.
+            failures: The per-endpoint failures, in run order within
+                each provider, providers in config order.
         """
         failed_names = ', '.join(
             f'{failure.provider}.{failure.endpoint}' for failure in failures
