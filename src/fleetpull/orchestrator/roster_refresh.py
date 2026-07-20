@@ -36,6 +36,19 @@ coordinator resolves the definition's ``source_endpoint`` to the feeder binding 
 guards that (``ConfigurationError`` on a non-snapshot feeder) before harvesting; the
 harvester itself stays ``sync_mode``-blind.
 
+``refresh_if_stale`` is single-flight per roster key (added with the
+intra-provider grain, DESIGN section 7, 2026-07-20): concurrent consumers of
+one stale roster -- both cold-starting with their feeder unselected -- would
+each harvest, wasting quota and recording duplicate ledger snapshot runs.
+The coordinator therefore holds a per-``RosterKey`` lock across the method's
+whole body (an outer lock guards get-or-create of the per-key locks), so the
+second entrant re-runs the freshness check under the lock and returns early
+on the now-fresh roster. Holding the lock across the harvest network call is
+intended -- the waiting consumer needs the membership before it can fan out
+-- and no lock nests inside (the store and ledger are
+connection-per-operation), so there is no deadlock surface. Locks are
+per-key: distinct rosters refresh concurrently.
+
 Failure is best-effort with one loud exception. A harvest ``FleetpullError`` (the
 feeder is unreachable, or a page fails to validate) or ``ValueError`` (a missing
 source column) marks the run failed and degrades to the existing
@@ -60,6 +73,7 @@ redefined here rather than imported to keep the two orchestrator modules indepen
 """
 
 import logging
+import threading
 from datetime import datetime
 from typing import Protocol
 
@@ -138,9 +152,10 @@ class RosterRefreshCoordinator:
     """Refresh a roster's stored membership when its feeder listing has gone stale.
 
     Built once with the endpoint catalog and the store / ledger / client surfaces, it
-    answers ``refresh_if_stale(definition)``. It holds no per-refresh state and opens
-    no clients -- the injected client source hands it the feeder provider's open
-    client.
+    answers ``refresh_if_stale(definition)``. Beyond the per-key single-flight
+    locks (the coordinator is the stateful orchestrator here, so the lock map
+    lives on it) it holds no per-refresh state and opens no clients -- the
+    injected client source hands it the feeder provider's open client.
 
     Args:
         endpoint_registry: Resolves the feeder's ``(provider, name)`` to its binding.
@@ -164,9 +179,19 @@ class RosterRefreshCoordinator:
         self._ledger = ledger
         self._client_source = client_source
         self._clock = clock
+        self._key_locks_guard = threading.Lock()
+        self._key_locks: dict[RosterKey, threading.Lock] = {}
 
     def refresh_if_stale(self, definition: RosterDefinition) -> None:
         """Re-list the feeder, reconcile the roster, and record the run, if stale.
+
+        Single-flight per roster key: the whole body runs under the key's
+        lock, so of two concurrent consumers hitting the same stale roster,
+        exactly one harvests -- the second re-runs the freshness check under
+        the lock and returns early on the now-fresh roster. The lock is held
+        across the harvest network call deliberately (the waiting consumer
+        needs the membership before it can fan out), and distinct keys never
+        contend.
 
         Returns early when the roster is fresh -- non-empty and inside the
         staleness bound. An empty stored roster is stale regardless of the
@@ -195,10 +220,28 @@ class RosterRefreshCoordinator:
                 column; the underlying failure propagates.
 
         Side Effects:
-            On a due refresh: issues the feeder's request chain and records a
-            run in the ledger; on success, also writes the reconciled delta to
-            the store. Otherwise touches nothing.
+            Holds the roster's single-flight lock for the duration. On a due
+            refresh: issues the feeder's request chain and records a run in
+            the ledger; on success, also writes the reconciled delta to the
+            store. Otherwise touches nothing.
         """
+        with self._refresh_lock(definition.key):
+            self._refresh_if_due(definition)
+
+    def _refresh_lock(self, key: RosterKey) -> threading.Lock:
+        """Get or create the roster's single-flight lock.
+
+        Args:
+            key: The roster whose lock to return (hashable frozen identity).
+
+        Returns:
+            The per-key lock, created on first use under the outer guard.
+        """
+        with self._key_locks_guard:
+            return self._key_locks.setdefault(key, threading.Lock())
+
+    def _refresh_if_due(self, definition: RosterDefinition) -> None:
+        """The refresh body ``refresh_if_stale`` runs under the key's lock."""
         provider = definition.key.provider
         current = self._store.read_counts(definition.key)
         last_success = self._ledger.last_success_at(
@@ -228,11 +271,13 @@ class RosterRefreshCoordinator:
             listed = harvest_roster_members(
                 feeder, SingleRequestDriver(), client, definition.source_column
             )
-            # Routed through apply_listing so its reconcile guard (a roster
-            # is never reconciled to empty) covers the harvest inside this
-            # same failed-refresh path: an empty listing marks the run
-            # failed and degrades exactly like a failed HTTP refresh.
-            self.apply_listing(definition, listed)
+            # Routed through the shared reconcile body so its guard (a
+            # roster is never reconciled to empty) covers the harvest inside
+            # this same failed-refresh path: an empty listing marks the run
+            # failed and degrades exactly like a failed HTTP refresh. The
+            # key's single-flight lock is already held here, so the locked
+            # ``apply_listing`` wrapper would deadlock.
+            self._reconcile_listing(definition, listed)
         except (FleetpullError, ValueError) as failure:
             self._fail_run_safely(run_id, failure)
             if not current:
@@ -258,22 +303,50 @@ class RosterRefreshCoordinator:
     def apply_listing(self, definition: RosterDefinition, listed: set[str]) -> None:
         """Reconcile an executed feeder run's listed membership into the store.
 
-        The reconcile choke point, shared by the feeder tap (the orchestration
-        entry hands a successful runner-driven feeder run's distinct
-        ``source_column`` values here) and the coordinator's own harvest. The
-        reconcile guard lives here so both routes are covered once: **a roster
-        is never reconciled to empty**. An empty listing -- the provider
-        returned nothing, or every record's member value filtered out -- is a
-        failed refresh, not a membership fact: reconciling it would
-        mass-increment absence counts and, with an eviction threshold, evict
-        the entire roster through systematic provider garbage. The prior
-        roster stays intact and the caller's failed-refresh semantics apply
-        (the harvest degrades exactly like a failed HTTP refresh; the tap
-        propagates, failing the endpoint loudly). A non-empty listing is
-        applied whole -- staleness gates only whether the coordinator
-        *initiates* a harvest, never whether an executed run's complete
-        listing is reconciled. Records no ledger row: the harvest route owns
-        its run row; the tap route's run was recorded by the run executor.
+        The feeder tap's route into the reconcile choke point
+        (``_reconcile_listing``): the orchestration entry hands a successful
+        runner-driven feeder run's distinct ``source_column`` values here.
+        Runs under the roster key's single-flight lock -- the same lock
+        ``refresh_if_stale`` holds around its harvest -- so every reconcile
+        for one key serializes, whichever route wrote it: two
+        read-reconcile-write sequences on one roster can never interleave
+        and corrupt absence counts. Records no ledger row: the tap route's
+        run was recorded by the run executor.
+
+        Args:
+            definition: The sourced roster -- its key and eviction policy.
+            listed: The feeder run's complete listed membership.
+
+        Raises:
+            ProviderResponseError: ``listed`` is empty (the reconcile guard);
+                the store is untouched.
+
+        Side Effects:
+            Holds the roster's single-flight lock for the duration; writes
+            the reconciled delta to the store (one transaction).
+        """
+        with self._refresh_lock(definition.key):
+            self._reconcile_listing(definition, listed)
+
+    def _reconcile_listing(
+        self, definition: RosterDefinition, listed: set[str]
+    ) -> None:
+        """The reconcile body both write routes run under the key's lock.
+
+        The reconcile guard lives here so both routes -- the feeder tap
+        (``apply_listing``) and the coordinator's own harvest
+        (``_refresh_if_due``, which already holds the lock) -- are covered
+        once: **a roster is never reconciled to empty**. An empty listing --
+        the provider returned nothing, or every record's member value
+        filtered out -- is a failed refresh, not a membership fact:
+        reconciling it would mass-increment absence counts and, with an
+        eviction threshold, evict the entire roster through systematic
+        provider garbage. The prior roster stays intact and the caller's
+        failed-refresh semantics apply (the harvest degrades exactly like a
+        failed HTTP refresh; the tap propagates, failing the endpoint
+        loudly). A non-empty listing is applied whole -- staleness gates
+        only whether the coordinator *initiates* a harvest, never whether an
+        executed run's complete listing is reconciled.
 
         Args:
             definition: The sourced roster -- its key and eviction policy.

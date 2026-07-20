@@ -17,6 +17,13 @@ bounded-channel window ``stream_pieces`` enforces. The window is fixed here,
 at the one place the worker count is known, to twice that count: a finishing
 worker always has a queued piece to pick up while the consumer writes, and
 the fetched-but-unconsumed bound stays a small multiple of the pool size.
+
+Since the intra-provider grain (DESIGN §7, 2026-07-20) one pool may serve
+multiple concurrent fan-out endpoints: a submission window is
+per-``stream_pieces``-call local state, so each concurrent stream keeps its
+own window over the shared executor -- execution stays capped by
+``max_workers`` and in-flight requests by the limiter's semaphore, so the
+in-flight ceiling claim above holds unchanged and nothing here resized.
 """
 
 from collections.abc import Mapping

@@ -414,6 +414,21 @@ class TestErrorBranches:
         with pytest.raises(ConfigurationError, match='sink'):
             FleetpullConfig.from_yaml(_write(tmp_path, text))
 
+    def test_duplicate_endpoint_names_surface_with_field_path_and_name(
+        self, tmp_path: Path
+    ) -> None:
+        # The model-tier duplicate rejection surfaces through from_yaml as
+        # the usual ConfigurationError, locating the field and naming the
+        # duplicated endpoint.
+        text = _minimal_yaml(tmp_path).replace(
+            'endpoints: [vehicles]', 'endpoints: [vehicles, vehicles]'
+        )
+        with pytest.raises(ConfigurationError) as raised:
+            FleetpullConfig.from_yaml(_write(tmp_path, text))
+        message = str(raised.value)
+        assert 'providers.motive.endpoints' in message
+        assert 'vehicles' in message
+
     def test_unknown_nested_key_is_named_with_its_path(self, tmp_path: Path) -> None:
         text = _minimal_yaml(tmp_path).replace(
             '    endpoints:', '    api_keyy: x\n    endpoints:'
