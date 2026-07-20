@@ -6,6 +6,10 @@ import pytest
 
 from fleetpull.network.classifiers.samsara import SamsaraResponseClassifier
 from fleetpull.vocabulary import ResponseCategory
+from tests.samsara_trips_capture import (
+    TRIPS_MISSING_VEHICLE_ID_400_BODY,
+    TRIPS_RANGE_CAP_400_BODY,
+)
 
 # Captured: invalid token (HTTP 401):
 SAMSARA_INVALID_TOKEN_BODY = (
@@ -58,3 +62,24 @@ class TestSamsaraClassifier:
         assert outcome.category is ResponseCategory.FATAL
         assert outcome.detail is not None
         assert '404' in outcome.detail
+
+    @pytest.mark.parametrize(
+        'body',
+        [TRIPS_MISSING_VEHICLE_ID_400_BODY, TRIPS_RANGE_CAP_400_BODY],
+        ids=['missing-vehicle-id', 'range-cap'],
+    )
+    def test_v1_text_plain_400_is_fatal_without_raising(
+        self, classifier: SamsaraResponseClassifier, body: str
+    ) -> None:
+        # The v1 surface extends the plain-string-body posture beyond
+        # 5xx: /v1/fleet/trips 400 bodies are TEXT/PLAIN rpc-error
+        # strings (captured 2026-07-20). The catch-all FATAL arm must
+        # classify them cleanly -- no JSON parse, no crash -- with the
+        # body carried as human detail.
+        outcome = classifier.classify_response(
+            400, {'Content-Type': 'text/plain; charset=utf-8'}, body
+        )
+        assert outcome.category is ResponseCategory.FATAL
+        assert outcome.detail is not None
+        assert '400' in outcome.detail
+        assert body in outcome.detail

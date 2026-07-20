@@ -296,6 +296,21 @@ class TestEndpointDefinitionValidation:
                 request_shape=ParamSweep(param='status', values=('active',)),
             )
 
+    def test_cross_provider_roster_fan_out_raises(self) -> None:
+        # Provider-parallel Sync's queue independence rests on rosters
+        # never crossing providers (§7); the pairing is rejected at
+        # construction so the invariant cannot erode silently.
+        with pytest.raises(ValueError, match='crosses the provider boundary'):
+            _make_endpoint(
+                WatermarkMode(lookback=timedelta(days=1), cutoff=timedelta(days=2)),
+                storage_kind=StorageKind.DATE_PARTITIONED,
+                event_time_column='occurred_at',
+                request_shape=RosterFanOut(
+                    roster=RosterKey(Provider.GEOTAB, 'vehicle_ids'),
+                    member_key='vehicle_id',
+                ),
+            )
+
     def test_watermark_partitioned_bisected_constructs(self) -> None:
         shape = BisectedWindowFetch(
             results_limit=100, floor=timedelta(minutes=1), event_time_wire_key='at'

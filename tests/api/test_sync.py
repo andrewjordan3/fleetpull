@@ -20,7 +20,7 @@ import pytest
 
 import fleetpull.api.sync as sync_module
 from fleetpull import ConfigurationError, Sync, SyncFailuresError
-from fleetpull.vocabulary import JsonObject
+from fleetpull.vocabulary import JsonObject, Provider
 from tests.api.conftest import (
     SYNTHETIC_GEOTAB_PASS,
     SYNTHETIC_MOTIVE_KEY,
@@ -75,14 +75,18 @@ def _write_config(
 
 
 def _write_geotab_config(
-    tmp_path: Path, *, endpoints: str = '[devices]', include_motive: bool = False
+    tmp_path: Path,
+    *,
+    endpoints: str = '[devices]',
+    include_motive: bool = False,
+    motive_endpoints: str = '[vehicles]',
 ) -> Path:
     """A geotab-enabled config; optionally with the standard Motive block."""
     config_path = tmp_path / 'config.yaml'
     motive_block = (
         '  motive:\n'
         f"    api_key: '{SYNTHETIC_MOTIVE_KEY}'\n"
-        '    endpoints: [vehicles]\n'
+        f'    endpoints: {motive_endpoints}\n'
         '    rate_limit:\n'
         '      requests_per_period: 6000\n'
         '      period_seconds: 60.0\n'
@@ -541,3 +545,117 @@ class TestGeotabTripsEnablement:
         # against the catalog (the run itself is the live script's proof).
         config_path = _write_geotab_config(tmp_path, endpoints='[devices, trips]')
         Sync(config_path)
+
+
+class TestProviderParallelism:
+    """The queue-per-provider grain: serial within a provider, providers
+    concurrent (DESIGN section 7's provider-parallel record, 2026-07-20)."""
+
+    def test_partition_preserves_within_provider_feeder_first_order(self) -> None:
+        # A stable partition of the feeder-first ordering, never a
+        # re-derivation: each provider's queue is exactly its subsequence
+        # of the ordered selection. The three-provider ordering below has
+        # the shape the real sort produces -- every provider's feeder
+        # ranked ahead of every consumer, config order within ranks.
+        ordered = [
+            (Provider.GEOTAB, 'devices'),
+            (Provider.MOTIVE, 'vehicles'),
+            (Provider.SAMSARA, 'vehicles'),
+            (Provider.MOTIVE, 'vehicle_locations'),
+            (Provider.GEOTAB, 'trips'),
+            (Provider.SAMSARA, 'drivers'),
+        ]
+        queues = sync_module._partitioned_by_provider(ordered)
+        assert queues[Provider.MOTIVE] == ['vehicles', 'vehicle_locations']
+        assert queues[Provider.GEOTAB] == ['devices', 'trips']
+        assert queues[Provider.SAMSARA] == ['vehicles', 'drivers']
+
+    def test_provider_queues_run_concurrently(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # True overlap, proven not assumed: Motive's one vehicles request
+        # and GeoTab's one Authenticate each park on a two-party barrier,
+        # so the sync completes only if both providers are in flight at
+        # once. The old serial endpoint loop ran one provider to
+        # completion before starting the next -- its lone parked handler
+        # would wait until the timeout converts the deadlock into a loud
+        # BrokenBarrierError. No sleeps: the barrier is the rendezvous.
+        rendezvous = threading.Barrier(2)
+        geotab_handler = _GeotabRpcHandler()
+
+        def overlapping_handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == '/v1/vehicles':
+                rendezvous.wait(timeout=10)
+                return _vehicles_response(1, 2)
+            if request.url.path == '/apiv1':
+                if json.loads(request.content)['method'] == 'Authenticate':
+                    rendezvous.wait(timeout=10)
+                return geotab_handler(request)
+            return httpx.Response(404, text='no route')
+
+        install_transport(monkeypatch, overlapping_handler)
+        Sync(_write_geotab_config(tmp_path, include_motive=True)).run()
+        motive = pl.read_parquet(tmp_path / 'data/motive/vehicles/data.parquet')
+        geotab = pl.read_parquet(tmp_path / 'data/geotab/devices/data.parquet')
+        assert motive.height == 2
+        assert geotab.height == 6
+
+    def test_failures_aggregate_in_provider_then_run_order(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Both Motive endpoints fail (the feeder 404s, then the consumer's
+        # cold-start roster refresh fails on the same route) and GeoTab's
+        # count mismatch fails devices: the aggregate carries run order
+        # within a provider, provider config order across providers --
+        # Motive before GeoTab regardless of which queue finished first.
+        geotab_handler = _GeotabRpcHandler(count=999)
+
+        def split_failure_handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == '/apiv1':
+                return geotab_handler(request)
+            return httpx.Response(404, text='no route')
+
+        install_transport(monkeypatch, split_failure_handler)
+        config_path = _write_geotab_config(
+            tmp_path,
+            include_motive=True,
+            motive_endpoints='[vehicles, vehicle_locations]',
+        )
+        with pytest.raises(SyncFailuresError) as raised:
+            Sync(config_path).run()
+        assert [(f.provider, f.endpoint) for f in raised.value.failures] == [
+            ('motive', 'vehicles'),
+            ('motive', 'vehicle_locations'),
+            ('geotab', 'devices'),
+        ]
+
+    def test_a_bug_stops_its_queue_while_the_other_provider_completes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A non-FleetpullError is a bug: the Motive vehicles fetch raises
+        # RuntimeError (nothing on the fetch path catches it), which stops
+        # Motive's queue -- vehicle_locations never starts -- while
+        # GeoTab's queue completes fully; the bug re-raises raw after
+        # every queue has joined (no leaked worker threads).
+        geotab_handler = _GeotabRpcHandler()
+
+        def buggy_motive_handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == '/v1/vehicles':
+                raise RuntimeError('planted bug')
+            if request.url.path == '/apiv1':
+                return geotab_handler(request)
+            return httpx.Response(404, text='no route')
+
+        install_transport(monkeypatch, buggy_motive_handler)
+        config_path = _write_geotab_config(
+            tmp_path,
+            include_motive=True,
+            motive_endpoints='[vehicles, vehicle_locations]',
+        )
+        with pytest.raises(RuntimeError, match='planted bug'):
+            Sync(config_path).run()
+        endpoints_run = [row[0] for row in _ledger_rows(tmp_path / 'data')]
+        assert 'vehicle_locations' not in endpoints_run  # the queue stopped
+        geotab = pl.read_parquet(tmp_path / 'data/geotab/devices/data.parquet')
+        assert geotab.height == 6  # the sibling queue was untouched
+        assert _fleetpull_worker_threads() == []  # joined before the re-raise

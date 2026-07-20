@@ -97,6 +97,33 @@ providers:
     #   burst: 10
     #   max_concurrency: 2
 
+  samsara:
+    # Set your API token as an environment variable rather than writing it
+    # here (same shell mechanics as MOTIVE_API_KEY above):
+    #   export SAMSARA_API_KEY='...'
+    # A token written here wins over the environment variable.
+    # api_key: ''
+
+    # The endpoints to sync, by catalog name.
+    endpoints:
+      - vehicles
+      - drivers
+      - trips
+
+    # base_url: https://api.samsara.com    # optional; Samsara's production host
+
+    # Per-provider window knobs for watermark endpoints (Samsara trips),
+    # in whole days. Optional overrides: a key set here beats sync's
+    # package-wide value, which beats this default.
+    # lookback_days: 7
+    # cutoff_days: 0
+
+    # rate_limit:                          # optional; defaults to the
+    #   requests_per_period: 100           # tightest documented endpoint
+    #   period_seconds: 60.0               # tier (see SamsaraConfig)
+    #   burst: 10
+    #   max_concurrency: 2
+
   geotab:
     # The four-field GeoTab credential, nested. Set the password as an
     # environment variable rather than writing it here:
@@ -114,8 +141,8 @@ providers:
     #   - devices
     #   - trips
 
-    # Per-provider window knobs for watermark endpoints (trips), in whole
-    # days. Optional overrides: a key set here beats sync's package-wide
+    # Per-provider window knobs for watermark endpoints (GeoTab trips and
+    # exception_events), in whole days. Optional overrides: a key set here beats sync's package-wide
     # value, which beats this default. The lookback margin is also what
     # absorbs GeoTab's Trip recalculation.
     # lookback_days: 7

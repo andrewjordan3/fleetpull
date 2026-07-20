@@ -58,6 +58,15 @@ class TestBuildRosterRegistry:
         assert definition.source_endpoint == 'vehicles'
         assert definition.source_column == 'vehicle_id'
 
+    def test_discovers_the_samsara_vehicle_ids_roster(self) -> None:
+        # The cross-provider sibling: same walk, no registration --
+        # the RosterKey's provider keeps the two 'vehicle_ids' names
+        # from colliding.
+        registry = build_roster_registry()
+        definition = registry.get(RosterKey(Provider.SAMSARA, 'vehicle_ids'))
+        assert definition.source_endpoint == 'vehicles'
+        assert definition.source_column == 'id'
+
     def test_reverse_lookup_resolves_through_the_discovered_catalog(self) -> None:
         registry = build_roster_registry()
         sourced = registry.sourced_by(Provider.MOTIVE, 'vehicles')
