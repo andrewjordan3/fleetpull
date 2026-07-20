@@ -837,14 +837,16 @@ grain — the record below. The non-goal still standing: page-fanning within
 one member's chain awaits envelope verification and will be recorded with
 its own design when it lands.
 
-**Provider-parallel `Sync` (activated 2026-07-20).** `Sync.run` partitions
-the feeder-first ordering into per-provider queues — a stable partition, so
-each queue is exactly its provider's subsequence of the serial order
+**Provider-parallel `Sync` (activated 2026-07-20).** `Sync.run` carves the
+selection into one queue per enabled provider — feeders then consumers,
+config order within each, so queue order equals the retired serial order
 (feeders never cross providers) — and runs each queue on its own worker in
 a context-managed `ThreadPoolExecutor` sized to the enabled-provider count;
 each worker renames its thread to the provider so stack traces attribute
 cleanly, and a single enabled provider degenerates to one worker with the
-serial loop's exact behavior. Activation is unconditional — no config knob:
+serial loop's exact behavior (amended 2026-07-20: endpoints within a queue
+now run staged-concurrent — the intra-provider record below).
+Activation is unconditional — no config knob:
 the queues were already independent by construction (per-provider fetch
 pools and clients, per-scope limiters, provider-scoped rosters,
 `(provider, endpoint)`-scoped claim recovery, connection-per-operation
@@ -856,10 +858,84 @@ across queues, independent — one provider's failures never touch another's
 queue. After all workers join, the first bug by provider order re-raises;
 otherwise failures raise `SyncFailuresError` in the two-level order — run
 order within each provider, provider config order across providers (§10's
-"in run order" contract, updated). The `sync finished` elapsed time stays
-the run's wall clock — now the slowest queue, not the queues' sum.
+"in run order" contract, updated; the intra-provider record below restates
+the within-provider half as queue order). The `sync finished` elapsed time
+stays the run's wall clock — now the slowest queue, not the queues' sum.
 
 Accepted residual (recorded at activation): a KeyboardInterrupt landing while the main thread joins the queue workers abandons the remaining joins, so the client/pool context managers can close while a worker still fetches -- noisy worker tracebacks and bounded exit latency, never corruption (the per-unit parquet -> ledger -> done-mark -> prefix-commit ordering with unit-gating keeps state sound, exactly the crash story §5/§14 tell). The same window existed under the serial loop; signal hardening is polish-phase work (§15 item 8).
+
+**Intra-provider endpoint concurrency (activated 2026-07-20).** The third
+grain completes the concurrency ladder: providers run concurrently (the
+record above), endpoints run concurrently *within* a provider — feeders
+barriered ahead of consumers — and units / fan-out members run
+concurrently within one endpoint (the per-provider pool above). Each
+provider's queue worker carves its selection into two stages by
+**feeder-hood** (`sourced_by` non-empty), never snapshot-hood — a snapshot
+endpoint that feeds no roster (e.g. Samsara `drivers`) has no dependents
+and rides with the consumers. Stage 1 runs the selected feeders
+concurrently among themselves (they reconcile distinct roster keys, so
+they cannot interfere; the set is usually 0 or 1), the stage join is the
+barrier — no consumer fans out while a selected sibling feeder is still
+reconciling the roster it is about to read — and stage 2 runs the
+consumers concurrently. Each non-empty stage is a short-lived
+`ThreadPoolExecutor(max_workers = stage size)`; an empty stage spawns
+nothing, and a single-endpoint stage degenerates to the serial path's
+exact semantics — the one visible difference is attribution: the
+endpoint's log records carry the task thread's
+`fleetpull-sync-<provider>-<endpoint>` name rather than the queue
+worker's. The selected-set doctrine is untouched: an unselected
+feeder is never enlisted on a consumer's behalf — roster freshness stays
+the refresh coordinator's job at fan-out time.
+
+- *The queue-order failure contract.* Failure reporting within a provider
+  is **queue order** — feeders then consumers, config order within each:
+  the same sequence the serial queue executed in, but now a contract about
+  reporting, never execution (this replaces the earlier "run order within
+  provider" phrasing). After each stage's pool joins, its futures drain in
+  submission (queue) order: operational failures (`FleetpullError` —
+  recorded, the queue continues) collect in queue order with no locks and
+  no re-sort, and the first bug by queue order re-raises
+  deterministically, never by completion timing. A bug sets the queue's
+  stop event before escaping its future — in-flight siblings finish and
+  commit; unstarted tasks skip without running (the unit loop's stop
+  semantics) — and a stage-1 bug skips stage 2 entirely. Cross-provider,
+  nothing changed: `SyncFailuresError` carries queue order within each
+  provider, providers in config order.
+- *Zero new config — deliberate.* No endpoint-workers knob:
+  `rate_limit.max_concurrency` remains the one per-provider load dial. It
+  sizes the fetch pool and the limiter's in-flight semaphore — the real
+  throttles; endpoint threads are waiting containers, and a count knob
+  would be masked by the limiter, so it would not earn its keep.
+- *Fetch-pool sharing.* Concurrent fan-out endpoints share the provider's
+  one fetch pool: a submission window is per-`stream_pieces`-call local
+  state, so each concurrent stream keeps its own window over the shared
+  executor. Execution parallelism stays capped by the pool's `max_workers`
+  and in-flight requests by the limiter's semaphore — nothing is resized
+  for the new grain.
+- *The 429 note.* A penalty pauses the whole quota scope, so one
+  endpoint's backoff stalls its concurrently running siblings — correct,
+  not a defect: the scope is the provider's, and the siblings spend the
+  same budget.
+- *Single-flight roster refresh.* Concurrent consumers of one stale
+  roster — the feeder-unselected case, e.g. Samsara `trips` +
+  `idling_events` both cold-starting — would each harvest: wasted quota,
+  duplicate ledger snapshot runs. `RosterRefreshCoordinator` therefore
+  holds a per-`RosterKey` lock across `refresh_if_stale`'s whole body (an
+  outer lock guards get-or-create of the per-key locks), so the second
+  entrant re-runs the freshness check under the lock and returns early on
+  the now-fresh roster. Holding the lock across the harvest network call
+  is intended — the waiting consumer needs the membership before it can
+  fan out. No lock nests inside (the store and ledger are
+  connection-per-operation), so there is no deadlock surface; locks are
+  per-key, so distinct rosters refresh concurrently. The feeder tap's
+  `apply_listing` takes the same per-key lock (the harvest route, already
+  holding it, reconciles through the shared body directly), so **every**
+  reconcile for one key serializes whichever route wrote it — the staging
+  fact that feeders and consumers never share a stage stays a freshness
+  optimization, never a correctness dependency.
+- *Duplicate-name validation.* `ProviderConfig.endpoints` rejects
+  duplicated names at validation, naming them: a duplicated endpoint
+  would now run twice — concurrently, against itself.
 
 ### Acquisition protocol
 
@@ -1449,7 +1525,7 @@ FleetpullError
 | `AuthenticationError` | Fix credentials / account access. |
 | `ProviderResponseError` | Provider response was non-retryable or contract-violating; do not blindly rerun. |
 | `RetriesExhaustedError` | The transient/rate-limit budget ran out; rerunning later is reasonable. |
-| `SyncFailuresError` | One or more endpoints failed inside a sync run whose siblings continued; inspect `failures` (per-endpoint, run order within each provider, providers in config order) and act per member. |
+| `SyncFailuresError` | One or more endpoints failed inside a sync run whose siblings continued; inspect `failures` (per-endpoint, queue order within each provider — feeders then consumers, config order within each — providers in config order) and act per member. |
 
 Members are plain data carriers: typed fields for programmatic handling, a
 composed human message for `str()`. Instances never carry raw request or
@@ -1662,8 +1738,9 @@ Polars is the only supported frame library for now; others are out of scope.
 `AuthenticationError`, `RetriesExhaustedError`, `ProviderResponseError` (§8),
 and `SyncFailuresError`, the aggregate a sync run raises after letting
 siblings continue: it carries the per-endpoint failures (`EndpointFailure`:
-provider, endpoint, the caught exception) in run order within each provider,
-providers in config order (§7's provider-parallel record), and is deliberately
+provider, endpoint, the caught exception) in queue order within each
+provider — feeders then consumers, config order within each — providers in
+config order (§7's queue-order failure contract), and is deliberately
 not an `ExceptionGroup` so the documented `except FleetpullError:` contract
 keeps catching it. Every other exception type is internal and renameable.
 
@@ -1686,20 +1763,22 @@ the validated config: the state database at the resolved
 `state.database_path`, the stores, the discovered endpoint and roster
 registries, the limiter registry from the precedence-resolved provider
 configs, and per-provider client profiles through the auth ingress (which
-accepts the config's `SecretStr` directly). Endpoints run as one serial
+accepts the config's `SecretStr` directly). Endpoints run as one staged
 queue per enabled provider, the queues concurrent (§7's provider-parallel
-record, activated 2026-07-20): the feeder-first order derived from the
-roster bindings via `sourced_by` — never a user-facing key; config order
-stands within ties — is partitioned stably by provider, so nothing reorders
-within a provider. Endpoints commit independently: an endpoint's
-`FleetpullError` is recorded while its queue continues, any other exception
-is a bug that stops that queue's remaining endpoints while the other queues
-finish (the first bug by provider order re-raises after all queues join),
-and a run with failures ends by raising `SyncFailuresError` with the
-failures in run order within each provider, providers in config order. Only
-the selected set runs — an unselected feeder is never run on a consumer's
-behalf; roster freshness stays the refresh coordinator's job at fan-out
-time.
+and intra-provider records, both 2026-07-20): per provider, the selection
+carves by feeder-hood — `sourced_by` non-empty, never a user-facing key —
+into feeders and consumers, config order within each; stage 1 runs the
+feeders concurrently among themselves, the stage join is the barrier, and
+stage 2 runs the consumers concurrently. Endpoints commit independently: an
+endpoint's `FleetpullError` is recorded while its queue continues, any
+other exception is a bug that stops that queue's unstarted endpoints
+(in-flight siblings finish and commit) while the other queues finish (the
+first bug — queue order within a provider, provider order across — re-raises
+after all queues join), and a run with failures ends by raising
+`SyncFailuresError` with the failures in queue order within each provider,
+providers in config order. Only the selected set runs — an unselected
+feeder is never run on a consumer's behalf; roster freshness stays the
+refresh coordinator's job at fan-out time, single-flight per roster key.
 
 **The settled YAML schema (rebuilt — `FleetpullConfig.from_yaml` is the
 loading API).** One frozen nested model family IS the schema: the sections
@@ -2391,10 +2470,12 @@ tzinfo-construction rules mechanically.
     that is flood, not progress. (The motivating incident: the last live
     pre-narration run was ~80 minutes for two log lines.)
   - *Every record carries its thread name* (added with provider-parallel
-    `Sync`, 2026-07-20): queue threads are `fleetpull-sync-<provider>` and
-    fetch workers `fleetpull-<provider>-fetch`, so state-layer DEBUG lines
-    that carry only run/unit ids stay attributable at a glance when
-    providers interleave.
+    `Sync`, 2026-07-20): queue threads are `fleetpull-sync-<provider>`,
+    endpoint tasks under a queue worker are
+    `fleetpull-sync-<provider>-<endpoint>` (added with the intra-provider
+    grain, same date), and fetch workers `fleetpull-<provider>-fetch`, so
+    state-layer DEBUG lines that carry only run/unit ids stay attributable
+    at a glance when providers — and now sibling endpoints — interleave.
 
 ---
 

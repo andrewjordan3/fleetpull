@@ -322,9 +322,11 @@ class EndpointDefinition[ModelT: ResponseModel]:
         Mutual exclusion between cardinality patterns is structural (one
         ``request_shape`` field); what remains here are the semantic
         pairings. ``RosterFanOut`` requires its roster to share the
-        endpoint's provider -- provider-parallel ``Sync`` (§7) runs one
-        thread per provider, and queue independence rests on no two
-        threads reconciling one roster. ``BisectedWindowFetch`` recursively narrows a resume
+        endpoint's provider -- ``Sync`` (§7) runs one queue per provider,
+        and cross-queue independence rests on rosters never crossing
+        providers (within a queue, the feeder barrier and the refresh
+        coordinator's per-key single-flight serialize roster writes).
+        ``BisectedWindowFetch`` recursively narrows a resume
         window, so it requires a windowed (``WatermarkMode``),
         date-partitioned endpoint. A ``completeness_check`` requires
         ``SnapshotMode`` AND ``SingleFetch`` -- an expected-count comparison
@@ -345,10 +347,11 @@ class EndpointDefinition[ModelT: ResponseModel]:
             case RosterFanOut() if self.request_shape.roster.provider is not (
                 self.provider
             ):
-                # Provider-parallel Sync runs one thread per provider; the
-                # queue-independence argument (§7) rests on rosters never
-                # crossing providers -- a cross-provider roster would let two
-                # threads reconcile one roster's rows concurrently.
+                # Sync runs one queue per provider; the cross-queue
+                # independence argument (§7) rests on rosters never
+                # crossing providers -- a cross-provider roster would let
+                # two queues reconcile one roster's rows concurrently,
+                # outside the reach of either queue's feeder barrier.
                 raise ValueError(
                     f'{self.provider.value}.{self.name}: RosterFanOut roster '
                     f'{self.request_shape.roster.provider.value}/'

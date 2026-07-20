@@ -112,8 +112,10 @@ class ProviderConfig(ConfigModel):
         endpoints: The endpoint names this provider syncs, as listed in
             the YAML section. Strings here -- validation against the
             endpoint catalog happens at ``Sync`` construction, above this
-            tier, never in ``config``. Default empty; a provider with no
-            endpoints is disabled regardless of its credential.
+            tier, never in ``config`` -- but duplicates are rejected at
+            validation (a duplicated name would run twice, concurrently).
+            Default empty; a provider with no endpoints is disabled
+            regardless of its credential.
         lookback_days: Late-arrival re-fetch margin in whole days for
             watermark endpoints -- how far before the stored watermark
             each resume re-fetches, so a record that landed after its
@@ -138,6 +140,22 @@ class ProviderConfig(ConfigModel):
     endpoints: tuple[str, ...] = ()
     lookback_days: int = Field(default=_DEFAULT_LOOKBACK_DAYS, ge=0)
     cutoff_days: int = Field(default=_DEFAULT_CUTOFF_DAYS, ge=0)
+
+    @field_validator('endpoints')
+    @classmethod
+    def _reject_duplicate_endpoints(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        """Reject a duplicated endpoint name loudly, naming every duplicate.
+
+        A duplicated name would run twice -- concurrently, since endpoints
+        within a provider run staged-concurrent -- so it is a configuration
+        failure to surface, never a silent dedup.
+        """
+        duplicated = sorted({name for name in value if value.count(name) > 1})
+        if duplicated:
+            raise ValueError(
+                f'endpoint names must be unique; duplicated: {", ".join(duplicated)}'
+            )
+        return value
 
 
 class MotiveConfig(ProviderConfig):
