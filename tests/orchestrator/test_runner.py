@@ -115,29 +115,34 @@ class _FailRunFailingRecorder(_RecordingRecorder):
 
 
 class _StubCursorAccess:
-    """A CursorAccess with a settable stored cursor that records its writes."""
+    """A CursorAccess with a settable stored cursor that records its advances."""
 
     def __init__(self, cursor: IncrementalCursor | None = None) -> None:
         self._cursor = cursor
-        self.set_calls: list[tuple[Provider, str, IncrementalCursor]] = []
+        self.advance_calls: list[tuple[Provider, str, datetime]] = []
 
     def get_cursor(self, provider: Provider, endpoint: str) -> IncrementalCursor | None:
         return self._cursor
 
-    def set_cursor(
-        self, provider: Provider, endpoint: str, cursor: IncrementalCursor
-    ) -> None:
-        self.set_calls.append((provider, endpoint, cursor))
+    def advance_watermark_forward(
+        self, provider: Provider, endpoint: str, observed: datetime
+    ) -> bool:
+        self.advance_calls.append((provider, endpoint, observed))
+        return True
 
 
 class _ApplyingCursorAccess(_StubCursorAccess):
-    """A CursorAccess whose writes apply, so a read-back sees the new cursor."""
+    """A CursorAccess whose advances apply, mirroring the store's forward guard."""
 
-    def set_cursor(
-        self, provider: Provider, endpoint: str, cursor: IncrementalCursor
-    ) -> None:
-        super().set_cursor(provider, endpoint, cursor)
-        self._cursor = cursor
+    def advance_watermark_forward(
+        self, provider: Provider, endpoint: str, observed: datetime
+    ) -> bool:
+        stored = self._cursor
+        if isinstance(stored, DateWatermark) and observed <= stored.watermark:
+            return False
+        super().advance_watermark_forward(provider, endpoint, observed)
+        self._cursor = DateWatermark(watermark=observed)
+        return True
 
 
 def _snapshot_definition() -> EndpointDefinition[_SnapshotModel]:

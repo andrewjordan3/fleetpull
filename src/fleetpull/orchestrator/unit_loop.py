@@ -1,25 +1,38 @@
 # src/fleetpull/orchestrator/unit_loop.py
-"""The claim-and-drive loop: serial, ascending, fail-fast work-unit execution.
+"""The claim-and-drive loop: concurrent, prefix-committing work-unit execution.
 
 ``drive_claimable_units`` is the choreography between the work-unit queue and
-the runner's per-unit drive (DESIGN sections 4/5): claim the lowest claimable
-unit, drive it, mark it done, repeat until the queue is drained. Units drive
-serially in ascending window order -- claims are FIFO by ``unit_id`` and units
-are always enqueued chronologically, so completed units form a contiguous
-prefix of the plan. That prefix is why the per-unit watermark advance is
-sound: every persisted watermark is true at every instant (everything at or
-before it has been fetched and committed), which is the truth invariant the
-serial-ascending constraint exists to protect. Unit order is not a free
-choice.
+the runner's per-unit drive (DESIGN sections 4/5): ``workers`` threads each
+claim the lowest claimable unit, drive it, mark it done with its folded
+observation, and commit the watermark prefix, until the queue is drained.
+Claims are FIFO by ``unit_id`` (ascending window order, since units enqueue
+chronologically) but completions may land in any order -- the watermark's
+truth invariant no longer rests on completion order. It rests on the
+PREFIX-ADVANCE rule (2026-07-20): ``commit_prefix`` advances the cursor only
+across the contiguous done-prefix of the plan, through the cursor store's
+atomic forward-only write, so every persisted watermark is true at every
+instant whatever the interleaving. The serial-ascending constraint this loop
+once carried existed solely to protect the per-unit advance; the prefix rule
+retired both together.
 
-Failure is fail-fast: the first failing unit is marked ``failed`` -- back to a
-claimable state, nothing committed by it -- and its exception re-raises,
-aborting the endpoint's remaining units (never claimed, still ``pending``).
-Completed units stay committed; the next invocation re-claims what remains.
+Failure stops the claiming, not the flight: the first failing unit is marked
+``failed`` (claimable again on a later invocation; nothing it staged was
+committed) and the stop signal keeps every worker from claiming further --
+in-flight units run to completion and commit (each is an independent
+transaction; aborting a mid-write sibling buys nothing). After every worker
+joins, the first failure re-raises.
+
+Cross-unit parallel writes are legal under the single-writer invariant
+verbatim: partitioned endpoints may parallelize across partitions, and units
+own disjoint whole-day partitions by construction (midnight-aligned,
+contiguous tiling).
 """
 
 import logging
+import threading
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from typing import Final, Protocol
 
 from fleetpull.incremental import DateWindow
@@ -58,13 +71,104 @@ class UnitQueue(Protocol):
         """Atomically claim the lowest claimable unit, or return ``None``."""
         ...
 
-    def mark_done(self, unit_id: int) -> None:
-        """Mark a claimed unit completed."""
+    def mark_done(self, unit_id: int, *, observed_max: datetime | None) -> None:
+        """Mark a claimed unit completed, recording its folded observation."""
         ...
 
     def mark_failed(self, unit_id: int, *, error_detail: str) -> None:
         """Mark a claimed unit failed (claimable again on a later invocation)."""
         ...
+
+    def done_prefix_observation(
+        self, provider: Provider, endpoint: str
+    ) -> datetime | None:
+        """The maximum observation across the contiguous done-prefix."""
+        ...
+
+
+class _UnitCrew:
+    """The shared state one ``drive_claimable_units`` invocation's workers race on.
+
+    A worker loop is pure claim/drive/commit; everything cross-thread lives
+    here: the stop signal that ends claiming on the first failure, and the
+    lock-guarded outcome and failure lists (append order is completion
+    order). The class exists so the worker function reads as the loop it is,
+    with the synchronization named rather than threaded through arguments.
+    """
+
+    def __init__(
+        self,
+        queue: UnitQueue,
+        provider: Provider,
+        endpoint: str,
+        drive_unit: Callable[[DateWindow], Executed],
+        commit_prefix: Callable[[], None],
+    ) -> None:
+        self._queue = queue
+        self._provider = provider
+        self._endpoint = endpoint
+        self._drive_unit = drive_unit
+        self._commit_prefix = commit_prefix
+        self._stop_claiming = threading.Event()
+        self._results_lock = threading.Lock()
+        self.outcomes: list[Executed] = []
+        self.failures: list[Exception] = []
+
+    def work(self) -> None:
+        """Claim and drive units until the queue drains or a failure stops claiming.
+
+        Side Effects:
+            Claims, completes, or fails units; drives fetches and writes;
+            commits the watermark prefix after each completion; narrates one
+            INFO per completed unit. Any exit -- drain, failure, or an
+            escaping store error -- stops further claiming crew-wide.
+        """
+        try:
+            while not self._stop_claiming.is_set():
+                claimed = self._queue.claim_next(
+                    self._provider, self._endpoint, max_attempts=_UNIT_ATTEMPT_CAP
+                )
+                if claimed is None:
+                    return
+                self._drive_claimed(claimed)
+        finally:
+            # A drained worker means nothing is left to claim; a failed or
+            # crashed one must keep siblings from claiming more. Either way,
+            # in-flight siblings finish their own units.
+            self._stop_claiming.set()
+
+    def _drive_claimed(self, claimed: ClaimedWorkUnit) -> None:
+        """Drive one claimed unit through completion or failure recording."""
+        window = DateWindow(start=claimed.spec.chunk_start, end=claimed.spec.chunk_end)
+        try:
+            unit_outcome = self._drive_unit(window)
+        except Exception as unit_failure:
+            # Stop BEFORE the failed-mark lands: a marked-failed unit is
+            # claimable again, and a sibling passing the stop check after
+            # the mark would retry-loop it inside this same invocation.
+            self._stop_claiming.set()
+            _mark_failed_safely(self._queue, claimed, unit_failure)
+            with self._results_lock:
+                self.failures.append(unit_failure)
+            return
+        self._queue.mark_done(
+            claimed.unit_id, observed_max=unit_outcome.latest_observed
+        )
+        self._commit_prefix()
+        with self._results_lock:
+            self.outcomes.append(unit_outcome)
+        # The total planned count is not knowable here (the loop claims
+        # until the queue drains), so the unit narrates by its id.
+        logger.info(
+            'unit complete: provider=%s endpoint=%s unit_id=%d '
+            'window_start=%s window_end=%s records_fetched=%d',
+            self._provider.value,
+            self._endpoint,
+            claimed.unit_id,
+            to_iso8601(window.start),
+            to_iso8601(window.end),
+            unit_outcome.records_fetched,
+        )
 
 
 def drive_claimable_units(
@@ -72,62 +176,64 @@ def drive_claimable_units(
     provider: Provider,
     endpoint: str,
     drive_unit: Callable[[DateWindow], Executed],
+    *,
+    workers: int,
+    commit_prefix: Callable[[], None],
 ) -> list[Executed]:
-    """Claim and drive every claimable unit, ascending, until the queue drains.
+    """Claim and drive every claimable unit, ``workers`` at a time.
 
-    Repeatedly claims the lowest claimable unit (FIFO by ``unit_id`` --
-    ascending window order, since units enqueue chronologically), drives it,
-    and marks it done; stops when nothing is claimable. Fail-fast on the
-    first failure: the unit is marked ``failed`` (claimable again next
-    invocation; nothing it staged was committed) and the original exception
-    re-raises, so units beyond it are never claimed.
+    Each worker repeatedly claims the lowest claimable unit (FIFO by
+    ``unit_id``), drives it, marks it done with its folded observation, and
+    invokes ``commit_prefix``; the invocation ends when nothing is claimable.
+    The first failure marks its unit ``failed`` (claimable again next
+    invocation; nothing it staged was committed) and stops further claiming;
+    in-flight units complete and commit, and the failure re-raises after
+    every worker joins.
 
     Args:
         queue: The work-unit claim queue.
         provider: The provider whose units to drive.
         endpoint: The endpoint whose units to drive.
         drive_unit: Runs one unit over its window -- the runner's per-unit
-            fetch/write/advance/record sequence -- returning its outcome.
+            fetch/write/record sequence -- returning its outcome.
+        workers: The number of units in flight at once; at least 1. One
+            worker runs inline on the calling thread (no pool), preserving
+            the serial path as the degenerate case.
+        commit_prefix: Advances the watermark across the contiguous
+            done-prefix (the runner's prefix commit); invoked after every
+            completion, safe under concurrent invocation by construction.
 
     Returns:
-        Each driven unit's ``Executed`` outcome, in the order driven (empty
+        Each driven unit's ``Executed`` outcome, in completion order (empty
         when nothing was claimable).
 
     Raises:
-        Exception: The first failing unit's exception, re-raised unchanged
-            after the unit is marked ``failed``.
+        ValueError: ``workers`` is below 1.
+        Exception: The first failing unit's exception, re-raised after every
+            worker joins (later failures are logged on their workers and
+            their units marked ``failed``).
 
     Side Effects:
-        Claims, completes, or fails units in the queue; narrates one INFO
-        per completed unit (its id, window bounds, and fetched-record
-        count); whatever ``drive_unit`` performs (network fetches, parquet
-        writes, cursor and ledger commits).
+        Claims, completes, or fails units in the queue; commits the
+        watermark prefix per completion; narrates one INFO per completed
+        unit; whatever ``drive_unit`` performs (network fetches, parquet
+        writes, ledger commits).
     """
-    outcomes: list[Executed] = []
-    while (
-        claimed := queue.claim_next(provider, endpoint, max_attempts=_UNIT_ATTEMPT_CAP)
-    ) is not None:
-        window = DateWindow(start=claimed.spec.chunk_start, end=claimed.spec.chunk_end)
-        try:
-            unit_outcome = drive_unit(window)
-        except Exception as unit_failure:
-            _mark_failed_safely(queue, claimed, unit_failure)
-            raise
-        outcomes.append(unit_outcome)
-        queue.mark_done(claimed.unit_id)
-        # The total planned count is not knowable here (the loop claims
-        # until the queue drains), so the unit narrates by its id.
-        logger.info(
-            'unit complete: provider=%s endpoint=%s unit_id=%d '
-            'window_start=%s window_end=%s records_fetched=%d',
-            provider.value,
-            endpoint,
-            claimed.unit_id,
-            to_iso8601(window.start),
-            to_iso8601(window.end),
-            unit_outcome.records_fetched,
-        )
-    return outcomes
+    if workers < 1:
+        raise ValueError(f'workers must be at least 1, got {workers}')
+    crew = _UnitCrew(queue, provider, endpoint, drive_unit, commit_prefix)
+    if workers == 1:
+        crew.work()
+    else:
+        thread_prefix = f'fleetpull-units-{provider.value}-{endpoint}'
+        with ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix=thread_prefix
+        ) as pool:
+            for worker_future in [pool.submit(crew.work) for _ in range(workers)]:
+                worker_future.result()
+    if crew.failures:
+        raise crew.failures[0]
+    return crew.outcomes
 
 
 def _mark_failed_safely(

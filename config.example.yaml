@@ -26,6 +26,13 @@ sync:
   # than one chunk is simply one unit. Optional; default 7.
   # backfill_chunk_days: 7
 
+  # How many of a windowed endpoint's work units drive concurrently. The
+  # watermark stays truthful under any completion order (the prefix-advance
+  # rule), and the provider's rate budget still governs at the wire, so
+  # workers beyond the budget simply pace on rate-limit tokens. 1 is the
+  # serial path. Optional; default 4.
+  # backfill_unit_workers: 4
+
 storage:
   # REQUIRED. The root directory the parquet dataset is written under
   # ({root}/{provider}/{endpoint}/). Use a real local path -- never a
