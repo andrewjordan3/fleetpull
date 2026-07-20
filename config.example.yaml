@@ -109,10 +109,12 @@ providers:
       - vehicles
       - drivers
       - trips
+      - idling_events
 
     # base_url: https://api.samsara.com    # optional; Samsara's production host
 
-    # Per-provider window knobs for watermark endpoints (Samsara trips),
+    # Per-provider window knobs for watermark endpoints (Samsara trips
+    # and idling_events),
     # in whole days. Optional overrides: a key set here beats sync's
     # package-wide value, which beats this default.
     # lookback_days: 7
