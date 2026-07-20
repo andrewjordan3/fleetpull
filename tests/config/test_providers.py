@@ -91,6 +91,35 @@ class TestProvidersConfig:
             ProvidersConfig(verizon_connect={})  # type: ignore[call-arg]
 
 
+class TestEndpointUniqueness:
+    """Duplicates are rejected at validation: a duplicated name would run
+    twice -- concurrently, under the staged intra-provider queue."""
+
+    @pytest.mark.parametrize(
+        ('config_cls', 'endpoint'),
+        [
+            (MotiveConfig, 'vehicles'),
+            (GeotabConfig, 'devices'),
+            (SamsaraConfig, 'trips'),
+        ],
+    )
+    def test_a_duplicated_name_is_rejected_and_named(
+        self,
+        config_cls: type[MotiveConfig | GeotabConfig | SamsaraConfig],
+        endpoint: str,
+    ) -> None:
+        with pytest.raises(ValidationError, match=endpoint):
+            config_cls(endpoints=(endpoint, 'other_endpoint', endpoint))
+
+    def test_every_duplicated_name_is_named(self) -> None:
+        with pytest.raises(ValidationError, match=r'trips.*vehicles'):
+            MotiveConfig(endpoints=('vehicles', 'trips', 'vehicles', 'trips'))
+
+    def test_distinct_names_pass(self) -> None:
+        config = MotiveConfig(endpoints=('vehicles', 'vehicle_locations'))
+        assert config.endpoints == ('vehicles', 'vehicle_locations')
+
+
 class TestCredentialContract:
     def test_env_var_convention_names_motive(self) -> None:
         assert PROVIDER_CREDENTIAL_ENV_VARS['motive'] == 'MOTIVE_API_KEY'
