@@ -26,10 +26,11 @@ bad date to ``ConfigurationError``). Keeping the raise stdlib is what lets
 ``timing`` import nothing internal.
 
 The epoch encoders (``to_unix_seconds`` / ``to_unix_millis``) are
-deliberately absent: their only consumers are Samsara/Motive endpoint params
-whose exact format is unverified, settled at the endpoint layer against the
-predecessor rather than guessed here. The module grows a function when such
-an endpoint lands.
+deliberately absent still: the first epoch-consuming endpoint (Samsara
+trips, epoch milliseconds, captured 2026-07-20) keeps its conversion at
+the leaf as a single-consumer fact (exact integer arithmetic in
+``endpoints/samsara/trips.py``); the codec takes the function when a
+second epoch consumer lands (the rule of two).
 """
 
 from datetime import UTC, datetime
