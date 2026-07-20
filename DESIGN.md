@@ -1501,6 +1501,43 @@ idling_events build implements them.
    closure), so the field is a plain `str` with the openness documented
    on the model.
 
+### Samsara `addresses` probe-settled decisions (2026-07-20)
+
+Settled by the 2026-07-20 live probe session (the captured rows below); the
+addresses build implements them.
+
+1. **The vehicles template verbatim: a plain snapshot on the standard
+   cursor contract.** Snapshot mode / `SINGLE` storage / SAMSARA scope /
+   the default `SingleFetch` shape / `StaticGetSpecBuilder` on
+   `/addresses` / the unchanged `SamsaraCursorPageDecoder` — no roster
+   sourced, no roster consumed, no window, and no completeness check
+   (continuation is explicit per page, the standing cursor-contract
+   rule). `limit` is 512, THIS endpoint's probed tier: limit=512
+   returned HTTP 200 and limit=513 a loud HTTP 400 — the
+   vehicles/drivers tier, NOT idling's 200 (the per-endpoint limit-tier
+   rule, honored by probing rather than assuming).
+2. **Optionality follows the vehicles posture.** The walk was the whole
+   population (1 page, 25 records — the complete address set), so the
+   seven 25/25 keys (`id`, `name`, `createdAtTime`, `formattedAddress`,
+   `latitude`, `longitude`, `geofence`) are REQUIRED and `addressTypes`
+   (20/25) is optional. `createdAtTime` is a tz-aware UTC datetime
+   (millisecond ISO-8601 on the wire, Pydantic's standard parse).
+3. **Two exclusions, both the Device/User list-of-objects precedent.**
+   `tags` (9/25) is excluded exactly as on vehicles/drivers. `geofence.
+   polygon` (24/25) is excluded WHOLESALE with the precedent applied one
+   level down: its ONLY key is `vertices`, a list of
+   `{latitude, longitude}` objects, so an emptied polygon model would
+   mirror nothing. The top-level `latitude`/`longitude` still carry the
+   address's center point on every record, so a polygon-fenced address
+   keeps its location while the boundary awaits the list-of-structs
+   derivation vertical. `AddressGeofence` therefore models `circle` and
+   `settings` only, both optional.
+4. **`circle`/`polygon` mutual exclusivity is mirrored, not enforced.**
+   The capture shows them mutually exclusive (1 vs 24, never both), but
+   both stay independent optionals with NO XOR validator — mirror, never
+   interpret; enforcing a constraint the provider owns would turn a
+   provider change into a fleetpull crash for no consumer's benefit.
+
 ### The exception hierarchy (implemented: `exceptions.py`)
 
 The operational errors consumers catch, mirroring the classification
@@ -1599,6 +1636,8 @@ budgets → `RetriesExhaustedError`, failed auth paths →
 | Samsara | `/idling/events` retrieval is START-anchored on UTC, proven by a discriminating pair on a 6.5-hour event: a 60s window strictly inside its span does NOT return it; a 60s window straddling only its start DOES. Fourth distinct anchoring datum across providers (GeoTab Trip: stop; Motive driving_periods: start; GeoTab ExceptionEvent / Samsara v1 trips: overlap; this: start) — and notably NOT the company-local overlap behavior of Motive's `idle_events` sibling: never assume the rule, per endpoint, ever. Consequence: `event_time_column='start_time'`, retrieval anchor == routing anchor natively, no wire pad, the runner's window filter is pure hygiene (captured 2026-07-20). |
 | Samsara | The `/idling/events` range cap is loud and sub-3-months: 91 days accepted; 180 days returns JSON 400 `{"message": "Total duration must be less than 3 months.", ...}`. Default 7-day chunks sit far inside; no builder guard (the Motive driving_periods stance) (captured 2026-07-20). |
 | Samsara | Idling-event census (2,200 events, ZERO real nulls — absence-shaped): always present — `eventUuid` (str, the event id), `startTime` (RFC3339 str), `durationMilliseconds` (int; there is NO end key — the interval is start+duration; events were only ever observed complete, with implied ends in the past even in a last-30-minutes probe: in-progress idles appear to materialize on completion, the lookback absorbs late materialization, accepted residual), `asset {id: int}`, `latitude`/`longitude` (floats), `ptoState` (str; only `'inactive'` observed — the value set is NOT evidence-closed, so modeled plain str, not an enum), `fuelConsumedMilliliters` (MIXED int\|float on the wire — modeled float), `fuelCost {amount: str, currency: str}` (money mirrored verbatim as strings), `gaseousFuelConsumedGrams` (int), `gaseousFuelCost {amount, currency}`. Partial: `operator {id: int}` 1546/2200 (driver attribution when known); `airTemperatureMillicelsius` (int) 1833/2200; `address {id: str, addressTypes: list[str]}` 552/2200 (element `'yard'` observed; `addressTypes` itself absent on ~31/552 blocks). NOTE `address.id` is a STRING while `asset.id`/`operator.id` are BARE INTs — mirrored exactly (captured 2026-07-20). |
+| Samsara | `GET /addresses` is a modern-envelope surface: `data` + `pagination {endCursor, hasNextPage}` — the standard cursor contract. The full walk was the WHOLE POPULATION in one page: 25 records, terminal shape on page one. The `limit` tier was probed directly: limit=512 → HTTP 200, limit=513 → HTTP 400 — `/addresses` sits in the vehicles/drivers 512 tier, NOT idling's 200; the per-endpoint tier rule holds, settled by probe, never by sibling assumption (captured 2026-07-20). |
+| Samsara | Address census (25 records — the whole population; no null value anywhere, absence-shaped): always present — `id` (str), `name`, `createdAtTime` (UTC ISO-8601 with milliseconds), `formattedAddress`, `latitude`/`longitude` (floats — the address's center point, present on polygon-fenced records too), `geofence` (object). Partial: `addressTypes` 20/25 (list[str]); `tags` 9/25 (list-of-objects, model-excluded per the Device/User precedent). Nested `geofence` (out of 25 blocks): `circle` 1/25 (`{latitude, longitude, radiusMeters: int}`, all three in the carrying block); `polygon` 24/25 — its ONLY key is `vertices`, a list of `{latitude, longitude}` objects (excluded wholesale, the precedent one level down); `settings` 13/25 (`{showAddresses: bool}`, present in every carrying block). `circle` and `polygon` were mutually exclusive in capture (1 vs 24, never both) — both mirrored optional, NO XOR enforcement (mirror, never interpret) (captured 2026-07-20). |
 | Motive | 401 body is `{"error_message": ...}`; the documented /vehicle_locations limit was not observed to enforce — generic 429 posture. |
 | Motive | `/v3/vehicle_locations/{vehicle_id}` verified live: envelope `{"vehicle_locations": [{"vehicle_location": {...}}]}`, `located_at` is UTC ISO-8601 (`Z`-suffixed), one non-paginated page per fetch (so `SinglePageDecoder` fits), and a single per-vehicle fetch spans multiple calendar dates (the sample crossed two) — confirming `split_by_date`'s multi-partition output is load-bearing in production, not a theoretical edge: one fetch genuinely fans into several partitions. |
 | Motive | `/v3/vehicle_locations/{vehicle_id}` date bounds pinned by direct probing: day-granular `start_date`/`end_date` are honored inclusively on both bounds — a single-day request returns that full day, a two-day request both complete days. The documented 3-month maximum range is real: long backfills will eventually need request chunking (a range limit, unrelated to the §15 item-1 window defect). |
@@ -2920,7 +2959,10 @@ resolution (item 1, done).
    fleet-wide windowed leaf on the existing cursor decoder per its §8
    decision block, zero shared-machinery changes) — the Samsara legacy
    four are COMPLETE 2026-07-20 (`vehicles`, `drivers`, `trips`,
-   `idling_events`); the remaining legacy six queue next.* The per-endpoint
+   `idling_events`). Samsara `addresses` shipped 2026-07-20 (the
+   whole-population snapshot on the 512 tier per its §8 decision
+   block, zero shared-machinery changes); the remainder of the legacy
+   wave queues next.* The per-endpoint
    inventory and port queue are tracked in `ENDPOINTS.md` (added
    2026-07-17), updated in the same change as any endpoint addition.
 8. **Polish phase, gated on a stable public surface:** full-tree ceremony
