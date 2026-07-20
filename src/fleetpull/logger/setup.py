@@ -40,7 +40,9 @@ _PACKAGE_LOGGER_NAME: Final[str] = 'fleetpull'
 # Shared format and date-format for every handler this module attaches.
 # Module-level constants so tests can assert against them by identity
 # rather than re-typing the literals.
-_LOG_FORMAT: Final[str] = '%(asctime)s - %(levelname)-8s - [%(name)s] - %(message)s'
+_LOG_FORMAT: Final[str] = (
+    '%(asctime)s - %(levelname)-8s - [%(threadName)s] - [%(name)s] - %(message)s'
+)
 _DATE_FORMAT: Final[str] = '%Y-%m-%dT%H:%M:%SZ'
 
 
