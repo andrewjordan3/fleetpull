@@ -6,14 +6,16 @@ threads, and the fake must mirror the store's atomic-claim semantics
 the real store cannot.
 """
 
+import logging
 import threading
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 import pytest
 
 from fleetpull.incremental import DateWindow
 from fleetpull.orchestrator.outcome import Executed
-from fleetpull.orchestrator.unit_loop import drive_claimable_units
+from fleetpull.orchestrator.unit_loop import UnitCrew, drive_claimable_units
 from fleetpull.state import ClaimedWorkUnit, WorkUnitSpec, WorkUnitStatus
 from fleetpull.storage import WriteResult
 from fleetpull.vocabulary import Provider
@@ -155,21 +157,48 @@ class _PrefixRecorder:
             self.calls += 1
 
 
+class _FaithfulPrefixCommitter:
+    """A commit_prefix double mirroring the runner's real prefix commit.
+
+    Reads the fake queue's contiguous done-prefix and advances a
+    forward-only watermark, recording every read and every applied advance
+    (lock-guarded; workers invoke it concurrently) -- so the tests can
+    assert exactly when the watermark moved and to what.
+    """
+
+    def __init__(self, queue: _FakeQueue) -> None:
+        self._queue = queue
+        self._lock = threading.Lock()
+        self.watermark: datetime | None = None
+        self.reads: list[datetime | None] = []
+        self.applied: list[datetime] = []
+
+    def __call__(self) -> None:
+        observation = self._queue.done_prefix_observation(Provider.MOTIVE, _ENDPOINT)
+        with self._lock:
+            self.reads.append(observation)
+            if observation is not None and (
+                self.watermark is None or observation > self.watermark
+            ):
+                self.watermark = observation
+                self.applied.append(observation)
+
+
 def _drive(
     queue: _FakeQueue,
-    drive: _RecordingDrive,
+    drive: Callable[[DateWindow], Executed],
     *,
     workers: int = 1,
-    commit_prefix: _PrefixRecorder | None = None,
+    commit_prefix: Callable[[], None] | None = None,
 ) -> list[Executed]:
-    return drive_claimable_units(
-        queue,
-        Provider.MOTIVE,
-        _ENDPOINT,
-        drive,
-        workers=workers,
+    crew = UnitCrew(
+        queue=queue,
+        provider=Provider.MOTIVE,
+        endpoint=_ENDPOINT,
+        drive_unit=drive,
         commit_prefix=commit_prefix if commit_prefix is not None else _PrefixRecorder(),
     )
+    return drive_claimable_units(crew, workers=workers)
 
 
 def test_drives_every_unit_ascending_and_marks_each_done() -> None:
@@ -245,9 +274,12 @@ def test_first_failure_marks_the_unit_failed_and_stops_new_claims() -> None:
 def test_parallel_failure_lets_in_flight_units_finish() -> None:
     # Worker one fails its unit while worker two is mid-drive: the
     # in-flight unit completes and commits; nothing new is claimed. The
-    # sibling holds until mark_failed lands, which the loop orders AFTER
-    # the stop signal -- so the sibling's next claim deterministically
-    # sees the stop.
+    # sibling here holds until mark_failed lands, which the loop orders
+    # AFTER the stop signal -- so in THIS scripted interleaving its next
+    # claim deterministically sees the stop. (In general the ordering only
+    # narrows the same-invocation retry window -- a sibling already past
+    # its stop check can still reclaim the failed unit once; this test
+    # scripts the closed side deliberately.)
     fail_window = DateWindow(
         start=datetime(2026, 6, 1, tzinfo=UTC), end=datetime(2026, 6, 2, tzinfo=UTC)
     )
@@ -279,6 +311,115 @@ def test_parallel_failure_lets_in_flight_units_finish() -> None:
     # The third unit was never claimed: the stop signal preceded the
     # failed-mark the sibling waited on.
     assert statuses[2] is WorkUnitStatus.PENDING
+
+
+def test_out_of_order_completion_holds_the_watermark_to_the_prefix() -> None:
+    # The prefix-advance rule's hold-back, driven deterministically: unit 2
+    # completes and commits while unit 1 is still in flight, so its commit
+    # reads an empty done-prefix (in-flight unit 1 gates it) and applies
+    # nothing -- the watermark never advances past unit 1's window. Once
+    # unit 1 completes, the prefix covers both units and the watermark
+    # advances straight to the full prefix maximum.
+    unit_one_window = DateWindow(
+        start=datetime(2026, 6, 10, tzinfo=UTC), end=datetime(2026, 6, 11, tzinfo=UTC)
+    )
+    queue = _FakeQueue([_spec(10, 11), _spec(11, 12)])
+    first_commit_done = threading.Event()
+
+    class _SignallingCommitter(_FaithfulPrefixCommitter):
+        def __call__(self) -> None:
+            super().__call__()
+            first_commit_done.set()
+
+    class _GatedDrive(_RecordingDrive):
+        def __call__(self, window: DateWindow) -> Executed:
+            if window == unit_one_window:
+                # Hold unit 1 until its sibling has completed AND committed.
+                assert first_commit_done.wait(timeout=5)
+            return super().__call__(window)
+
+    committer = _SignallingCommitter(queue)
+    _drive(queue, _GatedDrive(), workers=2, commit_prefix=committer)
+    assert queue.statuses() == [WorkUnitStatus.DONE, WorkUnitStatus.DONE]
+    # Unit 2's commit saw a gated prefix; unit 1's saw the full maximum.
+    assert committer.reads == [None, datetime(2026, 6, 12, tzinfo=UTC)]
+    assert committer.applied == [datetime(2026, 6, 12, tzinfo=UTC)]
+    assert committer.watermark == datetime(2026, 6, 12, tzinfo=UTC)
+
+
+def test_failed_gap_freezes_the_prefix_until_a_later_pass_closes_it() -> None:
+    # Gap-then-close: unit 1 fails only after units 2 and 3 completed on the
+    # sibling worker, so their commits read a gated prefix and the watermark
+    # never moves. Re-driving unit 1 on a later pass closes the gap and the
+    # prefix advances over all three units at once.
+    fail_window = DateWindow(
+        start=datetime(2026, 6, 10, tzinfo=UTC), end=datetime(2026, 6, 11, tzinfo=UTC)
+    )
+    tail_window = DateWindow(
+        start=datetime(2026, 6, 12, tzinfo=UTC), end=datetime(2026, 6, 13, tzinfo=UTC)
+    )
+    queue = _FakeQueue([_spec(10, 11), _spec(11, 12), _spec(12, 13)])
+    tail_done = threading.Event()
+
+    class _TailFirstDrive(_RecordingDrive):
+        def __call__(self, window: DateWindow) -> Executed:
+            if window == fail_window:
+                # Fail only once the sibling has driven the whole tail.
+                assert tail_done.wait(timeout=5)
+            outcome = super().__call__(window)
+            if window == tail_window:
+                tail_done.set()
+            return outcome
+
+    committer = _FaithfulPrefixCommitter(queue)
+    with pytest.raises(RuntimeError, match='planted unit failure'):
+        _drive(
+            queue,
+            _TailFirstDrive(fail_on=fail_window),
+            workers=2,
+            commit_prefix=committer,
+        )
+    # Both tail commits read the gated prefix: the failed unit 1 froze it.
+    assert queue.statuses() == [
+        WorkUnitStatus.FAILED,
+        WorkUnitStatus.DONE,
+        WorkUnitStatus.DONE,
+    ]
+    assert committer.reads == [None, None]
+    assert committer.applied == []
+    assert committer.watermark is None
+
+    # The later pass re-drives only unit 1; its completion closes the gap
+    # and the prefix advances over all three units in one commit.
+    _drive(queue, _RecordingDrive(), commit_prefix=committer)
+    assert queue.statuses() == [WorkUnitStatus.DONE] * 3
+    assert committer.applied == [datetime(2026, 6, 13, tzinfo=UTC)]
+    assert committer.watermark == datetime(2026, 6, 13, tzinfo=UTC)
+
+
+def test_every_unit_failure_is_logged_with_its_unit_id(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # No silent drops: a failing unit logs an exception record naming its
+    # provider, endpoint, and unit id -- including the one whose exception
+    # re-raises after the join.
+    fail_window = DateWindow(
+        start=datetime(2026, 6, 10, tzinfo=UTC), end=datetime(2026, 6, 11, tzinfo=UTC)
+    )
+    queue = _FakeQueue([_spec(10, 11)])
+    with (
+        caplog.at_level(logging.ERROR),
+        pytest.raises(RuntimeError, match='planted unit failure'),
+    ):
+        _drive(queue, _RecordingDrive(fail_on=fail_window))
+    failure_records = [
+        record for record in caplog.records if 'unit failed:' in record.getMessage()
+    ]
+    assert len(failure_records) == 1
+    assert 'provider=motive' in failure_records[0].getMessage()
+    assert f'endpoint={_ENDPOINT}' in failure_records[0].getMessage()
+    assert 'unit_id=1' in failure_records[0].getMessage()
+    assert failure_records[0].exc_info is not None
 
 
 def test_failed_unit_is_reclaimed_by_a_later_pass() -> None:

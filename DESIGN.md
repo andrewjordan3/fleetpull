@@ -159,6 +159,12 @@ whether the partition grain equals the window grain.** The full mechanism matrix
 | feed / `date_partitioned` | append to the partition: read + concat + dedup + rewrite | yes | not built (GeoTab) |
 | feed / `single` | `scan_parquet` + concat + dedup + rewrite | yes | not built |
 
+Build obligation for the date-window / `single` cell: it shares one file across
+work units, so it must serialize its units or reject
+`sync.backfill_unit_workers > 1` — the §5 prefix-advance record's parallel-unit
+legality holds only for the date-partitioned cell's disjoint whole-day
+partitions.
+
 **The date-partitioned date-window cell touches no parquet bytes.** Because the
 partition grain *equals* the window dimension — date partitions, a date window —
 every `date=` partition the cell writes is wholly inside or wholly outside
@@ -466,8 +472,8 @@ Rules:
 **Status: the `state/` layer is built and tested in full** — `StateDatabase` (WAL,
 application-id stamping, integrity check), the v1 forward-only migration (`cursors`
 / `runs` / `work_units`), `CursorStore`, `RunLedger` / `RunStatus`, and
-`WorkUnitStore` with its claim queue. What remains unbuilt is the *orchestrator*
-that sequences these against fetch and storage (§14), not the state layer itself.
+`WorkUnitStore` with its claim queue. The orchestrator that sequences these
+against fetch and storage (§14) is likewise built; only the feed arm remains.
 
 **Crash-safety ordering:** write parquet first (temp file + atomic rename),
 commit watermark/cursor second. A crash between the two causes a refetch on the
@@ -506,8 +512,10 @@ structurally by making the chunk the write unit.
 `user_version`. A forward-only migration runner (`state/migrations.py`) brings a
 database to head at startup, after `initialize`, applying each step's DDL and its
 version bump in one atomic transaction; a database at a version newer than the
-running code is refused. Today head is v2: v1 is the cursors, runs, and
-work_units tables, and v2 adds the rosters table.
+running code is refused. Today head is v3: v1 is the cursors, runs, and
+work_units tables, v2 adds the rosters table, and v3 adds
+`work_units.observed_max` (the prefix-advance watermark rule's datum — the
+dated record below).
 
 **Cursor persistence (the cursor store, `state/cursors.py`).** The store
 translates between the `IncrementalCursor` union (§4) and `cursors`-table rows; it
@@ -523,13 +531,22 @@ corruption stances.
 `get_cursor` returns `IncrementalCursor | None`; `None` means exactly "no cursor
 has been persisted for this (provider, endpoint)" — nothing more. The store never
 fabricates a cursor and never interprets absence; the resume-on-absence decision
-lives above it (see resume precedence below). `set_cursor` is an unconditional
-single-row upsert; the advance discipline lives in the caller, not the store.
+lives above it (see resume precedence below). Two writes, two stances:
+`set_cursor` is the unconditional single-row upsert with no advance
+discipline — the general write the feed arm will use when it lands (no
+production caller today) — and `advance_watermark_forward` (added 2026-07-20
+with the prefix-advance rule below) is the watermark arm's write, carrying the
+strictly-forward monotonicity guard and the cursor-kind guard *inside* its
+statement. That in-statement guard is the recorded exception to the
+dumb-store stance: the prefix rule's concurrent per-completion commits cannot
+enforce monotonicity race-free from outside the statement (a read-compare-write
+in the caller can interleave a stale read into a backward write).
 
 **Watermark semantics: observed-data-only and monotonic.** A `DateWatermark` is
 the maximum event timestamp actually seen; it is set only from observed data and
-only ever moves forward (the caller invokes `set_cursor` only when
-`current is None or new_max > current`). An empty fetch — or one returning nothing
+only ever moves forward — since 2026-07-20 enforced by
+`advance_watermark_forward`'s in-statement strictly-forward guard (the
+watermark arm's only write path). An empty fetch — or one returning nothing
 newer than the current watermark — writes no cursor. A watermark is never
 synthesized from a window boundary; doing so would assert coverage backed by zero
 observations and silently abandon the historical window the moment it went
@@ -612,13 +629,107 @@ a backfill plan never duplicates units. A worker claims the next unit atomically
 under concurrency because WAL serializes writers (no app-level lock) — runs it,
 and marks it `done` or `failed`. Lifecycle: `pending → claimed → done | failed`;
 `failed` units are re-served on a later pass, and `attempt_count` (incremented at
-claim, so crashes count too) caps retries at `max_attempts` so a poison unit lets
-the backfill terminate rather than loop. Crash recovery is a startup reset: a
+claim, so crashes count too) caps retries at `max_attempts`. The cap is store
+mechanism, not shipped policy (updated 2026-07-20): the orchestrator passes a
+deliberately never-binding cap (`2**31 - 1`, predating the prefix rule), because
+a finite cap would convert a persistent failure into a silently skipped unit — a
+coverage hole behind an advancing watermark — where an always-claimable poison
+unit instead fails the endpoint loudly on every invocation, the fail-loud
+posture. The never-binding cap is additionally load-bearing for the
+prefix-advance rule's gap-unreachability argument (invariant 2 in the record
+below: a drained claim loop implies every existing unit is done); the
+`max_attempts` machinery is retained for a future bounded retry policy, which
+must re-derive that argument before binding the cap. Crash recovery is a startup reset: a
 single `fleetpull` invocation runs the whole backfill — many endpoints, each
 optionally fanned across many partition keys — as one process, so at startup any
 `claimed` row is stale (its worker is gone) and reverts to `pending`; no lease or
 heartbeat, sound because the only constraint is not running two invocations
 against one state database at once (concurrent invocations are out of scope).
+
+**The prefix-advance watermark rule — parallel unit execution (decided
+2026-07-20).** A windowed endpoint's work units now drive
+`sync.backfill_unit_workers` at a time (default 4; `1` is the serial path,
+inline with no pool). Activation rationale: the per-unit transactions were
+already independent by construction — each unit owns its run-ledger row, its
+disjoint whole-day partitions, and its atomic claim — so the serial constraint
+existed *solely* to protect the per-unit watermark advance (completed units had
+to stay a contiguous prefix for a per-unit `set_cursor` to be truthful).
+Replacing that advance removed the constraint's only reason. The default is
+active (4), not opt-in: the provider's rate budget still governs at the
+transport boundary (§7), so workers beyond a provider's budget simply pace on
+rate-limit tokens — parallel units spend nothing the endpoint could not
+already spend, they only stop leaving the budget idle between units. The replacement,
+piece by piece:
+
+- **`work_units.observed_max` (migration v3).** `mark_done(unit_id,
+  observed_max=...)` records the unit's folded in-window maximum event time
+  (`to_iso8601` form; NULL for an empty unit or a pre-v3 completion) — the
+  per-unit datum the rule reads.
+- **`done_prefix_observation(provider, endpoint)`.** One SQL read returning
+  `MAX(observed_max)` over the *contiguous done-prefix*: every `done` unit whose
+  `chunk_start` precedes the earliest not-done unit's (all done units when none
+  remains). Done units beyond a pending/claimed/failed gap contribute nothing
+  until the gap closes.
+- **`CursorStore.advance_watermark_forward(provider, endpoint, observed)`.**
+  The guarded upsert whose monotonicity and cursor-kind guards live *inside*
+  the statement (the recorded exception to the dumb-store stance above):
+  inserts when absent, advances when strictly forward, changes nothing
+  otherwise, and surfaces a stored feed cursor as `ConfigurationError`.
+  In-SQL because the commits race — a caller-side read-compare-write can
+  interleave a stale prefix read into a backward write; the statement cannot.
+- **The commit choreography.** After every unit completion the unit loop
+  invokes the runner's prefix commit (`done_prefix_observation` →
+  `advance_watermark_forward`); `_run_watermark` also invokes it **once at run
+  start** — the crash-heal for a crash landing between a unit's done-mark and
+  its prefix commit (the read is cheap; an up-to-date cursor makes it a no-op).
+  Completions may land in any order and every persisted watermark is true at
+  every instant: everything at or before it has been fetched and committed.
+
+**The four load-bearing invariants (the prefix read's gap-blindness).** The
+prefix SQL sees only *rows*: a hole no row represents — a never-enqueued window
+between done units — would not gate the prefix, and the far observation would
+be returned. Such a hole is unreachable today because, and only because:
+
+1. **One enqueue site, running only after the claim loop drains.**
+   `_run_watermark` drives leftover claimables to drain, *then* resolves and
+   enqueues the residual — so the claimable set is always one contiguous
+   tiling, and no second enqueue site can interleave a plan mid-drive.
+2. **The never-binding attempt cap.** A drained claim loop implies every
+   existing unit is done — no capped-out unit can be silently left not-done
+   behind an advancing prefix (the fail-loud record above).
+3. **`work_units` rows are never deleted** (the §13 provenance doctrine) — a
+   pruned done row can never fake contiguity across what it used to gate.
+4. **Planner windows tile without holes from the resume arms.** The residual
+   window starts at the resume precedence (watermark less lookback, floored;
+   else frontier; else anchor), which never leaps past coverage — consecutive
+   plans leave no un-enqueued day between units.
+
+Plainly: **any future change that violates one of these — row pruning, a second
+enqueue site, a real (binding) attempt cap — must re-derive the prefix rule's
+safety before shipping.** The state-layer gap-blindness test
+(`tests/state/test_work_units.py`, the never-enqueued-hole case) is the
+tripwire: it pins the query's gap-blind behavior so any "fix" or new reliance
+is a conscious decision.
+
+**Failure semantics and the accepted retry residual.** A failing unit stops
+further claiming (in-flight siblings finish and commit — each is an
+independent transaction), is logged with its unit id, is marked `failed`
+(claimable again next invocation), and the first failure re-raises after all
+workers join. The stop signal deliberately lands *before* the failed-mark,
+which narrows but does **not** close a same-invocation retry window: a sibling
+already past its stop check when the mark lands can claim the just-failed unit
+once more — bounded at one extra claim per already-running sibling, each
+logged and each incrementing `attempt_count`. Accepted as recorded.
+
+**Scope: `DATE_PARTITIONED` watermark cells only.** Parallel units are legal
+under the single-writer invariant on two legs, both load-bearing: every
+shipped watermark cell is date-partitioned with disjoint whole-day unit
+windows (midnight-aligned, contiguous tiling — no two units share a
+partition), and the concurrently claimable set is one contiguous plan
+(enqueue-after-drain, invariant 1). A future (`SINGLE`, `WatermarkMode`) cell
+shares one file across units, so it **must serialize its units or reject
+`backfill_unit_workers > 1`** — recorded here as that cell's build obligation
+(§3's mechanism matrix, the unbuilt date-window/`single` row).
 
 ---
 
@@ -748,7 +859,7 @@ order within each provider, provider config order across providers (§10's
 "in run order" contract, updated). The `sync finished` elapsed time stays
 the run's wall clock — now the slowest queue, not the queues' sum.
 
-Accepted residual (recorded at activation): a KeyboardInterrupt landing while the main thread joins the queue workers abandons the remaining joins, so the client/pool context managers can close while a worker still fetches -- noisy worker tracebacks and bounded exit latency, never corruption (the per-unit parquet -> cursor -> ledger ordering keeps state sound, exactly the crash story §5 already tells). The same window existed under the serial loop; signal hardening is polish-phase work (§15 item 8).
+Accepted residual (recorded at activation): a KeyboardInterrupt landing while the main thread joins the queue workers abandons the remaining joins, so the client/pool context managers can close while a worker still fetches -- noisy worker tracebacks and bounded exit latency, never corruption (the per-unit parquet -> ledger -> done-mark -> prefix-commit ordering with unit-gating keeps state sound, exactly the crash story §5/§14 tell). The same window existed under the serial loop; signal hardening is polish-phase work (§15 item 8).
 
 ### Acquisition protocol
 
@@ -1877,9 +1988,11 @@ fleetpull/
     streaming.py   # stream_processed_batches: a driver's pages, validated and framed per batch (§14)
     roster_harvest.py # harvest_roster_members: a feeder's complete membership as roster members (drives streaming, no write)
     roster_refresh.py # RosterRefreshCoordinator: refresh a roster when stale (staleness -> harvest -> reconcile -> apply); refresh only, not fan-out
-    resume.py      # resolve_watermark_start + should_advance_watermark (§14)
+    resume.py      # resolve_watermark_start — stored-cursor interpretation + its guards (§14)
     backfill.py    # plan_backfill_units: whole-UTC-day chunk -> WorkUnitSpecs (§5)
-    unit_loop.py   # the claim-and-drive loop over work units (§13's settled transaction boundary)
+    unit_loop.py   # the concurrent, prefix-committing claim-and-drive loop over
+                   #   work units (§13's settled transaction boundary; §5's
+                   #   prefix-advance rule)
     entry.py       # run_endpoint — the orchestration entry: roster-fed driver resolution, roster refresh, feeder tap (§14)
     executors.py   # FetchPoolRegistry — per-provider executors, context-managed (§7)
     fanout.py      # stream_pieces — the bounded-channel threaded fan-out (§7)
@@ -2222,24 +2335,31 @@ tzinfo-construction rules mechanically.
   candidates, but the third the `WorkUnitStore` was built for — per **unit**
   (a date chunk of the whole roster), not per run and not per member. Every
   windowed run plans its window into `sync.backfill_chunk_days`-wide units (a
-  daily window degenerates to one unit) and drives them serially in ascending
-  window order; each unit is its own transaction — fetch the unit's window,
-  finalize its partitions, advance the watermark on a strictly-forward
-  observation, record its ledger row, mark it done. Ascending completion
-  keeps completed units a contiguous prefix, so every persisted watermark is
-  true at every instant — the truth invariant, and the reason unit order is
-  not a free choice. Resume precedence: incomplete units outrank the
+  daily window degenerates to one unit) and drives them
+  `sync.backfill_unit_workers` at a time (claims FIFO by `unit_id`, i.e.
+  ascending window order; completions in any order — amended 2026-07-20);
+  each unit is its own transaction — fetch the unit's window, finalize its
+  partitions, record its ledger row, mark it done with its folded
+  observation. The watermark advances per completion across the contiguous
+  done-prefix through the store's atomic forward-only write — §5's
+  prefix-advance record, which retired the earlier serial-ascending
+  constraint together with the per-unit advance it existed to protect; the
+  truth invariant (every persisted watermark true at every instant) now
+  rests on the prefix rule, not on completion order. Resume precedence:
+  incomplete units outrank the
   watermark — a run re-claims and drives them first (an in-progress unit
   found at run start is by definition orphaned, because fleetpull assumes a
   **single driver per state database**), then plans the residual, resolved
   exactly as the resume chain always has (watermark less lookback, floored;
   else frontier; else anchor; cutoff trailing edge), as new units at the
   current chunk size — persisted unit boundaries are honored on resume even
-  when `backfill_chunk_days` changed. The first failed unit fail-fasts the
-  endpoint: it returns to a claimable state with nothing committed, the
-  completed prefix stands, and the next run re-claims what remains.
+  when `backfill_chunk_days` changed. A failed unit stops further claiming
+  (in-flight siblings finish and commit), returns to a claimable state with
+  nothing committed, and fails the endpoint after the workers join; the
+  completed units stand, and the next run re-claims what remains.
   Completed unit rows are kept, not pruned — the runs-ledger provenance
-  doctrine. One emergent consequence, deliberate: a re-invocation whose
+  doctrine, now also §5-invariant 3 of the prefix rule. One emergent
+  consequence, deliberate: a re-invocation whose
   residual window exactly matches an already-done unit's bounds drives
   nothing (the idempotent enqueue collapses onto the kept `done` row), so a
   same-day identical-window re-run is a no-op; the late-arrival margin
@@ -2263,7 +2383,10 @@ tzinfo-construction rules mechanically.
     for failures; a logger bound only in modules that log (§12, CLAUDE.md)
     — carry this content, now built: sync start/end, endpoint
     start/complete, the watermark plan (window bounds and claimable units),
-    per-unit completion, and the fan-out heartbeat every 100 members, with
+    per-unit completion (in completion order — nondeterministic across
+    parallel unit workers since 2026-07-20; the unit id and window bounds on
+    the line keep it attributable), and the fan-out heartbeat every 100
+    members, with
     DEBUG carrying the per-member detail. Never per page or per record —
     that is flood, not progress. (The motivating incident: the last live
     pre-narration run was ~80 minutes for two log lines.)
@@ -2279,8 +2402,8 @@ tzinfo-construction rules mechanically.
 
 The layer that sequences fetch, records, storage (§3), and state (§5) into one
 endpoint's run. The network, `records/`, `storage/`, and `state/` layers are all
-built; this is the layer that drives them, and the only major vertical still
-unbuilt.
+built; this layer, which drives them, is built in full as well (only the
+feed arm remains, §15).
 
 **The orchestrator-boundary principle: higher-level orchestrators and tools are
 polymorphic — provider-agnostic and endpoint-agnostic.** A caller invoking an
@@ -2330,8 +2453,10 @@ orchestration splits into three nested layers, by concern:
 - **`EndpointRunner`** (`orchestrator/runner.py`) owns one endpoint's run
   *transaction*: open the run (`RunLedger`), construct the writer (`select_writer`,
   §3), call the request driver, consume each record batch the driver yields
-  (validate -> frame -> guard -> `writer.write`), then `finalize` once, advance the
-  cursor once, and complete the run once. It is cardinality-blind — it never knows,
+  (validate -> frame -> guard -> `writer.write`), then `finalize` once and
+  complete the run once; on the watermark arm the cursor advance is the unit
+  loop's per-completion prefix commit (§5), never a step inside the spine. It
+  is cardinality-blind — it never knows,
   or branches on, how many requests a run makes.
 - **`RequestDriver`** (`orchestrator/drivers.py`) owns request *cardinality* and
   yields the run's fetched pages (records and durable progress) as a stream of
@@ -2443,35 +2568,51 @@ rows (the require-inside half of the normalize-at-boundary doctrine, §12). Thes
 `incremental/resolution.py` (cursor-free date math); the runner reads the cursor,
 the clock, and the frontier, calls them, and writes — no resume logic on the class,
 the same split as `process_batch` in `orchestrator/batch.py`. The per-unit transaction
-— open the run, drive/write/finalize, advance the cursor, complete — is the
-shared spine `_execute_window`, in the parquet -> cursor -> ledger order below.
-`_run_watermark` is the plan-and-drive loop (§13's settled record): it drives
-every claimable work unit through the spine, each with the freshly read prior
-cursor; the cursor advances only when `should_advance_watermark` confirms the
-unit's folded in-window maximum is strictly past that prior (the monotonicity
-the cursor store omits) and only when the unit observed at least one in-window
-event; the `set_cursor` write is inline, between `finalize` and `complete_run`.
-Serial ascending units make the per-unit advance sound — the out-of-order
-concern that once suppressed the advance on backfill chunks is gone with
-out-of-order execution itself. A unit fans the whole roster, so each partition
-is replaced with every member's rows, exactly the in-full refetch the
-partitioned writer already assumes — the writer is unchanged.
+— open the run, drive/write/finalize, complete — is the shared spine
+`_execute_window`, in the crash order below; the unit's folded in-window
+maximum rides its `Executed` outcome instead of advancing anything inline.
+`_run_watermark` is the plan-and-drive loop (§13's settled record, amended
+2026-07-20): it commits the watermark prefix once at run start (the §5
+crash-heal), drives every claimable work unit through the spine
+`backfill_unit_workers` at a time, and after each completion records the
+unit's observation at `mark_done` and re-commits the prefix — the watermark
+advances only across the contiguous done-prefix, through
+`advance_watermark_forward`'s in-statement guard (§5's prefix-advance rule).
+The `should_advance_watermark` helper and the serial-ascending constraint are
+retired together: the per-unit advance the ordering made sound is gone, and
+with it the reason unit order was not a free choice — claim order stays FIFO
+ascending, completion order is free. A unit fans the whole roster, so each
+partition is replaced with every member's rows, exactly the in-full refetch
+the partitioned writer already assumes — the writer is unchanged.
 
-**Crash-safety ordering — parquet, then cursor, then ledger.** §5 fixes
-parquet-before-cursor; the run executor adds a second ordering, cursor before run
-completion. A succeeded watermark run feeds `coverage_frontier` (resume arm 2, §4),
-and arm 2 applies no lookback. So if `complete_run` landed before `set_cursor` and
-the cursor write then failed or crashed, the next run would find no cursor but a
-frontier, resume from the frontier without lookback, and skip late arrivals inside
-the window just written. The order is therefore **parquet -> `set_cursor` ->
-`complete_run`**: a crash between the cursor and the completion leaves the watermark
-advanced (arm 1, lookback applies) and the run merely `running` (diagnostic-only —
-the frontier filters `succeeded`), which is the protective state. Snapshots are
-unaffected: they hold no cursor and never reach the frontier.
+**Crash-safety ordering — parquet, ledger, done-mark, prefix commit
+(superseded 2026-07-20; cursor-before-completion retired).** §5 fixes
+parquet-before-cursor. The executor's earlier second ordering — cursor before
+run completion — existed for the frontier-without-lookback hazard: a succeeded
+watermark run feeds `coverage_frontier` (resume arm 2, §4), arm 2 applies no
+lookback, so a `complete_run` that landed before a then-lost cursor write
+would make the next run resume from the frontier without lookback and skip
+late arrivals inside the window just written. The per-unit order is now
+**parquet finalize -> `complete_run` (the ledger, inside the spine) ->
+`mark_done` (the observation) -> prefix commit (both in the unit loop)** —
+and it is safe *without* cursor-before-completion because the protection
+moved from write-ordering to **unit-gating plus the run-start heal**: a crash
+after `complete_run` but before `mark_done` leaves the unit not-done, and
+incomplete units persist and outrank the residual plan — `_run_watermark`
+re-claims and drives every claimable unit *before* resolving the residual, so
+the window is refetched whole (delete-by-window idempotent) and the prefix
+commits before any frontier arm could matter; a crash between `mark_done` and
+its prefix commit is healed by the run-start `commit_prefix` before any claim.
+The hazard could only bite when a data-bearing window's coverage outran its
+cursor with no unit left to gate it, and the unit now always remains (or its
+observation is already recorded for the heal). A crash mid-spine leaves the
+run merely `running` (diagnostic-only — the frontier filters `succeeded`).
+Snapshots are unaffected: they hold no cursor and never reach the frontier.
 
-**Two future-time guards, one rule applied where it can surface.** The `CursorStore`
-enforces no advance discipline by design (§5), so the watermark arm owns the
-future-time checks — both in the pure helpers it calls. *Guard A*, in
+**Two future-time guards, one rule applied where it can surface.** The
+`CursorStore`'s only advance discipline is `advance_watermark_forward`'s
+strictly-forward guard (§5, 2026-07-20); the future-time checks stay the
+watermark arm's — both in the pure helpers it calls. *Guard A*, in
 `resolve_watermark_start` before window resolution: a persisted `watermark > now` is
 corruption and raises `ConfigurationError` — otherwise a future-dated cursor becomes
 a permanent "caught up". *Guard B*, inside `process_batch` on the raw frame **before**
@@ -2511,7 +2652,8 @@ interim.
 **Build order.** (1) `ProviderClientRegistry`; (2) `EndpointRunner` +
 `SingleRequestDriver` + `RunOutcome`, exercising the snapshot path end-to-end on
 `vehicles`; (3) the staging crash-clean; (4) the watermark arm — window resolution,
-both guards, the incremental fold, the parquet -> cursor -> ledger ordering, and a
+both guards, the incremental fold, the then-current parquet -> cursor -> ledger
+ordering (since superseded by the 2026-07-20 crash-order record above), and a
 watermark stub endpoint to exercise it without fan-out. `FanOutRequestDriver` and
 the coordinator follow, wiring `vehicle_locations`'s roster fan-out shape.
 
@@ -2710,8 +2852,9 @@ resolution (item 1, done).
 unified plan-and-drive loop is the only windowed path: the store, the chunk
 planner (`plan_backfill_units`), and the claim-and-drive loop
 (`orchestrator/unit_loop.py` composed by the runner's watermark arm) plan
-every windowed run as units and drive them serially ascending with per-unit
-commits (§13's settled transaction-boundary record). The whole-window
+every windowed run as units and drive them `backfill_unit_workers` at a time
+with per-unit commits under the §5 prefix-advance watermark rule (§13's
+settled transaction-boundary record, amended 2026-07-20). The whole-window
 watermark arm and the never-wired no-advance per-chunk arm are deleted — the
 single-unit degenerate case is the daily run. (The old
 deferred-inventory line here read "per-provider executor and per-endpoint
