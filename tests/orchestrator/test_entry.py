@@ -8,7 +8,7 @@ import pytest
 
 from fleetpull.endpoints.shared import (
     EndpointDefinition,
-    FanOutBinding,
+    RosterFanOut,
     SnapshotMode,
     StaticGetSpecBuilder,
     StorageKind,
@@ -76,7 +76,7 @@ def _fan_out_definition() -> EndpointDefinition[_WatermarkModel]:
         storage_kind=StorageKind.DATE_PARTITIONED,
         sync_mode=WatermarkMode(lookback=timedelta(days=1), cutoff=timedelta(days=1)),
         event_time_column='occurred_at',
-        fan_out=FanOutBinding(roster=VEHICLE_IDS_KEY, path_placeholder='vehicle_id'),
+        request_shape=RosterFanOut(roster=VEHICLE_IDS_KEY, member_key='vehicle_id'),
     )
 
 
@@ -205,7 +205,7 @@ def test_fan_out_resolves_refreshes_reads_and_fans_out() -> None:
     [(_, driver)] = runner.runs
     assert isinstance(driver, FanOutRequestDriver)
     assert driver.members == ['101', '202']
-    assert driver.path_placeholder == 'vehicle_id'
+    assert driver.member_key == 'vehicle_id'
 
 
 def test_cold_start_refresh_failure_propagates_unswallowed() -> None:
@@ -355,8 +355,8 @@ def test_watermark_definition_sourcing_a_roster_raises_before_anything_runs() ->
 
 def test_endpoint_that_sources_nothing_and_fans_out_nothing_is_untouched() -> None:
     # The baseline the agnosticism principle protects: an endpoint that is
-    # nobody's source and declares no fan-out flows through the entry with no
-    # observer installed and no roster machinery touched.
+    # nobody's source and declares no fanned shape flows through the entry
+    # with no observer installed and no roster machinery touched.
     runner = _RecordingRunner()
     refresher = _RecordingRefresher()
     members = _CannedMembers([])
@@ -384,8 +384,9 @@ def test_identical_entry_serves_snapshot_and_fan_out_polymorphically() -> None:
     # The agnosticism principle's regression test: a roster-sourcing snapshot
     # and a fan-out watermark definition flow through the identical entry
     # with identical collaborators; every difference in observed behavior
-    # traces to declared facts (fan_out None vs the binding; sourced vs not
-    # in the roster catalog), never to provider or endpoint identity.
+    # traces to declared facts (SingleFetch vs the RosterFanOut shape;
+    # sourced vs not in the roster catalog), never to provider or endpoint
+    # identity.
     runner = _RecordingRunner()
     refresher = _RecordingRefresher()
     members = _CannedMembers(['101'])
@@ -407,12 +408,12 @@ def test_identical_entry_serves_snapshot_and_fan_out_polymorphically() -> None:
     assert runner.observers[0] is not None
     assert runner.observers[1] is None
     # The refresh/read pair fires exactly once -- for the one definition that
-    # declares a binding -- and with that binding's declared key.
+    # declares a roster fan-out -- and with that shape's declared key.
     assert refresher.refreshed == [VEHICLE_IDS_DEFINITION]
     assert members.reads == [VEHICLE_IDS_KEY]
-    declared_binding = fan_out.fan_out
-    assert declared_binding is not None
-    assert second_driver.path_placeholder == declared_binding.path_placeholder
+    declared_shape = fan_out.request_shape
+    assert isinstance(declared_shape, RosterFanOut)
+    assert second_driver.member_key == declared_shape.member_key
 
 
 def test_fan_out_driver_carries_the_providers_fetch_pool() -> None:

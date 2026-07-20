@@ -10,10 +10,10 @@ this type (captured 2026-07-15: ``ArgumentException``, "Can not sort by
 id"), and any sort composed with a search degrades to the deterministic
 ``-32000 GenericException`` — so the leaf composes the shared
 ``GeotabWindowedGetSpecBuilder`` (``_get_requests``) with
-``id_sort=False`` (no ``sort`` member ever written), declares
-``WindowBisection``, and the orchestrator's bisecting driver fetches
-each unit window whole, halving on the exactly-full overflow signal
-down to the floor.
+``id_sort=False`` (no ``sort`` member ever written), declares the
+``BisectedWindowFetch`` request shape, and the orchestrator's bisecting
+driver fetches each unit window whole, halving on the exactly-full
+overflow signal down to the floor.
 
 ``ExceptionEventSearch`` window matching is OVERLAP-anchored (captured
 2026-07-15): retrieval supersets start-anchored ownership, so
@@ -36,10 +36,10 @@ from fleetpull.endpoints.geotab._get_requests import (
     server_host,
 )
 from fleetpull.endpoints.shared import (
+    BisectedWindowFetch,
     EndpointDefinition,
     StorageKind,
     WatermarkMode,
-    WindowBisection,
 )
 from fleetpull.models.geotab import ExceptionEvent
 from fleetpull.network.decoders import SinglePageDecoder
@@ -78,7 +78,7 @@ def build_endpoint(config: GeotabConfig) -> EndpointDefinition[ExceptionEvent]:
     late-arrival lookback from config, which also absorbs the observed
     post-creation mutation), the bisecting driver fetches each unit
     window whole (halving on overflow per the declared
-    ``WindowBisection``), and the kept records land in
+    ``BisectedWindowFetch`` shape), and the kept records land in
     ``date=YYYY-MM-DD`` partitions on ``active_from``, each refetched
     partition replaced. Responses are single pages under the JSON-RPC
     ``result`` key — the cap that once disqualified single-page decoding
@@ -111,7 +111,7 @@ def build_endpoint(config: GeotabConfig) -> EndpointDefinition[ExceptionEvent]:
             cutoff=timedelta(days=config.cutoff_days),
         ),
         event_time_column='active_from',
-        window_bisection=WindowBisection(
+        request_shape=BisectedWindowFetch(
             results_limit=_RESULTS_LIMIT,
             floor=_FLOOR,
             event_time_wire_key=_EVENT_TIME_WIRE_KEY,

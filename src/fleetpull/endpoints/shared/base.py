@@ -13,19 +13,25 @@ This module ships the binding, the two Protocols it defines (``SpecBuilder``
 and ``CompletenessCheck``; the ``PageDecoder`` it composes is imported from the
 contract), and the small declaration types beside it: ``StorageKind``, the
 ``SyncMode`` union (``SnapshotMode`` / ``WatermarkMode`` / ``FeedMode``), and
-the ``ResumeValue`` alias. The ``event_time_column`` the watermark and date-partitioning read
+the ``ResumeValue`` alias; the ``RequestShape`` union it declares on
+``request_shape`` lives in its own family module (``request_shape.py``). The
+``event_time_column`` the watermark and date-partitioning read
 (§3/§5) now ships here on the binding, validated at construction; the records
 ``schema_overrides`` hatch (§9) is the one contract piece still deferred.
 """
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Protocol, get_args
 
-from fleetpull.endpoints.shared.bisection import WindowBisection
-from fleetpull.endpoints.shared.fan_out import FanOutBinding
+from fleetpull.endpoints.shared.request_shape import (
+    BisectedWindowFetch,
+    ParamSweep,
+    RequestShape,
+    SingleFetch,
+)
 from fleetpull.incremental import DateWindow, FeedToken
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import TransportClient
@@ -158,7 +164,7 @@ class SpecBuilder(Protocol):
     """
 
     def build_spec(
-        self, resume: ResumeValue, path_values: Mapping[str, str]
+        self, resume: ResumeValue, member_values: Mapping[str, str]
     ) -> RequestSpec:
         """
         Build the endpoint's first request.
@@ -166,9 +172,12 @@ class SpecBuilder(Protocol):
         Args:
             resume: The resume value to inject — a ``DateWindow`` (watermark), a
                 ``FeedToken`` (feed), or ``None`` (no committed cursor).
-            path_values: Substitutions for URL-path placeholders — an empty mapping
-                for non-fan-out endpoints, a partition key for URL-path fan-out
-                (e.g. a per-vehicle locations endpoint).
+            member_values: The per-chain member binding the request shape
+                supplies — an empty mapping for a single-chain run, one
+                ``{member_key: member}`` entry per fan-out or sweep chain. The
+                spec builder owns the interpretation: a URL-path placeholder
+                value for a roster fan-out (e.g. a per-vehicle locations
+                endpoint), a query-parameter value for a param sweep.
 
         Returns:
             The first ``RequestSpec``; the page decoder builds every request after it.
@@ -257,25 +266,23 @@ class EndpointDefinition[ModelT: ResponseModel]:
             for endpoints with no event-time dimension (every snapshot). Required
             for ``WatermarkMode`` / ``DATE_PARTITIONED``, forbidden for snapshots;
             validated against ``response_model`` at construction.
-        fan_out: The fan-out declaration (``FanOutBinding``) for an endpoint that
-            fans a request per member of a roster (e.g. per-vehicle
-            ``vehicle_locations``); ``None`` for endpoints that fetch once. Names only
-            a ``RosterKey`` -- the source lives in the registry. Read by the
-            orchestrator; not validated here.
+        request_shape: The request-cardinality declaration — exactly one
+            ``RequestShape`` member, so mutual exclusion between patterns is
+            structural. Defaults to ``SingleFetch()`` (one chain), keeping
+            single-chain leaves undeclared; ``RosterFanOut`` fans one chain per
+            roster member, ``ParamSweep`` one per declared query-param value,
+            ``BisectedWindowFetch`` fetches each unit window whole and halves
+            on overflow. Resolved to a request driver by the orchestrator's
+            shape resolution; semantic sync-mode pairings are validated here at
+            construction.
         completeness_check: The provider-reported-count truth check the
             single-fetch driver fires after the harvest streams (``None``
             for endpoints with no silent cap to guard against).
-            Snapshot-mode, ``fan_out=None`` endpoints only -- an
-            expected-count comparison is meaningful only against a complete
-            listing, which a windowed (partial) or fan-out (per-member) run
-            never is; any other declaration is a wiring error rejected at
-            construction.
-        window_bisection: The adaptive window-bisection declaration
-            (``WindowBisection``) for a capped, unsortable Get endpoint;
-            ``None`` everywhere else. Watermark-mode, date-partitioned,
-            ``fan_out=None`` endpoints only; any other pairing is a wiring
-            error rejected at construction. Executed by the orchestrator's
-            bisecting driver.
+            Snapshot-mode, ``SingleFetch``-shaped endpoints only -- an
+            expected-count comparison is meaningful only against one complete
+            listing, which a windowed (partial) or per-member (fan-out /
+            sweep) run never is; any other declaration is a wiring error
+            rejected at construction.
     """
 
     provider: Provider
@@ -287,20 +294,18 @@ class EndpointDefinition[ModelT: ResponseModel]:
     storage_kind: StorageKind
     sync_mode: SyncMode
     event_time_column: str | None = None
-    fan_out: FanOutBinding | None = None
+    request_shape: RequestShape = field(default_factory=SingleFetch)
     completeness_check: CompletenessCheck | None = None
-    window_bisection: WindowBisection | None = None
 
     def __post_init__(self) -> None:
-        """Validate the binding's storage / sync / event-time / guard coherence.
+        """Validate the binding's storage / sync / event-time / shape coherence.
 
         Raises:
-            ValueError: The storage-kind / sync-mode pairing is invalid, the
+            ValueError: The storage-kind / sync-mode pairing is invalid; the
                 event-time column is required-but-missing or forbidden-but-present
-                or names no field on the response model, a completeness check
-                is declared outside snapshot-mode single-fetch, or a window
-                bisection is declared outside watermark / date-partitioned
-                single-fetch.
+                or names no field on the response model; or the declared request
+                shape (or the completeness check against it) fails a semantic
+                sync-mode pairing.
             TypeError: ``event_time_column`` names a non-date-like field.
 
         Side Effects:
@@ -308,39 +313,54 @@ class EndpointDefinition[ModelT: ResponseModel]:
         """
         self._validate_storage_sync_pairing()
         self._validate_event_time_column()
-        self._validate_completeness_check()
-        self._validate_window_bisection()
+        self._validate_request_shape()
 
-    def _validate_window_bisection(self) -> None:
-        """Reject a bisection declaration outside its executable shape.
+    def _validate_request_shape(self) -> None:
+        """Reject a request shape (or its check pairing) outside its semantics.
 
-        Bisection recursively narrows a resume window, so it is meaningful
-        only for a windowed (``WatermarkMode``), date-partitioned endpoint;
-        and it owns the unit's whole request cardinality, so it cannot
-        compose with a per-member fan-out.
+        Mutual exclusion between cardinality patterns is structural (one
+        ``request_shape`` field); what remains here are the semantic
+        pairings. ``BisectedWindowFetch`` recursively narrows a resume
+        window, so it requires a windowed (``WatermarkMode``),
+        date-partitioned endpoint. A ``completeness_check`` requires
+        ``SnapshotMode`` AND ``SingleFetch`` -- an expected-count comparison
+        is meaningful only against one complete listing, and a windowed
+        harvest is deliberately partial while a fan-out or sweep run is
+        per-member. ``ParamSweep`` composes with ``SnapshotMode`` (the sweep
+        union is the full current listing); windowed sweep composition is
+        untested against any provider, so non-snapshot sweeps are rejected
+        loudly for now.
 
         Raises:
-            ValueError: A bisection is declared on a non-watermark or
-                non-date-partitioned endpoint, or beside a fan-out.
+            ValueError: A pairing above is violated.
 
         Side Effects:
             None.
         """
-        if self.window_bisection is None:
-            return
-        if not isinstance(self.sync_mode, WatermarkMode) or (
-            self.storage_kind is not StorageKind.DATE_PARTITIONED
-        ):
-            raise ValueError(
-                f'{self.provider.value}.{self.name}: window_bisection requires '
-                f'WatermarkMode and DATE_PARTITIONED storage, got '
-                f'{type(self.sync_mode).__name__} / {self.storage_kind}.'
-            )
-        if self.fan_out is not None:
-            raise ValueError(
-                f'{self.provider.value}.{self.name}: window_bisection cannot '
-                f'compose with a fan-out declaration.'
-            )
+        match self.request_shape:
+            case BisectedWindowFetch():
+                if not isinstance(self.sync_mode, WatermarkMode) or (
+                    self.storage_kind is not StorageKind.DATE_PARTITIONED
+                ):
+                    raise ValueError(
+                        f'{self.provider.value}.{self.name}: BisectedWindowFetch '
+                        f'requires WatermarkMode and DATE_PARTITIONED storage, '
+                        f'got {type(self.sync_mode).__name__} / '
+                        f'{self.storage_kind}.'
+                    )
+            case ParamSweep() if not isinstance(self.sync_mode, SnapshotMode):
+                # Reopen note: a windowed sweep (one chain per value per
+                # window) is coherent on paper but untested against any
+                # provider's window-matching semantics -- widen this pairing
+                # only with a probed consumer, not speculatively.
+                raise ValueError(
+                    f'{self.provider.value}.{self.name}: ParamSweep requires '
+                    f'SnapshotMode, got {type(self.sync_mode).__name__} -- '
+                    f'windowed sweep composition is unprobed.'
+                )
+            case _:
+                pass
+        self._validate_completeness_check()
 
     def _validate_storage_sync_pairing(self) -> None:
         """Reject a snapshot endpoint laid out anything but ``SINGLE``.
@@ -404,17 +424,18 @@ class EndpointDefinition[ModelT: ResponseModel]:
         """Reject a completeness check declared outside snapshot single-fetch.
 
         An expected-count comparison is meaningful only against a complete
-        listing: a snapshot's single chain fetches the entity's full current
-        state, so the provider's count and the harvest describe the same
-        population. A windowed harvest is deliberately partial (one window of
-        an unbounded history) and a fan-out run is per-member -- on either,
-        the comparison would be counting different things. Both declarations
-        are wiring bugs, rejected here at the declaration seam so the driver
-        layer never needs to reason about it.
+        listing fetched as one chain: a snapshot's single chain fetches the
+        entity's full current state, so the provider's count and the harvest
+        describe the same population. A windowed harvest is deliberately
+        partial (one window of an unbounded history) and a fan-out or sweep
+        run is per-member -- on either, the comparison would be counting
+        different things. Both declarations are wiring bugs, rejected here at
+        the declaration seam so the driver layer never needs to reason about
+        it.
 
         Raises:
-            ValueError: The check is declared on a non-snapshot or fan-out
-                endpoint.
+            ValueError: The check is declared on a non-snapshot or
+                non-``SingleFetch`` endpoint.
 
         Side Effects:
             None.
@@ -428,11 +449,13 @@ class EndpointDefinition[ModelT: ResponseModel]:
                 f'meaningful only against a complete listing, and a windowed '
                 f'harvest is deliberately partial.'
             )
-        if self.fan_out is not None:
+        if not isinstance(self.request_shape, SingleFetch):
             raise ValueError(
                 f'{self.provider.value}.{self.name}: a completeness_check '
-                f'requires fan_out=None -- a fan-out run is per-member, not '
-                f'the complete listing an expected count describes.'
+                f'requires the SingleFetch request shape, got '
+                f'{type(self.request_shape).__name__} -- a fan-out or sweep '
+                f'run is per-member, not the one complete listing an expected '
+                f'count describes.'
             )
 
     def _require_date_like_field(self, column: str) -> None:

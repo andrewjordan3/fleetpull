@@ -4,7 +4,7 @@ or per-endpoint behavior.
 
 A snapshot endpoint's first request is just ``GET base_url + path``: it
 translates no resume value (``SnapshotMode`` always passes
-``resume=None``) and fans out over no path, so its spec-builder carries
+``resume=None``) and binds no member, so its spec-builder carries
 no provider- or endpoint-specific logic and is shared across every
 snapshot binding. Per-provider resume translation -- watermark windows,
 feed tokens -- lives in dedicated builders beside their bindings, never
@@ -24,11 +24,11 @@ __all__: list[str] = ['StaticGetSpecBuilder']
 class StaticGetSpecBuilder:
     """Build a fixed ``GET base_url + path`` first request.
 
-    The spec-builder for endpoints with no resume value and no URL-path
-    fan-out (snapshots). Both ``build_spec`` arguments are accepted to
-    satisfy the ``SpecBuilder`` protocol but are intentionally unused: a
-    snapshot resumes from nothing, and a non-fan-out endpoint substitutes
-    no path placeholders.
+    The spec-builder for endpoints with no resume value and no per-chain
+    member binding (single-chain snapshots). Both ``build_spec`` arguments
+    are accepted to satisfy the ``SpecBuilder`` protocol but are
+    intentionally unused: a snapshot resumes from nothing, and a
+    single-chain endpoint binds no member.
 
     Attributes:
         base_url: Root of the provider API, trailing-slash-normalized by
@@ -41,15 +41,15 @@ class StaticGetSpecBuilder:
     path: str
 
     def build_spec(
-        self, resume: ResumeValue, path_values: Mapping[str, str]
+        self, resume: ResumeValue, member_values: Mapping[str, str]
     ) -> RequestSpec:
         """Build the fixed first request.
 
         Args:
             resume: Accepted to satisfy the protocol; unused -- a snapshot
                 resumes from nothing.
-            path_values: Accepted to satisfy the protocol; unused -- there
-                is no URL-path fan-out.
+            member_values: Accepted to satisfy the protocol; unused -- a
+                single-chain endpoint binds no member.
 
         Returns:
             A credential-less ``GET`` for ``base_url + path``. Auth headers

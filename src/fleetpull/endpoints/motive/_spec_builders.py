@@ -54,7 +54,7 @@ class MotiveFleetDateRangeSpecBuilder:
     window_pad_days: int = 0
 
     def build_spec(
-        self, resume: ResumeValue, path_values: Mapping[str, str]
+        self, resume: ResumeValue, member_values: Mapping[str, str]
     ) -> RequestSpec:
         """Build the fleet-wide, date-windowed GET.
 
@@ -62,8 +62,8 @@ class MotiveFleetDateRangeSpecBuilder:
             resume: The run's resume window. Must be a ``DateWindow`` — a
                 watermark endpoint always resumes from one; any other
                 value is a wiring bug.
-            path_values: Accepted to satisfy the protocol; unused — there
-                is no URL-path fan-out.
+            member_values: Accepted to satisfy the protocol; unused — a
+                fleet-wide single chain binds no member.
 
         Returns:
             A credential-less ``GET`` for ``base_url + path`` carrying

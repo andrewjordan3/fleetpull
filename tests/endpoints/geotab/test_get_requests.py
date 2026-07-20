@@ -29,10 +29,10 @@ class TestGeotabGetSpecBuilder:
             end=datetime(2026, 7, 13, tzinfo=UTC),
         )
         with pytest.raises(TypeError, match='DateWindow'):
-            _build_builder().build_spec(resume=window, path_values={})
+            _build_builder().build_spec(resume=window, member_values={})
 
     def test_rejects_a_feed_token_resume(self) -> None:
         with pytest.raises(TypeError, match='FeedToken'):
             _build_builder().build_spec(
-                resume=FeedToken(from_version='0000000000000000'), path_values={}
+                resume=FeedToken(from_version='0000000000000000'), member_values={}
             )

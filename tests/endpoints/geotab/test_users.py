@@ -15,6 +15,7 @@ from fleetpull.endpoints.geotab._get_requests import (
 from fleetpull.endpoints.geotab.users import build_endpoint
 from fleetpull.endpoints.shared import (
     EndpointDefinition,
+    SingleFetch,
     SnapshotMode,
     StorageKind,
 )
@@ -32,7 +33,7 @@ class TestUsersSpecBuilder:
     def test_builds_the_probed_first_page_shape(self) -> None:
         endpoint = _build_endpoint()
         assert isinstance(endpoint.spec_builder, GeotabGetSpecBuilder)
-        spec = endpoint.spec_builder.build_spec(resume=None, path_values={})
+        spec = endpoint.spec_builder.build_spec(resume=None, member_values={})
         assert spec.method is HttpMethod.POST
         assert spec.url == 'https://my.geotab.com/apiv1'
         assert isinstance(spec.json_body, dict)
@@ -51,7 +52,7 @@ class TestUsersSpecBuilder:
     def test_credentials_are_never_written_here(self) -> None:
         # The session strategy injects params.credentials; the builder
         # must leave the slot untouched.
-        spec = _build_endpoint().spec_builder.build_spec(resume=None, path_values={})
+        spec = _build_endpoint().spec_builder.build_spec(resume=None, member_values={})
         assert isinstance(spec.json_body, dict)
         params = spec.json_body['params']
         assert isinstance(params, dict)
@@ -67,7 +68,7 @@ class TestUsersSpecBuilder:
             )
         )
         spec = build_endpoint(config).spec_builder.build_spec(
-            resume=None, path_values={}
+            resume=None, member_values={}
         )
         assert spec.url == 'https://alt.example.test/apiv1'
 
@@ -81,8 +82,7 @@ class TestBuildUsersEndpoint:
         assert endpoint.storage_kind is StorageKind.SINGLE
         assert endpoint.response_model is User
         assert isinstance(endpoint.sync_mode, SnapshotMode)
-        assert endpoint.fan_out is None
-        assert endpoint.window_bisection is None
+        assert endpoint.request_shape == SingleFetch()
 
     def test_the_decoder_is_the_seek_walk_decoder(self) -> None:
         endpoint = _build_endpoint()
