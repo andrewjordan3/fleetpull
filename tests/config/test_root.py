@@ -463,7 +463,7 @@ class TestExampleFile:
         assert motive.endpoints == ('vehicles', 'vehicle_locations')
         samsara = config.providers.samsara
         assert samsara is not None
-        assert samsara.endpoints == ('vehicles', 'drivers', 'trips')
+        assert samsara.endpoints == ('vehicles', 'drivers', 'trips', 'idling_events')
         geotab = config.providers.geotab
         assert geotab is not None
         assert geotab.auth is not None
