@@ -158,6 +158,35 @@ class TestSyncMode:
         with pytest.raises(dataclasses.FrozenInstanceError):
             mode.lookback = timedelta(0)  # type: ignore[misc]
 
+    def test_watermark_mode_fixed_unit_days_defaults_to_none(self) -> None:
+        # None is the ordinary endpoint: the planner tiles at
+        # sync.backfill_chunk_days.
+        mode = WatermarkMode(lookback=timedelta(days=1), cutoff=timedelta(days=0))
+        assert mode.fixed_unit_days is None
+
+    def test_watermark_mode_holds_a_declared_fixed_unit_width(self) -> None:
+        # The window-grain rollup declaration: the unit width is part
+        # of the row's meaning, so it rides the mode, not config.
+        mode = WatermarkMode(
+            lookback=timedelta(days=1),
+            cutoff=timedelta(days=0),
+            fixed_unit_days=1,
+        )
+        assert mode.fixed_unit_days == 1
+
+    @pytest.mark.parametrize('invalid_width', [0, -1, -7])
+    def test_watermark_mode_rejects_a_non_positive_fixed_unit_width(
+        self, invalid_width: int
+    ) -> None:
+        # A zero-or-negative unit width can tile nothing -- rejected at
+        # declaration, not discovered mid-plan.
+        with pytest.raises(ValueError, match='fixed_unit_days'):
+            WatermarkMode(
+                lookback=timedelta(days=1),
+                cutoff=timedelta(days=0),
+                fixed_unit_days=invalid_width,
+            )
+
     def test_feed_mode_is_slotted_and_equal(self) -> None:
         mode = FeedMode()
         assert not hasattr(mode, '__dict__')

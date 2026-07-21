@@ -612,7 +612,10 @@ later. The unit is the chunk, not per member, because the date-partitioned write
 replaces each covered date in full, so a unit must cover every member for its dates
 — which the chunk run, fanning the whole roster, does. The work-units store is the
 claim queue over them. The caller plans the decomposition (chunk size and range)
-and drives the queue; the store only persists units,
+and drives the queue — the chunk size is `sync.backfill_chunk_days` unless the
+endpoint's `WatermarkMode` declares a `fixed_unit_days` override, which wins:
+on a window-grain rollup surface the unit width is part of the row's meaning
+(§8's fuel-energy record), so it never floats with configuration; the store only persists units,
 hands them out, and records outcomes — it knows nothing about HTTP, parquet,
 chunking, or what a partition key represents (that is the endpoint definition's
 concern). The backfill decomposition aligns chunks to whole UTC days, because
@@ -1145,6 +1148,10 @@ loop, the decoder interprets each page. Implemented decoders: `SinglePageDecoder
 `MotiveWrappedListPageDecoder` (page-numbered, wrapped-list records),
 `MotiveWrappedSinglePageDecoder` (unpaginated, wrapped-list records),
 `SamsaraCursorPageDecoder` (cursor, top-level-list records),
+`SamsaraVehicleSeriesPageDecoder` (the stats-history series-unnesting
+composition over the cursor decoder, §8), `SamsaraWindowReportPageDecoder`
+(the fuel-energy nested-report, window-stamping cursor walk, §8),
+`GeotabGetPageDecoder` (the id-sort seek walk), and
 `GeotabFeedPageDecoder` (GetFeed `toVersion` feed).
 
 This supersedes the former split `PaginationStrategy` + `RecordExtractor`: the
@@ -1770,6 +1777,129 @@ the driver_vehicle_assignments build implements them.
    2026-07-21 live proof's 7-day unit fetched 6,897 records clean —
    the trips/idling wide-window acceptance family).
 
+### Samsara `vehicle_fuel_energy_reports` / `driver_fuel_energy_reports` probe-settled decisions (2026-07-21)
+
+Settled by the 2026-07-20/21 live probe session (the captured rows
+below); the vehicle_fuel_energy_reports / driver_fuel_energy_reports
+pair implements them.
+
+1. **THE ROLLUP GRAIN IS THE REQUEST WINDOW — proven twice, and it
+   forces the fixed 1-day unit declaration.** Both surfaces roll their
+   metrics up over exactly the requested window: (1) widening a 1-day
+   vehicle window to 2 days GREW per-vehicle metrics — comparing the
+   1-day walk's 71 vehicles against the 2-day window's FIRST PAGE (100
+   reports; a page-1 sample, not the full 267-vehicle walk): 47
+   vehicles shared, 36 grew, 11 equal; (2) NON-ADDITIVITY — comparing the
+   [07-18, 07-20) two-day rollup against the sum of the two day
+   rollups per vehicle across 4 metrics (distance, engineRunTime,
+   fuelConsumed, energyUsedKwh) found 178/267 additive and 89/267
+   MISMATCHED. Day units are NOT a lossless decomposition of wider
+   windows: each row is the provider's answer for exactly its window,
+   nothing else, and rows fetched at different unit widths are
+   different data. Consequence: the unit width is part of the ROW'S
+   MEANING, and row semantics must never float with user
+   configuration — a `backfill_chunk_days` change would silently
+   change what every subsequent row *is*. The pair therefore declares
+   the day grain on the binding (decision 2). The vehicle-presence
+   union DOES hold (the two day windows' 145- and 242-vehicle sets
+   union to the two-day walk's 267), so per-day fetching loses no
+   entity.
+2. **Machinery A — `WatermarkMode.fixed_unit_days`, the fixed-unit-
+   width declaration.** An optional `int | None` field on the mode
+   (validated >= 1 when set): when declared, the runner's window
+   planner tiles the endpoint's resume window into units of EXACTLY
+   this many days, ignoring `sync.backfill_chunk_days`; the config
+   knob remains the default for every endpoint that leaves it `None`.
+   The declaration wins because it encodes row semantics, not
+   transaction sizing — the one concern `backfill_chunk_days` was
+   never allowed to carry. Rejected: a per-endpoint config override
+   (the width is a provider fact settled by probe, not a user choice)
+   and a builder-side guard on the window width (the planner is the
+   single tiling site; guarding downstream would leave config still
+   deciding the tiling). Provider-portable in concept, Samsara-scoped
+   in consumers today — this pre-builds exactly the seam Motive's
+   deferred utilization pair (documented company-local rollups, §15
+   item 7's queue) needs when it arrives. Both fuel-energy bindings
+   declare `fixed_unit_days=1` with the provenance comment.
+3. **Machinery B — `SamsaraWindowReportPageDecoder`, the
+   window-stamping report decoder.** The pair's envelope differs from
+   every flat cursor surface twice over, and both differences live in
+   one decoder (`records_key`, `report_key`, `results_limit`):
+   the record list is NESTED — `data` is an OBJECT whose only key is
+   the per-surface report key (`vehicleReports` / `driverReports`),
+   each a list of report objects, extracted with the same
+   structural-violation loudness `require_record_list` gives flat
+   lists — and report rows carry NO event-time key of any kind, so the
+   decoder STAMPS each report with synthesized
+   `windowStartDate`/`windowEndDate` keys copied VERBATIM from the
+   SENT spec's own `startDate`/`endDate` params (wire-truthful: it is
+   exactly what was asked of the provider; the stats triple's
+   synthesized-identity-keys precedent, sourced from the sent spec
+   rather than the record). A sent spec lacking either param raises
+   `ProviderResponseError` loudly — a wiring bug surfaced, never
+   silently unstamped rows. The stamp WINS a (census-impossible) key
+   collision — it is the row's REQUIRED time identity, the inverse of
+   the series decoder's reading-keys-win order where the synthesized
+   keys are auxiliary. Pagination is the standard cursor contract
+   (real at scale: 3 pages/267 reports on the 2-day vehicle window),
+   shared with `SamsaraCursorPageDecoder` by extracting the cursor
+   verdict (the hasNextPage/endCursor/promised-continuation guard and
+   the `after` merge) into the module-level `_cursor_page_advance`
+   both use — a same-file refactor of `decoders/samsara.py`, not a
+   cross-module change; the existing decoder's behavior is
+   byte-equivalent and its tests unchanged. `first_request` injects
+   `limit` exactly as the cursor decoder does. The stamped
+   `window_start` becomes `event_time_column`, so each day unit's rows
+   route to exactly their `date=` partition.
+4. **`results_limit=100` is documentation-by-declaration of the
+   server's OWN paging — the assignments placebo posture.** The
+   `limit` param is PROVEN IGNORED: limit=512, 513, and 10 on the
+   same 2-day window all returned identical paging (3 pages, 267
+   reports), and 513 was NOT rejected (no enforced tier). The server
+   pages at its own ~100-report size (the 1-day driver window showed
+   `hasNextPage: true` at 100 reports), which the declaration
+   documents.
+5. **The `startDate`/`endDate` naming quirk rides the shared family
+   builder.** These surfaces take `startDate`/`endDate` param NAMES —
+   unlike every other probed Samsara vertical's `startTime`/`endTime`
+   — while accepting full RFC3339 datetimes despite the names (probed
+   with `T00:00:00Z` values; a 1-hour window also returned 200, 61
+   reports). One `SamsaraFuelEnergyReportSpecBuilder` in the
+   provider's `_spec_builders` module serves both leaves (only the
+   path varies — the stats-triple promotion precedent, two users at
+   birth), mapping the resume window exactly as the sibling windowed
+   builders map their bounds.
+6. **Census-open vocabularies stay plain `str`s; requiredness is
+   whole-walk for the metric core, structural for identity.**
+   `vehicle.energyType` (observed only `'fuel'`) and the cost block's
+   `currencyCode` (observed only `'USD'`) were sampled at 100 reports
+   each — census-open, never API-enforced on output, so plain strings
+   (the eldExemptReason lesson). The metric core (eight metrics +
+   `estFuelEnergyCost`) is REQUIRED on the whole-walk posture (71/71
+   vehicle, 47/47 driver — total censuses; a per-window rollup surface
+   has no absence mechanism to be conservative about); the window
+   stamps and the entity ref (+ its `id`) are required STRUCTURALLY —
+   a rollup row without its window or its entity is meaningless. The
+   vehicle ref's dotted `externalIds` mirrors via explicit aliases
+   with single-key independence (the assignments precedent); the
+   driver arm never showed `externalIds` anywhere — unmodeled as
+   unobserved. NON-ADDITIVITY is documented on both model module
+   docstrings: day rows MUST NOT be summed to reproduce a wider
+   window's rollup.
+7. **The naming decision: the `_reports` suffix, per the
+   name=snake-plural-of-model invariant.** The models are
+   `VehicleFuelEnergyReport` / `DriverFuelEnergyReport` (the entity IS
+   a report — a per-window rollup row, not a fuel-energy reading), so
+   the endpoints are `vehicle_fuel_energy_reports` /
+   `driver_fuel_energy_reports`. The legacy hub called these
+   `vehicle_fuel_energy` / `driver_fuel_energy`; the mapping is
+   recorded in `ENDPOINTS.md`.
+8. **No completeness check** (windowed, deliberately partial — the
+   standing snapshot-only rule); no roster sourced or consumed (both
+   surfaces are fleet-wide with per-record entity attribution); no
+   range cap was probed on this family (the fixed 1-day unit sits far
+   inside any plausible cap anyway).
+
 ### The exception hierarchy (implemented: `exceptions.py`)
 
 The operational errors consumers catch, mirroring the classification
@@ -1884,6 +2014,11 @@ budgets → `RetriesExhaustedError`, failed auth paths →
 | Samsara | `/fleet/driver-vehicle-assignments` pages at a FIXED 50 records and the `limit` param is PROVEN IGNORED: limit=1, 5, 100, 512, 513 — and no limit at all — each returned a 50-record first page with `hasNextPage: true`; 513 was NOT rejected. No enforced tier exists on this surface (the first probed Samsara surface with an inert `limit`), so the declared `results_limit=50` documents the server's own observed page size rather than working as a knob (captured 2026-07-20). |
 | Samsara | `/fleet/driver-vehicle-assignments` window matching is OVERLAP-anchored: two adjacent day windows shared 5 midnight-spanning assignments (identical tuples in both), and the later window carried 5 rows whose `startTime` precedes the window start plus 2 whose `endTime` is at/after the window end. Overlap retrieval supersets start-anchored ownership — the trips reasoning, so `start_time` routing needs no wire pad (captured 2026-07-20). |
 | Samsara | Assignment-record census (216/216 for EVERY key — the census is total, no partial-presence key anywhere): `startTime`/`endTime` (RFC3339 strs; no empty or missing `endTime` observed — assignments only ever observed complete), `assignedAtTime` (present on every row but the EMPTY STRING on all of them — the 2026-07-21 live proof failed datetime parsing on record 0, and a 6,921-row week-wide value census found `''` on every single row: the Samsara empty-string posture, mirrored verbatim as str; a populated value's wire format is UNOBSERVED), `assignmentType` (str; the 24h census observed `{'static': 158, 'HOS': 58}`, and the 2026-07-21 week-wide live proof added `driverApp` (25/8,042) — an open vocabulary, modeled plain str), `isPassenger` (bool), `driver {id: str, name: str}`, `vehicle {id: str, name: str, externalIds}` — `externalIds` carrying the LITERAL DOTTED wire keys `samsara.serial`/`samsara.vin` (both str, 216/216) on the NESTED object, mirrored via explicit aliases (unlike the stats triple's decoder-synthesized flat keys) (captured 2026-07-20). |
+| Samsara | `GET /fleet/reports/vehicles/fuel-energy` and `/fleet/reports/drivers/fuel-energy` take `startDate`/`endDate` param NAMES — unlike every other probed Samsara vertical's `startTime`/`endTime` — and accept full RFC3339 datetimes despite the names (probed with `T00:00:00Z` values; a 1-hour window returned 200 with 61 reports). The envelope carries the standard `pagination {endCursor, hasNextPage}` block BUT the record list is NESTED: `data` is an OBJECT whose only key is `vehicleReports` (vehicle surface) / `driverReports` (driver surface), each a list of report objects. Pagination is real at scale: a 2-day vehicle window walked 3 pages/267 reports; a 1-day driver window showed `hasNextPage: true` at 100 reports (captured 2026-07-21). |
+| Samsara | **The fuel-energy ROLLUP GRAIN IS THE REQUEST WINDOW, proven twice:** (1) widening a 1-day window to 2 days GREW per-vehicle metrics — the 1-day walk's 71 vehicles vs the 2-day window's FIRST PAGE (100 reports, a page-1 sample): 47 shared, 36 grew, 11 equal; (2) NON-ADDITIVITY — the [07-18, 07-20) two-day rollup vs the sum of the two day rollups per vehicle across 4 metrics (distance, engineRunTime, fuelConsumed, energyUsedKwh): 178/267 additive, 89/267 MISMATCHED. Day units are NOT a lossless decomposition of wider windows — each row is the provider's answer for exactly its window, nothing else. The vehicle-presence union DOES hold: the two day windows' vehicle sets (145 and 242) union to the two-day set exactly (267) (captured 2026-07-21). |
+| Samsara | The fuel-energy `limit` param is PROVEN IGNORED (the assignments placebo posture): limit=512, 513, and 10 on the same 2-day window all returned identical paging (3 pages, 267 reports); 513 was NOT rejected — no enforced tier. The server pages at its own ~100-report size; the declared `results_limit=100` documents it (captured 2026-07-21). |
+| Samsara | Vehicle fuel-energy report census (71/71 on the 1-day walk, structurally identical on the 2-day): `distanceTraveledMeters` int; `efficiencyMpge` MIXED int\|float → float; `energyUsedKwh` int; `engineIdleTimeDurationMs`/`engineRunTimeDurationMs` ints; `estCarbonEmissionsKg` MIXED int\|float → float; `estFuelEnergyCost {amount: MIXED int\|float → float, currencyCode: str — only 'USD' observed on a 100-report sample, census-open, plain str}`; `fuelConsumedMl` int; `vehicle {id: str, name: str, energyType: str — only 'fuel' observed on a 100-report sample, census-open, plain str, externalIds}` with `externalIds` carrying the LITERAL DOTTED `samsara.serial`/`samsara.vin` keys (both str, 71/71). Report rows carry NO event-time key of any kind — the row's time identity is the request window itself, which the decoder stamps on (captured 2026-07-21). |
+| Samsara | Driver fuel-energy report census (47/47): the vehicle arm's metric core + `estFuelEnergyCost` verbatim, with `driver {id: str, name: str}` instead of the vehicle block — and NO `externalIds` anywhere on the driver arm (never observed; unmodeled as unobserved) (captured 2026-07-21). |
 | Motive | 401 body is `{"error_message": ...}`; the documented /vehicle_locations limit was not observed to enforce — generic 429 posture. |
 | Motive | `/v3/vehicle_locations/{vehicle_id}` verified live: envelope `{"vehicle_locations": [{"vehicle_location": {...}}]}`, `located_at` is UTC ISO-8601 (`Z`-suffixed), one non-paginated page per fetch (so `SinglePageDecoder` fits), and a single per-vehicle fetch spans multiple calendar dates (the sample crossed two) — confirming `split_by_date`'s multi-partition output is load-bearing in production, not a theoretical edge: one fetch genuinely fans into several partitions. |
 | Motive | `/v3/vehicle_locations/{vehicle_id}` date bounds pinned by direct probing: day-granular `start_date`/`end_date` are honored inclusively on both bounds — a single-day request returns that full day, a two-day request both complete days. The documented 3-month maximum range is real: long backfills will eventually need request chunking (a range limit, unrelated to the §15 item-1 window defect). |
@@ -2073,7 +2208,8 @@ vertical-1 masks, injections, and post-validation rewriting are deleted, not
 deprecated). Sections: `sync` (`default_start_date` required; optional
 package-wide `lookback_days` / `cutoff_days`; optional `backfill_chunk_days`,
 default 7 — the whole-day work-unit width every windowed run's plan tiles its
-window into, §13), `storage` (`dataset_root`
+window into, §13, unless the endpoint's `WatermarkMode` declares a
+`fixed_unit_days` override, which wins — §8's fuel-energy record), `storage` (`dataset_root`
 required — its one and only home; `SyncConfig` no longer carries it), `state`
 (`database_path`, defaulting to `<dataset_root>/.fleetpull/state.sqlite3`),
 `logging` (`console_level` / `file_level` / `file_path`; either file key
@@ -2707,7 +2843,10 @@ tzinfo-construction rules mechanically.
   candidates, but the third the `WorkUnitStore` was built for — per **unit**
   (a date chunk of the whole roster), not per run and not per member. Every
   windowed run plans its window into `sync.backfill_chunk_days`-wide units (a
-  daily window degenerates to one unit) and drives them
+  daily window degenerates to one unit; an endpoint whose `WatermarkMode`
+  declares `fixed_unit_days` tiles at exactly that width instead — the
+  declaration wins because a window-grain rollup row's meaning includes its
+  unit width, §8's fuel-energy record) and drives them
   `sync.backfill_unit_workers` at a time (claims FIFO by `unit_id`, i.e.
   ascending window order; completions in any order — amended 2026-07-20);
   each unit is its own transaction — fetch the unit's window, finalize its
@@ -2724,7 +2863,8 @@ tzinfo-construction rules mechanically.
   **single driver per state database**), then plans the residual, resolved
   exactly as the resume chain always has (watermark less lookback, floored;
   else frontier; else anchor; cutoff trailing edge), as new units at the
-  current chunk size — persisted unit boundaries are honored on resume even
+  current chunk size (the declared `fixed_unit_days` where one exists) —
+  persisted unit boundaries are honored on resume even
   when `backfill_chunk_days` changed. A failed unit stops further claiming
   (in-flight siblings finish and commit), returns to a claimable state with
   nothing committed, and fails the endpoint after the workers join; the
@@ -2907,7 +3047,9 @@ collaborator per the bundle rule), the `Clock`, and the root `FleetpullConfig` �
 the container its composition root already holds, read for exactly four values:
 `sync.default_start_datetime` (the cold-start anchor), `storage.dataset_root`
 (where the writers land), `sync.backfill_chunk_days` (the unit width newly planned
-windows tile into), and `storage.drop_exact_duplicates` (the writers' exact-dedup
+windows tile into, unless the endpoint's `WatermarkMode` declares a
+`fixed_unit_days` override — §8's fuel-energy record), and
+`storage.drop_exact_duplicates` (the writers' exact-dedup
 switch). Passing the root keeps the constructor at four flat parameters without
 threading the values individually (pass-the-container over field-threading). The
 `EndpointDefinition` and the driver are
@@ -3245,8 +3387,22 @@ resolution (item 1, done).
    its §8 decision block — the identical-sweeps proof collapsing the
    required traversal axis into one dataset, `results_limit=50`
    documenting the server's own fixed paging, and the trips overlap
-   anchoring mirrored; zero shared-machinery changes); the remainder
-   of the legacy wave queues next.* The per-endpoint
+   anchoring mirrored; zero shared-machinery changes). The Samsara
+   fuel-energy report pair shipped 2026-07-21 —
+   `vehicle_fuel_energy_reports` and `driver_fuel_energy_reports`, the
+   legacy hub's `vehicle_fuel_energy`/`driver_fuel_energy` renamed per
+   the name=snake-plural-of-model invariant — the first window-grain
+   rollup endpoints per their §8 decision block: the rollup grain is
+   the request window and day rollups are non-additive (89/267
+   mismatched), so the pair carries the two designed machinery
+   extensions — `WatermarkMode.fixed_unit_days` (the fixed-unit-width
+   declaration the planner honors over `sync.backfill_chunk_days`,
+   pre-building the seam Motive's deferred utilization pair needs) and
+   `SamsaraWindowReportPageDecoder` (the nested-report,
+   window-stamping decoder sharing the cursor verdict via the
+   same-file `_cursor_page_advance` extraction). **The Samsara legacy
+   wave is COMPLETE 2026-07-21** — every legacy-hub Samsara endpoint
+   is shipped.* The per-endpoint
    inventory and port queue are tracked in `ENDPOINTS.md` (added
    2026-07-17), updated in the same change as any endpoint addition.
 8. **Polish phase, gated on a stable public surface:** full-tree ceremony
