@@ -43,6 +43,12 @@ class Endpoints:
         idle_events: WindowedEndpoint = WindowedEndpoint(Provider.MOTIVE, 'idle_events')
         groups: SnapshotEndpoint = SnapshotEndpoint(Provider.MOTIVE, 'groups')
         users: SnapshotEndpoint = SnapshotEndpoint(Provider.MOTIVE, 'users')
+        vehicle_utilizations: WindowedEndpoint = WindowedEndpoint(
+            Provider.MOTIVE, 'vehicle_utilizations'
+        )
+        driver_idle_rollups: WindowedEndpoint = WindowedEndpoint(
+            Provider.MOTIVE, 'driver_idle_rollups'
+        )
 
     class Samsara:
         """Samsara endpoint identities."""
@@ -100,6 +106,8 @@ def available_endpoints() -> tuple[EndpointIdentity, ...]:
         Endpoints.Motive.idle_events,
         Endpoints.Motive.groups,
         Endpoints.Motive.users,
+        Endpoints.Motive.vehicle_utilizations,
+        Endpoints.Motive.driver_idle_rollups,
         Endpoints.Samsara.vehicles,
         Endpoints.Samsara.drivers,
         Endpoints.Samsara.trips,

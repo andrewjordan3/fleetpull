@@ -16,6 +16,9 @@ page sends ``limit`` and no ``after``; subsequent pages send
 persists). Decoder logic deliberately resembles its siblings without
 sharing code; WITHIN this module the cursor verdict is written once
 (``_cursor_page_advance``) and shared by every decoder that walks it.
+The one deliberate cross-module share is the window stamp
+(``_window_stamp.py``): the synthesized keys are our own
+provider-uniform vocabulary, not envelope logic.
 
 ``SamsaraVehicleSeriesPageDecoder`` composes the cursor decoder by
 delegation for ``/fleet/vehicles/stats/history``, whose cursor walks
@@ -45,6 +48,7 @@ from fleetpull.network.contract import (
     require_record_list,
     validated_envelope_slice,
 )
+from fleetpull.network.decoders._window_stamp import window_stamp_from_sent_spec
 from fleetpull.vocabulary import JsonObject, JsonValue
 
 __all__: list[str] = [
@@ -338,53 +342,11 @@ class SamsaraVehicleSeriesPageDecoder:
 # The fuel-energy report surfaces' window wire params (2026-07-21
 # capture): these surfaces take startDate/endDate NAMES -- unlike every
 # other probed Samsara vertical's startTime/endTime -- while accepting
-# full RFC3339 datetimes despite the names. The decoder reads them back
-# off the SENT spec to stamp each report row.
+# full RFC3339 datetimes despite the names. The shared window-stamp
+# helper (`_window_stamp.py`) reads them back off the SENT spec to stamp
+# each report row with the provider-uniform synthesized keys.
 _WINDOW_START_PARAM: Final[str] = 'startDate'
 _WINDOW_END_PARAM: Final[str] = 'endDate'
-
-# The synthesized window-identity keys merged onto each report. Chosen
-# collision-free against the 2026-07-21 report-key censuses (71/71
-# vehicle, 47/47 driver -- no time-shaped key of any kind on the wire),
-# and derived from the wire param names so the stamp reads as what was
-# asked of the provider.
-_WINDOW_START_KEY: Final[str] = 'windowStartDate'
-_WINDOW_END_KEY: Final[str] = 'windowEndDate'
-
-
-def _report_window_stamp(sent: RequestSpec) -> JsonObject:
-    """The window-identity keys the sent spec contributes to its reports.
-
-    Copied VERBATIM from the sent spec's own ``startDate``/``endDate``
-    params -- wire-truthful: the stamp is exactly what was asked of the
-    provider, whose answer each report row is. A sent spec lacking
-    either param is a wiring bug (the builder always renders both), and
-    silently unstamped rows would strip the rows' time identity -- so it
-    fails loudly instead.
-
-    Args:
-        sent: The spec that produced the page being decoded.
-
-    Returns:
-        ``{'windowStartDate': ..., 'windowEndDate': ...}``, values
-        verbatim from the sent params.
-
-    Raises:
-        ProviderResponseError: The sent spec lacks either window param.
-    """
-    params = sent.params or {}
-    if _WINDOW_START_PARAM not in params or _WINDOW_END_PARAM not in params:
-        raise ProviderResponseError(
-            detail=(
-                f'sent spec lacks the {_WINDOW_START_PARAM!r}/'
-                f'{_WINDOW_END_PARAM!r} window params to stamp report '
-                'rows with'
-            )
-        )
-    return {
-        _WINDOW_START_KEY: params[_WINDOW_START_PARAM],
-        _WINDOW_END_KEY: params[_WINDOW_END_PARAM],
-    }
 
 
 def _require_report_list(
@@ -502,7 +464,9 @@ class SamsaraWindowReportPageDecoder:
                 or the cursor block is (including continuation promised
                 without a cursor).
         """
-        window_stamp = _report_window_stamp(sent)
+        window_stamp = window_stamp_from_sent_spec(
+            sent, start_param=_WINDOW_START_PARAM, end_param=_WINDOW_END_PARAM
+        )
         reports = _require_report_list(envelope, self.records_key, self.report_key)
         stamped = [{**report, **window_stamp} for report in reports]
         return DecodedPage(

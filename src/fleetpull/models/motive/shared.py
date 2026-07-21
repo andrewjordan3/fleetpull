@@ -4,23 +4,84 @@
 This module holds the per-record building blocks that appear on multiple
 Motive responses — ``UserSummary`` and ``EldDeviceInfo`` on the vehicle
 and vehicle-location records (and the driving-period and idle-event
-records), ``VehicleSummary`` on the driving-period and idle-event records.
-Endpoint-private sub-shapes live in their endpoint module, not here; a
-shape is promoted into this module only once a second endpoint actually
-uses it.
+records), ``VehicleSummary`` on the driving-period, idle-event, and
+vehicle-utilization records — plus ``MotiveWindowStamp``, the
+decoder-synthesized window-identity type the utilization rollup pair's
+models share. Endpoint-private sub-shapes live in their endpoint module,
+not here; a shape is promoted into this module only once a second
+endpoint actually uses it.
 """
 
-from typing import Annotated
+import re
+from datetime import UTC, date, datetime, time
+from typing import Annotated, Final
 
 from pydantic import BeforeValidator, Field
 
 from fleetpull.model_contract import ResponseModel, empty_str_to_none
+from fleetpull.vocabulary import JsonValue
 
 __all__: list[str] = [
     'EldDeviceInfo',
+    'MotiveWindowStamp',
     'UserSummary',
     'VehicleSummary',
 ]
+
+
+# Exactly the dashed calendar-date label the builders render; fullmatch
+# keeps date.fromisoformat's laxer forms (compact YYYYMMDD, ISO week
+# dates) failing loudly as the wiring drift they would be.
+_DATE_LABEL_PATTERN: Final[re.Pattern[str]] = re.compile(r'\d{4}-\d{2}-\d{2}')
+
+
+def _date_label_to_utc_midnight(value: JsonValue | datetime) -> datetime:
+    """The ``MotiveWindowStamp`` ingress: lift a date label to an instant.
+
+    The Motive window-report decoder stamps each rollup row with the
+    sent spec's ``start_date``/``end_date`` values VERBATIM — day-only
+    ``YYYY-MM-DD`` labels, never instants. A date label cannot validate
+    into the timezone-aware datetime the event-time machinery requires
+    (an unzoned event time is never assumed), so this lift is the
+    structural type recovery DESIGN section 9 allows on a mirror: the
+    calendar-day label is preserved exactly (the result's ``.date()`` IS
+    the label) and UTC midnight is attached as the label's canonical
+    instant representation — a labeling convention for partition
+    routing, never a timezone conversion of the data. Strict by design:
+    the builder only ever renders date labels, so any other string —
+    including a full RFC3339 datetime — is a wiring drift that should
+    fail validation loudly, not pass mangled.
+
+    Args:
+        value: The raw stamp value, or an already-recovered datetime on
+            a Pydantic revalidation path.
+
+    Returns:
+        The label's UTC-midnight instant (passthrough for an
+        already-recovered tz-aware value).
+
+    Raises:
+        ValueError: ``value`` is not exactly a dashed ``YYYY-MM-DD``
+            label (the laxer ``date.fromisoformat`` forms -- compact
+            digits, week dates -- reject too), or is a NAIVE datetime.
+    """
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            raise ValueError(
+                'window stamp datetime is naive -- an unzoned event time '
+                'is never assumed'
+            )
+        return value
+    if isinstance(value, str) and _DATE_LABEL_PATTERN.fullmatch(value):
+        return datetime.combine(date.fromisoformat(value), time.min, tzinfo=UTC)
+    raise ValueError(f'expected a YYYY-MM-DD window-stamp label, got {value!r}')
+
+
+# The window-stamp field type the utilization rollup models use. Plain
+# assignment, not a `type` statement: Pydantic must evaluate the
+# Annotated form eagerly for the metadata lift (the GeotabTimeSpan
+# precedent).
+MotiveWindowStamp = Annotated[datetime, BeforeValidator(_date_label_to_utc_midnight)]
 
 
 class UserSummary(ResponseModel):
@@ -29,12 +90,15 @@ class UserSummary(ResponseModel):
     The compact user-account shape that appears when a user is referenced
     from another entity: the vehicle record's ``permanent_driver`` /
     ``current_driver``, the driving-period and idle-event ``driver``
-    references, and the group record's owner ``user``. The full record
-    comes from the users endpoint. Optionality is union-lax across the
-    carrying surfaces (a key populated on one surface may be null on
-    another -- e.g. ``username`` carries values on driver references and
-    was null on all 152 group owners); each consumer's docstring pins its
-    own surface's census.
+    references, the group record's owner ``user``, and the
+    driver-idle-rollup ``driver`` reference (the fourth carrying
+    surface, captured 2026-07-21: the exact 8-key shape, populated on
+    every attributed rollup and null on the unattributed bucket row).
+    The full record comes from the users endpoint. Optionality is
+    union-lax across the carrying surfaces (a key populated on one
+    surface may be null on another -- e.g. ``username`` carries values
+    on driver references and was null on all 152 group owners); each
+    consumer's docstring pins its own surface's census.
 
     ``status`` and ``role`` are modeled as free-form ``str`` rather than
     constrained enums: Motive documents both as plain strings, fleetpull
@@ -67,9 +131,14 @@ class VehicleSummary(ResponseModel):
     """Abbreviated vehicle reference embedded in other Motive records.
 
     The compact vehicle shape that appears when a vehicle is referenced
-    from an event record (captured 2026-07-15 on the driving-period and
-    idle-event records). The full vehicle record comes from the vehicles
-    endpoint.
+    from another record: the driving-period and idle-event records
+    (captured 2026-07-15) and the vehicle-utilization rollup record
+    (captured 2026-07-21 -- the same seven wire keys exactly, its third
+    carrying surface). The full vehicle record comes from the vehicles
+    endpoint. Optionality is union-lax across the carrying surfaces
+    (the UserSummary posture): ``vin`` carried values on every event
+    record but is null on some utilization rows, so it is nullable
+    here; each consumer's docstring pins its own surface's census.
 
     ``year`` arrives as a quoted integer (``"2022"``); lax coercion types
     it, and the captured ``"0"`` not-configured sentinel mirrors as
@@ -91,7 +160,8 @@ class VehicleSummary(ResponseModel):
             null when absent.
         model: Model name; the captured empty string mirrors verbatim;
             null when absent.
-        vin: Vehicle identification number.
+        vin: Vehicle identification number; null where the provider has
+            none (observed on the vehicle-utilization surface).
         metric_units: Whether the vehicle's Motive profile reports metric.
     """
 
@@ -100,7 +170,7 @@ class VehicleSummary(ResponseModel):
     year: Annotated[int | None, BeforeValidator(empty_str_to_none)] = None
     make: str | None = None
     model: str | None = None
-    vin: str
+    vin: str | None = None
     metric_units: bool
 
 

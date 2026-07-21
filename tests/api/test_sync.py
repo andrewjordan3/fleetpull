@@ -214,7 +214,7 @@ class TestConstruction:
         message = str(raised.value)
         assert 'motive' in message
         assert 'vehiclez' in message
-        assert 'vehicle_locations, vehicles' in message
+        assert 'vehicle_locations, vehicle_utilizations, vehicles' in message
 
     def test_unknown_samsara_endpoint_names_the_samsara_valid_set(
         self, tmp_path: Path
