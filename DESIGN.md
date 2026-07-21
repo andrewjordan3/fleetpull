@@ -666,7 +666,17 @@ consciously break its test):
    `tests/orchestrator/test_runner_feed.py::TestPerPageCrashOrder::
    test_each_pages_parquet_is_on_disk_when_its_token_commits` — an ordering
    recorder at the commit seam counts the rows already on disk at the exact
-   interleaving point.
+   interleaving point. *Durability hardened 2026-07-21:* the original
+   durable-rename recipe fsynced the temp file and the target's parent
+   only — but a page opening a NEW `date=` partition (or an endpoint's
+   first-ever write) creates directories whose own entries live one level
+   up, un-fsynced, so power loss could drop the whole new directory while
+   the fsynced token survived. The recipe now fsyncs the full created
+   chain: the parent, every newly created ancestor, and the first
+   pre-existing ancestor (`storage/atomic.py::_durable_directory_chain`,
+   computed before the `mkdir` while the missing set is observable);
+   the atomic-layer test pins the chain path-by-path for a
+   three-deep-new-directory write.
 2. **The token never moves past unwritten data** — the state-side
    restatement of (1): the stored cursor only ever lags the written bytes,
    never leads them, so a crash loses at most one page's *token*, never a
@@ -842,16 +852,25 @@ be returned. Such a hole is unreachable today because, and only because:
    existing unit is done — no capped-out unit can be silently left not-done
    behind an advancing prefix (the fail-loud record above; `claim_next` takes
    no cap at all).
-3. **`work_units` rows are never deleted** (the §13 provenance doctrine) — a
-   pruned done row can never fake contiguity across what it used to gate.
+3. **Row deletion is confined to the planning site's release-then-enqueue
+   pairing** (corrected 2026-07-21 from "never deleted" — the correction
+   record below). `release_done_units` runs only inside residual planning —
+   after the claim loop drained, so every row is `done` and
+   watermark-committed — scoped to `done` rows fully inside the residual
+   window, and the very next statement re-tiles that window hole-free. A
+   released span is therefore always immediately re-covered; a pruned done
+   row can never fake contiguity across what it used to gate, because
+   nothing outside this pairing prunes. A crash between release and enqueue
+   is safe: the watermark is untouched, so the next run resolves the
+   identical residual and plans it fresh.
 4. **Planner windows tile without holes from the resume arms.** The residual
    window starts at the resume precedence (watermark less lookback, floored;
    else frontier; else anchor), which never leaps past coverage — consecutive
    plans leave no un-enqueued day between units.
 
-Plainly: **any future change that violates one of these — row pruning, a second
-enqueue site, a real (binding) attempt cap — must re-derive the prefix rule's
-safety before shipping.** The state-layer gap-blindness test
+Plainly: **any future change that violates one of these — row pruning outside
+the planning pairing, a second enqueue site, a real (binding) attempt cap —
+must re-derive the prefix rule's safety before shipping.** The state-layer gap-blindness test
 (`tests/state/test_work_units.py`, the never-enqueued-hole case) is the
 tripwire: it pins the query's gap-blind behavior so any "fix" or new reliance
 is a conscious decision.
@@ -3321,13 +3340,27 @@ tzinfo-construction rules mechanically.
   (in-flight siblings finish and commit), returns to a claimable state with
   nothing committed, and fails the endpoint after the workers join; the
   completed units stand, and the next run re-claims what remains.
-  Completed unit rows are kept, not pruned — the runs-ledger provenance
-  doctrine, now also §5-invariant 3 of the prefix rule. One emergent
-  consequence, deliberate: a re-invocation whose
-  residual window exactly matches an already-done unit's bounds drives
-  nothing (the idempotent enqueue collapses onto the kept `done` row), so a
-  same-day identical-window re-run is a no-op; the late-arrival margin
-  refetch still happens whenever the window shifts.
+  **The release-then-enqueue pairing (corrected 2026-07-21).** The record
+  here originally read "completed unit rows are kept, not pruned," blessing
+  the enqueue-collapse onto kept `done` rows with the consolation that "the
+  late-arrival margin refetch still happens whenever the window shifts."
+  That consolation was FALSE for day-aligned units and never noticed by any
+  gate: a shifted window re-tiles onto the SAME midnight-aligned unit keys,
+  so on every `fixed_unit_days=1` endpoint (and any `backfill_chunk_days=1`
+  config) the lookback overlap collapsed onto kept `done` rows on every
+  run, and the late-arrival refetch — the lookback's entire purpose on
+  mutating-rollup surfaces — silently never happened after a day's first
+  coverage. The reasoning error: the window's identity shifted, but the
+  UNITS' identities did not. Corrected: residual planning now first calls
+  `release_done_units` over the residual window (deleting `done` rows fully
+  inside it — committed history being deliberately re-covered), then
+  enqueues the fresh tiling; the same-day identical-window re-run is
+  consequently no longer a no-op but a deliberate refetch of the lookback
+  margin, which is delete-by-window idempotent. Unit-row history is not
+  provenance — the runs ledger is; a unit row inside a window being
+  re-planned is live work. Invariant 3 above carries the re-derivation;
+  the drive-level tripwire pins a done day-unit re-driving under the next
+  run's lookback.
 
 - **Logging policy (settled 2026-07-17 — pinned open during the concurrency
   vertical so no scoped task could preempt it with ad-hoc narration).** The

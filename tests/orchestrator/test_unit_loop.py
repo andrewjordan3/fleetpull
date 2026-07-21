@@ -61,6 +61,24 @@ class _FakeQueue:
             )
         return len(units)
 
+    def release_done_units(
+        self, provider: Provider, endpoint: str, *, window: DateWindow
+    ) -> int:
+        with self._lock:
+            kept = [
+                row
+                for row in self._rows
+                if not (
+                    row['status'] is WorkUnitStatus.DONE
+                    and isinstance(spec := row['spec'], WorkUnitSpec)
+                    and spec.chunk_start >= window.start
+                    and spec.chunk_end <= window.end
+                )
+            ]
+            released = len(self._rows) - len(kept)
+            self._rows = kept
+        return released
+
     def reset_claimed_to_pending(self, provider: Provider, endpoint: str) -> int:
         with self._lock:
             reset = 0

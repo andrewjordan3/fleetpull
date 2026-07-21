@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from fleetpull.exceptions import ConfigurationError
+from fleetpull.incremental import DateWindow
 from fleetpull.state.database import StateDatabase
 from fleetpull.state.migrations import migrate_to_head
 from fleetpull.state.work_units import (
@@ -426,7 +427,8 @@ class TestDonePrefixObservation:
         # units -- does NOT gate the prefix, and the far observation IS
         # returned. This is safe in production only because the four section
         # 5 invariants (one enqueue site running after the claim loop
-        # drains, the never-binding attempt cap, no row deletion, hole-free
+        # drains, the never-binding attempt cap, row deletion confined to
+        # the planning site's release-then-enqueue pairing, hole-free
         # planner tiling) make such a hole unreachable. If this test ever
         # has to change -- a "fix" that gates on holes, or a new caller
         # relying on gap-blindness -- that change must consciously re-derive
@@ -517,6 +519,101 @@ class TestResetClaimedToPending:
         assert progress.failed == 1
         assert progress.claimed == 0
         assert progress.pending == 2
+
+
+class TestReleaseDoneUnits:
+    """The planner's release-then-enqueue pairing (DESIGN section 5,
+    corrected 2026-07-21): done rows inside a re-planned window release
+    back to plannable, so the idempotent enqueue cannot collapse the
+    lookback margin onto committed history."""
+
+    def test_releases_only_done_rows_fully_inside_the_window(
+        self, work_unit_store: WorkUnitStore
+    ) -> None:
+        work_unit_store.enqueue(
+            [
+                _spec(chunk_start=_day(1), chunk_end=_day(2)),
+                _spec(chunk_start=_day(2), chunk_end=_day(3)),
+                _spec(chunk_start=_day(3), chunk_end=_day(4)),
+            ]
+        )
+        done_unit = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
+        assert done_unit is not None
+        work_unit_store.mark_done(done_unit.unit_id, observed_max=None)
+        failed_unit = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
+        assert failed_unit is not None
+        work_unit_store.mark_failed(failed_unit.unit_id, error_detail='x')
+
+        released = work_unit_store.release_done_units(
+            Provider.SAMSARA, 'trips', window=DateWindow(start=_day(1), end=_day(4))
+        )
+
+        assert released == 1
+        progress = work_unit_store.progress(Provider.SAMSARA, 'trips')
+        assert progress.done == 0
+        assert progress.failed == 1
+        assert progress.pending == 1
+
+    def test_a_straddling_done_row_is_kept(
+        self, work_unit_store: WorkUnitStore
+    ) -> None:
+        # Only rows FULLY inside the window release; a straddler stays
+        # done, harmlessly overlapped by the re-plan's fresh tiles.
+        work_unit_store.enqueue([_spec(chunk_start=_day(1), chunk_end=_day(3))])
+        claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
+        assert claimed is not None
+        work_unit_store.mark_done(claimed.unit_id, observed_max=None)
+
+        released = work_unit_store.release_done_units(
+            Provider.SAMSARA, 'trips', window=DateWindow(start=_day(2), end=_day(4))
+        )
+
+        assert released == 0
+        assert work_unit_store.progress(Provider.SAMSARA, 'trips').done == 1
+
+    def test_release_scopes_to_the_provider_and_endpoint(
+        self, work_unit_store: WorkUnitStore
+    ) -> None:
+        work_unit_store.enqueue(
+            [
+                _spec(chunk_start=_day(1), chunk_end=_day(2)),
+                _spec(endpoint='drivers', chunk_start=_day(1), chunk_end=_day(2)),
+            ]
+        )
+        for endpoint in ('trips', 'drivers'):
+            claimed = work_unit_store.claim_next(Provider.SAMSARA, endpoint)
+            assert claimed is not None
+            work_unit_store.mark_done(claimed.unit_id, observed_max=None)
+
+        released = work_unit_store.release_done_units(
+            Provider.SAMSARA, 'trips', window=DateWindow(start=_day(1), end=_day(2))
+        )
+
+        assert released == 1
+        assert work_unit_store.progress(Provider.SAMSARA, 'drivers').done == 1
+
+    def test_a_released_unit_reenqueues_as_fresh_claimable_work(
+        self, work_unit_store: WorkUnitStore
+    ) -> None:
+        # THE COLLAPSE TRIPWIRE: without the release, this identical-key
+        # re-enqueue inserts nothing (INSERT OR IGNORE onto the kept done
+        # row) and the re-covered day is never claimable again -- the
+        # silently-skipped lookback margin this pairing exists to prevent.
+        spec = _spec(chunk_start=_day(1), chunk_end=_day(2))
+        work_unit_store.enqueue([spec])
+        first = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
+        assert first is not None
+        work_unit_store.mark_done(first.unit_id, observed_max=None)
+
+        work_unit_store.release_done_units(
+            Provider.SAMSARA, 'trips', window=DateWindow(start=_day(1), end=_day(2))
+        )
+        assert work_unit_store.enqueue([spec]) == 1
+
+        fresh = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
+        assert fresh is not None
+        assert fresh.attempt_count == 1
+        assert fresh.spec == spec
 
 
 class TestProgress:

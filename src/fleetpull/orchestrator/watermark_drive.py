@@ -302,16 +302,23 @@ class WatermarkDrive:
     ) -> None:
         """Tile the residual window into work units and enqueue them.
 
-        The residual-planning step of the plan-and-drive loop: pick the unit
-        width (the endpoint's declared ``fixed_unit_days`` wins over config
-        -- on a window-grain rollup surface the unit width is part of the
-        row's meaning, so it must never float with
-        ``sync.backfill_chunk_days``; config remains the default for
-        endpoints declaring ``None``), tile the window into units, enqueue
-        them idempotently, and narrate the plan -- the one moment the
-        resolved window and its claimable-unit count (the idempotent
-        enqueue's newly inserted rows; leftovers were driven already) are
-        both in hand.
+        The residual-planning step of the plan-and-drive loop: release the
+        window's committed ``done`` units back to plannable (the
+        release-then-enqueue pairing -- the lookback margin deliberately
+        re-covers committed days, and day-aligned tiles re-tile onto
+        identical unit keys, which the idempotent enqueue would otherwise
+        collapse onto and never re-fetch), pick the unit width (the
+        endpoint's declared ``fixed_unit_days`` wins over config -- on a
+        window-grain rollup surface the unit width is part of the row's
+        meaning, so it must never float with ``sync.backfill_chunk_days``;
+        config remains the default for endpoints declaring ``None``), tile
+        the window into units, enqueue them, and narrate the plan.
+
+        This is the ONE sanctioned row-deletion site: the claim loop has
+        drained (a failing leftover aborts the run before planning), so
+        every released row is committed history, and the same call
+        re-tiles the released span hole-free -- the prefix rule's
+        gap-unreachability re-derivation (DESIGN §5, 2026-07-21).
 
         Args:
             definition: The watermark endpoint being run.
@@ -320,10 +327,14 @@ class WatermarkDrive:
             residual: The resolved residual window to plan.
 
         Side Effects:
-            Enqueues the planned units and emits one INFO line.
+            Releases the window's done units, enqueues the planned units,
+            and emits one INFO line.
         """
         provider = definition.provider
         name = definition.name
+        released_units = self._spine.state.units.release_done_units(
+            provider, name, window=residual
+        )
         chunk_days = (
             self._spine.sync.backfill_chunk_days
             if mode.fixed_unit_days is None
@@ -335,12 +346,13 @@ class WatermarkDrive:
         )
         logger.info(
             'window planned: provider=%s endpoint=%s window_start=%s '
-            'window_end=%s claimable_units=%d',
+            'window_end=%s claimable_units=%d released_units=%d',
             provider.value,
             name,
             to_iso8601(residual.start),
             to_iso8601(residual.end),
             claimable_units,
+            released_units,
         )
 
     def _drive_unit(

@@ -26,8 +26,9 @@ __all__: list[str] = ['atomic_write_parquet', 'atomic_write_text']
 def _fsync_path(path: Path) -> None:
     """Flush one path's kernel buffers to stable storage.
 
-    The open/fsync/close block the durable-rename recipe applies twice --
-    to the temp file before the rename, to the parent directory after it.
+    The open/fsync/close block the durable-rename recipe applies to the
+    temp file before the rename and to each directory of the durable
+    chain after it.
 
     Args:
         path: The file or directory to fsync.
@@ -43,6 +44,39 @@ def _fsync_path(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _durable_directory_chain(directory: Path) -> list[Path]:
+    """The directories a durable write must fsync after its rename.
+
+    Always ``directory`` itself -- the rename lands the file's entry
+    there. When the write is about to CREATE missing ancestors (a feed
+    page opening a new ``date=`` partition, or the first-ever write of an
+    endpoint), each new directory's own entry lives one level up, so the
+    chain extends through every missing ancestor to the first
+    pre-existing one: a new-directory chain fsynced only at its deepest
+    link is NOT durable -- power loss can drop the newly created
+    directory (and the file inside it) from the un-fsynced parent while
+    a later fsynced commit survives, persisting a cursor past lost data.
+
+    Must be computed BEFORE the ``mkdir`` that creates the chain, while
+    the missing set is still observable.
+
+    Args:
+        directory: The file's parent directory, existing or about to be
+            created.
+
+    Returns:
+        ``directory`` first, then each missing ancestor's parent up to
+        and including the first pre-existing directory. Just
+        ``[directory]`` when it already exists.
+    """
+    chain = [directory]
+    current = directory
+    while not current.exists():
+        chain.append(current.parent)
+        current = current.parent
+    return chain
 
 
 def atomic_write_parquet(
@@ -64,21 +98,26 @@ def atomic_write_parquet(
         compression: Parquet compression codec. ``'snappy'`` by default (fast,
             BigQuery-friendly); a later config surface parameterizes it.
         durable: When True, fsync the temp file before the rename and the
-            parent directory after it -- the durable-rename recipe. The feed
-            append cell requires it: its token commit is fsynced (SQLite),
-            so a power loss must never persist a token whose page the page
-            cache still held. The self-healing writers (replace-partition
-            under lookback refetch, snapshot rewrite) stay non-durable --
-            a lost write there is refetched by design.
+            durable directory chain after it -- the parent, every ancestor
+            this write newly created, and the first pre-existing ancestor
+            (whose entry for the new chain must also reach stable
+            storage). The feed append cell requires it: its token commit
+            is fsynced (SQLite), so a power loss must never persist a
+            token whose page -- or whose newly created partition
+            directory -- the page cache still held. The self-healing
+            writers (replace-partition under lookback refetch, snapshot
+            rewrite) stay non-durable -- a lost write there is refetched
+            by design.
 
     Side Effects:
         Creates ``target``'s parent directory; writes and renames files;
-        when ``durable``, fsyncs the file and its directory.
+        when ``durable``, fsyncs the file and the directory chain.
 
     Raises:
         OSError: If the write, rename, or fsync fails (the temp is cleaned
             up first).
     """
+    durable_chain = _durable_directory_chain(target.parent) if durable else []
     target.parent.mkdir(parents=True, exist_ok=True)
     temp: Path = temp_sibling_path(target)
     try:
@@ -86,8 +125,8 @@ def atomic_write_parquet(
         if durable:
             _fsync_path(temp)
         temp.replace(target)
-        if durable:
-            _fsync_path(target.parent)
+        for directory in durable_chain:
+            _fsync_path(directory)
     finally:
         temp.unlink(missing_ok=True)
 
