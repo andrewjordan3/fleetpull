@@ -51,6 +51,7 @@ class Endpoints:
         idling_events: WindowedEndpoint = WindowedEndpoint(
             Provider.SAMSARA, 'idling_events'
         )
+        addresses: SnapshotEndpoint = SnapshotEndpoint(Provider.SAMSARA, 'addresses')
 
     class Geotab:
         """GeoTab endpoint identities."""
@@ -78,6 +79,7 @@ def available_endpoints() -> tuple[EndpointIdentity, ...]:
         Endpoints.Samsara.drivers,
         Endpoints.Samsara.trips,
         Endpoints.Samsara.idling_events,
+        Endpoints.Samsara.addresses,
         Endpoints.Geotab.devices,
         Endpoints.Geotab.users,
         Endpoints.Geotab.trips,
