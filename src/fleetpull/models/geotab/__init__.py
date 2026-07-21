@@ -56,6 +56,7 @@ from fleetpull.models.geotab.log_record import LogRecord, LogRecordDeviceRef
 from fleetpull.models.geotab.shared import (
     GeotabAddressedLocation,
     GeotabCoordinate,
+    GeotabPostalAddress,
     GeotabTimeSpan,
     bare_id_to_reference,
     parse_timespan,
@@ -113,6 +114,7 @@ __all__: list[str] = [
     'FuelTaxDetailDriverRef',
     'GeotabAddressedLocation',
     'GeotabCoordinate',
+    'GeotabPostalAddress',
     'GeotabTimeSpan',
     'LogRecord',
     'LogRecordDeviceRef',

@@ -90,6 +90,7 @@ class TestDvirLogValidation:
         assert full.trailer is not None
         assert full.trailer.id == 'b9C41'
         assert full.location is not None
+        assert full.location.location is not None
         assert full.location.location.x == -140.25
 
     def test_sparse_record_nulls_the_absent_block(self) -> None:

@@ -35,9 +35,12 @@ arms and exclusions:
   populated children still validates — the pinned absorption test).
   REVISIT when a tenant shows populated ``children``: capture the
   element shape and model it then.
-- ``location`` (496/500) is the double-nested ``{location: {x, y}}``
-  wire shape — the shared ``GeotabAddressedLocation`` pair
-  (DutyStatusLog is the co-consumer; DESIGN §8).
+- ``location`` (496/500) is the shared ``GeotabAddressedLocation``
+  wrapper (DutyStatusLog is the co-consumer; DESIGN §8): a
+  ``{location: {x, y}}`` coordinate arm or an
+  ``{address: {formattedAddress}}`` arm. This surface showed only the
+  coordinate arm on the live-proof walk, but rides the shared wrapper
+  whose address arm DutyStatusLog proved.
 - ``duration`` is an opaque duration STRING mirrored verbatim, NOT
   parsed through ``GeotabTimeSpan`` despite that sharing GeoTab's
   provider. The census observed only the wire TYPE (``str``, 500/500),
@@ -147,7 +150,8 @@ class DvirLog(ResponseModel):
         is_inspected_by_driver: Whether the driver performed the
             inspection.
         location: The inspection's nested location (496/500; the shared
-            double-nested pair — ``x`` longitude, ``y`` latitude).
+            wrapper — a ``{x, y}`` coordinate arm, x longitude / y
+            latitude, or a ``formattedAddress`` arm).
         log_type: The inspection-type token (census-open plain str).
         odometer: The odometer reading (205/500; modeled float).
         trailer: The inspected trailer's reference (295/500).

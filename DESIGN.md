@@ -2382,13 +2382,24 @@ data semantics and never other tenants' shapes. Seeding via
    annotation records. The lift lives in the model module (one
    consumer today; it moves beside `bare_id_to_reference` only if
    made generic).
-6. **The nested-location promotion.** The double-nested
-   `{location: {x, y}}` wire shape appeared IDENTICALLY on
-   DutyStatusLog (1,859/2,000) and DVIRLog (496/500) — two consumers
-   at birth, the second-consumer threshold — so the
-   `GeotabAddressedLocation` / `GeotabCoordinate` pair lives in
-   `models/geotab/shared.py`. GeoTab's `x` is LONGITUDE and `y` is
-   LATITUDE, recorded on the model.
+6. **The nested-location promotion — and its two-arm correction.** The
+   nested-location wrapper appeared on DutyStatusLog (1,859/2,000) and
+   DVIRLog (496/500) — two consumers at birth, the second-consumer
+   threshold — so `GeotabAddressedLocation` (with `GeotabCoordinate`
+   and `GeotabPostalAddress`) lives in `models/geotab/shared.py`.
+   GeoTab's `x` is LONGITUDE and `y` is LATITUDE. **The 200-sample
+   census saw only the `{location: {x, y}}` coordinate arm and the
+   wrapper was first modeled coordinate-only; the pre-merge live proof
+   then walked 24,860 DutyStatusLog location blocks and found the
+   wrapper carries the coordinate arm on 24,846 and an `{address:
+   {formattedAddress}}` arm on 14 (mutually exclusive at scale) — the
+   FOURTH time an at-scale walk found an arm a bounded census missed
+   (`StatusData.controller`, and the two before it).** Both arms are
+   now optional on the wrapper; `formattedAddress` is the only observed
+   address key (others absorbed by `extra='ignore'` until a walk shows
+   them). The recurring lesson is recorded again: a tenant census
+   proves shapes PRESENT, never shapes ABSENT — the live proof is the
+   backstop, and here it earned its keep before merge.
 7. **The DVIRLog `defectList.children` documented exclusion — beside
    the rare-quartet inclusion.** `defectList` is a wire-plural name
    over ONE node `{children, id, name}`; `children` was an EMPTY list

@@ -9,9 +9,11 @@ from datetime import timedelta
 
 import polars as pl
 import pytest
+from pydantic import ValidationError
 
 from fleetpull.model_contract import ResponseModel
 from fleetpull.models.geotab.shared import (
+    GeotabAddressedLocation,
     GeotabTimeSpan,
     bare_id_to_reference,
     parse_timespan,
@@ -118,3 +120,68 @@ class TestBareIdToReference:
 
     def test_none_passes_through(self) -> None:
         assert bare_id_to_reference(None) is None
+
+
+class TestGeotabAddressedLocation:
+    """The nested-location wrapper's two arms (DESIGN §8: the coordinate
+    arm the 200-sample census showed and the address arm the 24,860-block
+    live proof found)."""
+
+    def test_the_coordinate_arm_validates_with_a_null_address(self) -> None:
+        wrapper = GeotabAddressedLocation.model_validate(
+            {'location': {'x': -140.25, 'y': 35.5}}
+        )
+        assert wrapper.location is not None
+        assert wrapper.location.x == -140.25
+        assert wrapper.location.y == 35.5
+        assert wrapper.address is None
+
+    def test_the_coordinate_int_arms_lift_to_float(self) -> None:
+        wrapper = GeotabAddressedLocation.model_validate(
+            {'location': {'x': -140, 'y': 35}}
+        )
+        assert wrapper.location is not None
+        assert isinstance(wrapper.location.x, float)
+        assert isinstance(wrapper.location.y, float)
+
+    def test_the_address_arm_validates_with_a_null_coordinate(self) -> None:
+        wrapper = GeotabAddressedLocation.model_validate(
+            {'address': {'formattedAddress': '100 Example Rd, Testton, TS, USA'}}
+        )
+        assert wrapper.location is None
+        assert wrapper.address is not None
+        assert wrapper.address.formatted_address == '100 Example Rd, Testton, TS, USA'
+
+    def test_neither_arm_is_representable(self) -> None:
+        # A wrapper with neither arm is unobserved but not a shape error;
+        # both fields are optional.
+        wrapper = GeotabAddressedLocation.model_validate({})
+        assert wrapper.location is None
+        assert wrapper.address is None
+
+    def test_a_present_coordinate_block_missing_a_coordinate_fails(self) -> None:
+        # Required-within-the-block: a present coordinate block without
+        # its coordinates is a shape change, not a null coordinate.
+        with pytest.raises(ValidationError, match='y'):
+            GeotabAddressedLocation.model_validate({'location': {'x': -140.25}})
+
+    def test_a_present_address_block_missing_its_key_fails(self) -> None:
+        with pytest.raises(
+            ValidationError, match=r'formattedAddress|formatted_address'
+        ):
+            GeotabAddressedLocation.model_validate({'address': {}})
+
+    def test_unmodeled_address_keys_are_absorbed(self) -> None:
+        # extra='ignore' absorbs the GeoTab address keys no walk has
+        # observed yet (the documented-until-probed posture).
+        wrapper = GeotabAddressedLocation.model_validate(
+            {
+                'address': {
+                    'formattedAddress': '100 Example Rd, Testton, TS, USA',
+                    'city': 'Testton',
+                    'state': 'TS',
+                }
+            }
+        )
+        assert wrapper.address is not None
+        assert wrapper.address.formatted_address == '100 Example Rd, Testton, TS, USA'

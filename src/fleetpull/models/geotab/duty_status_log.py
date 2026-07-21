@@ -24,9 +24,12 @@ total (2,000/2,000). The observed arms:
   loudly, never silently drops sibling keys. The ids join to the
   ``annotation_logs`` vertical (feed wave three) for the full
   annotation records.
-- ``location`` (1,859/2,000) is the double-nested ``{location: {x, y}}``
-  wire shape — the shared ``GeotabAddressedLocation`` pair (DVIRLog is
-  the second consumer; DESIGN §8).
+- ``location`` (1,859/2,000) is the shared ``GeotabAddressedLocation``
+  wrapper (DVIRLog is the second consumer; DESIGN §8): it carries a
+  double-nested ``{location: {x, y}}`` COORDINATE arm or an
+  ``{address: {formattedAddress}}`` arm. The 200-sample census saw only
+  coordinates; a 24,860-block live-proof walk found 14 address-arm
+  blocks (the census-scope lesson), so both arms are modeled optional.
 - Mixed int-or-float numerics (``distanceSinceValidCoordinates``,
   ``engineHours``, ``odometer``) model ``float``.
 
@@ -152,7 +155,8 @@ class DutyStatusLog(ResponseModel):
         is_ignored: Whether the log is ignored.
         is_transitioning: Whether the log is mid-transition.
         location: The event's nested location (1,859/2,000; the shared
-            double-nested pair — ``x`` longitude, ``y`` latitude).
+            wrapper — a ``{x, y}`` coordinate arm, x longitude / y
+            latitude, or a ``formattedAddress`` arm).
         malfunction: The malfunction token (census-open plain str).
         odometer: The odometer reading (1,863/2,000; mixed
             int-or-float, modeled float).

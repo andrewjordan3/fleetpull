@@ -65,6 +65,17 @@ class TestFixtureProperties:
         assert full_arms == {'float'}
         assert terminal_arms == {'int'}
 
+    def test_all_three_location_arms_ride_the_fixtures(self) -> None:
+        # The wrapper's coordinate arm (record 1), absence (record 2),
+        # and the address arm (record 3, the live-proof-found arm).
+        coordinate_arm = DUTY_STATUS_LOG_FULL_RECORD['location']
+        address_arm = DUTY_STATUS_LOG_RECORDS[2]['location']
+        assert isinstance(coordinate_arm, dict)
+        assert isinstance(address_arm, dict)
+        assert set(coordinate_arm) == {'location'}
+        assert 'location' not in DUTY_STATUS_LOG_SPARSE_RECORD
+        assert set(address_arm) == {'address'}
+
 
 class TestDutyStatusLogValidation:
     @pytest.mark.parametrize('required_key', sorted(_REQUIRED_KEYS))
@@ -91,10 +102,13 @@ class TestDutyStatusLogValidation:
         # The strict annotations lift: exactly-{id} elements reduce to
         # their ids.
         assert full.annotations == ['bAA31', 'bAA32']
-        # The shared nested-location pair: x longitude, y latitude.
+        # The shared wrapper's coordinate arm: x longitude, y latitude,
+        # the address arm absent.
         assert full.location is not None
+        assert full.location.location is not None
         assert full.location.location.x == -140.25
         assert full.location.location.y == 35.5
+        assert full.location.address is None
 
     def test_sparse_record_nulls_the_partial_presence_block(self) -> None:
         sparse = DutyStatusLog.model_validate(DUTY_STATUS_LOG_SPARSE_RECORD)
@@ -119,6 +133,19 @@ class TestDutyStatusLogValidation:
         assert full.device is not None
         assert full.device.id == 'b8A1'
         assert full.driver.id == 'b4C11'
+
+    def test_the_location_address_arm_lands_beside_null_coordinates(self) -> None:
+        # The arm the live-proof walk found beyond the 200-sample census:
+        # record 3 carries the wrapper's address arm, so its coordinate
+        # block is None and the formatted address lands.
+        terminal = DutyStatusLog.model_validate(DUTY_STATUS_LOG_RECORDS[2])
+        assert terminal.location is not None
+        assert terminal.location.location is None
+        assert terminal.location.address is not None
+        assert (
+            terminal.location.address.formatted_address
+            == '100 Example Rd, Testton, TS, USA'
+        )
 
     def test_the_int_numeric_arms_land_as_float(self) -> None:
         terminal = DutyStatusLog.model_validate(DUTY_STATUS_LOG_RECORDS[2])
@@ -186,10 +213,19 @@ class TestDutyStatusLogFrame:
         assert frame.schema['annotations'] == pl.List(pl.String)
         assert frame.schema['engine_hours'] == pl.Float64
         assert frame.schema['location__location__x'] == pl.Float64
+        assert frame.schema['location__address__formatted_address'] == pl.String
         assert frame.schema['device__id'] == pl.String
         assert frame.schema['driver__id'] == pl.String
         assert frame['engine_hours'].to_list() == [5321.5, None, 5340.0]
         assert frame['annotations'].to_list() == [['bAA31', 'bAA32'], None, None]
+        # The two location arms are column-exclusive per record: the
+        # coordinate record nulls the address column and vice versa.
+        assert frame['location__location__x'].to_list() == [-140.25, None, None]
+        assert frame['location__address__formatted_address'].to_list() == [
+            None,
+            None,
+            '100 Example Rd, Testton, TS, USA',
+        ]
 
     def test_empty_input_carries_the_full_schema(self) -> None:
         populated = models_to_dataframe(

@@ -10,14 +10,17 @@ fixtures' page size of 2) and a TERMINAL page (short), with
 16-hex-lowercase version tokens per the machinery's synthetic-token
 convention; the page size is 2 where production declares 50,000 (the
 trips-capture ``resultsLimit: 3`` precedent). Coordinates are round
-open-ocean values corresponding to no real place.
+open-ocean values and the one address is an invention, both
+corresponding to no real place.
 
 Variant coverage promised to consumers: BOTH arms of the proven-mixed
 ``device`` and ``driver`` refs (objects on records 1 and 3, bare
 strings on record 2), the wire ``{id}``-object ``annotations`` elements
-(record 1) beside their absence (records 2 and 3), the nested
-``location`` present (records 1 and 3) and absent (record 2), the
-float (record 1) and bare-int (record 3) arms of the mixed numerics
+(record 1) beside their absence (records 2 and 3), all THREE
+``location`` states — the coordinate arm (record 1), absent (record 2),
+and the ``formattedAddress`` address arm (record 3, the arm the
+live-proof walk found beyond the 200-sample census) — the float
+(record 1) and bare-int (record 3) arms of the mixed numerics
 (``engineHours`` / ``odometer`` / ``distanceSinceValidCoordinates``),
 ``verifyDateTime`` present only on record 1, and two event dates
 across the pages.
@@ -132,9 +135,8 @@ DUTY_STATUS_LOGS_FEED_PAGE_2_RESPONSE_JSON: str = r"""
                 "isIgnored": false,
                 "isTransitioning": true,
                 "location": {
-                    "location": {
-                        "x": -140.5,
-                        "y": 35.75
+                    "address": {
+                        "formattedAddress": "100 Example Rd, Testton, TS, USA"
                     }
                 },
                 "malfunction": "None",
