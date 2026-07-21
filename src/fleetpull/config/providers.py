@@ -23,7 +23,7 @@ from fleetpull.config.base import ConfigModel
 from fleetpull.config.geotab import GeotabAuthConfig
 from fleetpull.config.rate_limit import RateLimitConfig
 from fleetpull.exceptions import ConfigurationError
-from fleetpull.vocabulary import QuotaScope
+from fleetpull.vocabulary import Provider, QuotaScope
 
 __all__: list[str] = [
     'PROVIDER_CREDENTIAL_ENV_VARS',
@@ -32,6 +32,7 @@ __all__: list[str] = [
     'ProviderConfig',
     'ProvidersConfig',
     'SamsaraConfig',
+    'default_provider_sections',
     'require_provider_credentials',
 ]
 
@@ -98,6 +99,8 @@ class ProviderConfig(ConfigModel):
 
     Subclassed once per provider (``MotiveConfig``, ...). Carries the
     per-provider contract: each subclass binds its ``quota_scope`` and
+    ``credential_hint``, exposes its credential shape through the
+    ``credential`` property, and
     defaults its ``rate_limit``; the shared watermark window knobs
     (``lookback_days``, ``cutoff_days``) are declared here once for
     every provider; the model policy itself comes from ``ConfigModel``.
@@ -107,6 +110,11 @@ class ProviderConfig(ConfigModel):
             ``ClassVar`` bound by each subclass -- provider identity is a
             code fact, not user configuration; a subclass that forgets to
             bind it fails loudly on first attribute access.
+        credential_hint: Where this provider's credential comes from -- the
+            YAML field and the conventional environment variable -- phrased
+            to complete the enablement error's ``no credential resolves;
+            set <hint>`` sentence. A ``ClassVar`` bound by each subclass,
+            like ``quota_scope``.
         rate_limit: The token-bucket budget for this provider's scope.
             Each subclass supplies its own documented default.
         endpoints: The endpoint names this provider syncs, as listed in
@@ -135,11 +143,44 @@ class ProviderConfig(ConfigModel):
     """
 
     quota_scope: ClassVar[QuotaScope]
+    credential_hint: ClassVar[str]
 
     rate_limit: RateLimitConfig
     endpoints: tuple[str, ...] = ()
     lookback_days: int = Field(default=_DEFAULT_LOOKBACK_DAYS, ge=0)
     cutoff_days: int = Field(default=_DEFAULT_CUTOFF_DAYS, ge=0)
+
+    @property
+    def credential(self) -> SecretStr | GeotabAuthConfig | None:
+        """The provider's configured credential, or ``None`` when absent.
+
+        Each section binds its own credential shape (a bare ``SecretStr``
+        key for the static-key providers, GeoTab's four-field ``auth``
+        section whole) behind this one property, so the enablement guard,
+        the disabled-provider warning, and ``Sync``'s credential read all
+        stay provider-agnostic loops.
+
+        Raises:
+            NotImplementedError: The subclass failed to bind its credential
+                shape -- a definition bug surfaced on first read.
+        """
+        raise NotImplementedError(
+            f'{type(self).__name__} must define its credential property'
+        )
+
+    def scope_rate_limits(self) -> dict[str, RateLimitConfig]:
+        """Every quota scope this provider's config budgets, with its limit.
+
+        The base emission is the one bound scope: ``{quota_scope: rate_limit}``.
+        A provider metering more than one method class overrides this to add
+        its extra scopes (GeoTab's feed and authenticate classes), so the
+        limiter registry derives every scope from the configs themselves
+        without provider special-casing.
+
+        Returns:
+            The quota-scope-keyed budgets this config governs.
+        """
+        return {self.quota_scope.value: self.rate_limit}
 
     @field_validator('endpoints')
     @classmethod
@@ -184,6 +225,10 @@ class MotiveConfig(ProviderConfig):
     """
 
     quota_scope: ClassVar[QuotaScope] = QuotaScope.MOTIVE
+    credential_hint: ClassVar[str] = (
+        f"'providers.motive.api_key' in the YAML or the "
+        f'{PROVIDER_CREDENTIAL_ENV_VARS["motive"]} environment variable'
+    )
 
     api_key: SecretStr | None = None
     base_url: str = Field(default=_MOTIVE_DEFAULT_BASE_URL)
@@ -191,6 +236,11 @@ class MotiveConfig(ProviderConfig):
     records_per_page: int = Field(
         default=_MOTIVE_MAX_RECORDS_PER_PAGE, ge=1, le=_MOTIVE_MAX_RECORDS_PER_PAGE
     )
+
+    @property
+    def credential(self) -> SecretStr | None:
+        """The Motive credential: the bare API key, or ``None``."""
+        return self.api_key
 
     @field_validator('base_url')
     @classmethod
@@ -272,6 +322,11 @@ class GeotabConfig(ProviderConfig):
     """
 
     quota_scope: ClassVar[QuotaScope] = QuotaScope.GEOTAB_GET
+    credential_hint: ClassVar[str] = (
+        f"'providers.geotab.auth' (username, database, and optional "
+        f'server in the YAML; the password from the YAML or the '
+        f'{PROVIDER_CREDENTIAL_ENV_VARS["geotab"]} environment variable)'
+    )
 
     auth: GeotabAuthConfig | None = None
     rate_limit: RateLimitConfig = Field(default=_GEOTAB_DEFAULT_GET_RATE_LIMIT)
@@ -279,6 +334,37 @@ class GeotabConfig(ProviderConfig):
     authenticate_rate_limit: RateLimitConfig = Field(
         default=_GEOTAB_DEFAULT_AUTHENTICATE_RATE_LIMIT
     )
+
+    @property
+    def credential(self) -> GeotabAuthConfig | None:
+        """The GeoTab credential: the four-field ``auth`` section, or ``None``.
+
+        The resolvable-password half of GeoTab enablement is structural:
+        ``GeotabAuthConfig`` requires its password, so a present ``auth``
+        that reached validation carries one (YAML literal or the merged
+        ``GEOTAB_PASSWORD`` environment variable). A ``None`` here is the
+        wholly absent credential section.
+        """
+        return self.auth
+
+    def scope_rate_limits(self) -> dict[str, RateLimitConfig]:
+        """The three GeoTab method-class budgets, each under its own scope.
+
+        GeoTab meters per method class (DESIGN §8): the inherited emission
+        covers the Get-class scope the ``quota_scope`` ClassVar binds, and
+        this override adds the GetFeed class (the feed endpoints' scope) and
+        the dedicated Authenticate class from the same config, so every
+        GeoTab method-class scope is registered wherever a ``GeotabConfig``
+        is.
+
+        Returns:
+            The Get, GetFeed, and Authenticate scope budgets.
+        """
+        return {
+            **super().scope_rate_limits(),
+            QuotaScope.GEOTAB_FEED.value: self.feed_rate_limit,
+            QuotaScope.GEOTAB_AUTHENTICATE.value: self.authenticate_rate_limit,
+        }
 
 
 _SAMSARA_DEFAULT_BASE_URL: str = 'https://api.samsara.com'
@@ -323,10 +409,19 @@ class SamsaraConfig(ProviderConfig):
     """
 
     quota_scope: ClassVar[QuotaScope] = QuotaScope.SAMSARA
+    credential_hint: ClassVar[str] = (
+        f"'providers.samsara.api_key' in the YAML or the "
+        f'{PROVIDER_CREDENTIAL_ENV_VARS["samsara"]} environment variable'
+    )
 
     api_key: SecretStr | None = None
     base_url: str = Field(default=_SAMSARA_DEFAULT_BASE_URL)
     rate_limit: RateLimitConfig = Field(default=_SAMSARA_DEFAULT_RATE_LIMIT)
+
+    @property
+    def credential(self) -> SecretStr | None:
+        """The Samsara credential: the bare API token, or ``None``."""
+        return self.api_key
 
     @field_validator('base_url')
     @classmethod
@@ -356,6 +451,23 @@ class ProvidersConfig(ConfigModel):
     geotab: GeotabConfig | None = None
     samsara: SamsaraConfig | None = None
 
+    def named_sections(self) -> list[tuple[str, ProviderConfig | None]]:
+        """Every provider section, present or not, named and in field order.
+
+        The provider roll-call the enablement guard and the
+        disabled-provider warning loop over, so neither restates the
+        provider list; adding a provider extends this and nothing there.
+
+        Returns:
+            ``(provider name, section-or-None)`` pairs in the container's
+            field order.
+        """
+        return [
+            ('motive', self.motive),
+            ('geotab', self.geotab),
+            ('samsara', self.samsara),
+        ]
+
 
 def require_provider_credentials(providers: ProvidersConfig) -> None:
     """Enforce the credential half of enablement over every present provider.
@@ -372,47 +484,37 @@ def require_provider_credentials(providers: ProvidersConfig) -> None:
     Raises:
         ConfigurationError: A provider lists endpoints but carries no
             credential, naming the YAML field and the conventional
-            environment variable -- never any credential value.
+            environment variable (the section's ``credential_hint``) --
+            never any credential value.
     """
-    motive = providers.motive
-    if motive is not None and motive.endpoints and motive.api_key is None:
-        environment_variable = PROVIDER_CREDENTIAL_ENV_VARS['motive']
+    for name, section in providers.named_sections():
+        if section is None or not section.endpoints or section.credential is not None:
+            continue
         raise ConfigurationError(
             'provider credential missing',
-            provider='motive',
+            provider=name,
             detail=(
-                'endpoints are configured but no credential resolves; set '
-                f"'providers.motive.api_key' in the YAML or the "
-                f'{environment_variable} environment variable'
+                f'endpoints are configured but no credential resolves; set '
+                f'{section.credential_hint}'
             ),
         )
-    geotab = providers.geotab
-    if geotab is not None and geotab.endpoints and geotab.auth is None:
-        # The resolvable-password half of GeoTab enablement is structural:
-        # GeotabAuthConfig requires its password, so a present `auth` that
-        # reached validation carries one (YAML literal or the merged
-        # GEOTAB_PASSWORD environment variable). This guard covers the
-        # wholly absent credential section.
-        environment_variable = PROVIDER_CREDENTIAL_ENV_VARS['geotab']
-        raise ConfigurationError(
-            'provider credential missing',
-            provider='geotab',
-            detail=(
-                'endpoints are configured but no credential resolves; set '
-                f"'providers.geotab.auth' (username, database, and optional "
-                f'server in the YAML; the password from the YAML or the '
-                f'{environment_variable} environment variable)'
-            ),
-        )
-    samsara = providers.samsara
-    if samsara is not None and samsara.endpoints and samsara.api_key is None:
-        environment_variable = PROVIDER_CREDENTIAL_ENV_VARS['samsara']
-        raise ConfigurationError(
-            'provider credential missing',
-            provider='samsara',
-            detail=(
-                'endpoints are configured but no credential resolves; set '
-                f"'providers.samsara.api_key' in the YAML or the "
-                f'{environment_variable} environment variable'
-            ),
-        )
+
+
+def default_provider_sections() -> dict[Provider, ProviderConfig]:
+    """One default-constructed provider section per provider package.
+
+    The discovery walk (``build_endpoint_registry``) builds every leaf it
+    finds and requires a config per provider package regardless of
+    enablement, so both composition roots (``fetch`` and ``Sync``) need
+    every provider represented even when the requested endpoints belong to
+    another; this is the one statement of that default roll-call. Extends
+    as provider endpoint packages land.
+
+    Returns:
+        The default-constructed provider configs by provider.
+    """
+    return {
+        Provider.MOTIVE: MotiveConfig(),
+        Provider.GEOTAB: GeotabConfig(),
+        Provider.SAMSARA: SamsaraConfig(),
+    }

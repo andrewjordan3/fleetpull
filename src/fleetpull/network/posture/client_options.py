@@ -1,10 +1,10 @@
 # src/fleetpull/network/posture/client_options.py
-"""The one derivation of httpx client options from ``HttpConfig``.
+"""The one construction of an httpx client from ``HttpConfig``.
 
 Every fleetpull ``httpx.Client`` — the transport's held pool and the
 GeoTab authenticator's fresh per-call client — is constructed from the
-same two-knob transport posture (DESIGN §10), so the mapping from config
-to httpx's richer option surface is decided exactly once, here. Before
+same two-knob transport posture (DESIGN §10), so the verify/timeout
+composition is decided exactly once, here (``new_http_client``). Before
 this module existed the two construction sites hand-rolled the mapping
 independently and drifted on the pool-timeout member; a single owner is
 what keeps that class of divergence structurally impossible.
@@ -17,10 +17,10 @@ import httpx
 from fleetpull.config import HttpConfig
 from fleetpull.network.tls import build_truststore_ssl_context
 
-__all__: list[str] = ['client_timeout', 'client_verify']
+__all__: list[str] = ['new_http_client']
 
 
-def client_verify(http_config: HttpConfig) -> ssl.SSLContext | bool:
+def _client_verify(http_config: HttpConfig) -> ssl.SSLContext | bool:
     """Resolve the TLS verification argument for an ``httpx.Client``.
 
     OS trust store behind a TLS-intercepting proxy; httpx's bundled CA
@@ -45,7 +45,7 @@ def client_verify(http_config: HttpConfig) -> ssl.SSLContext | bool:
     return True
 
 
-def client_timeout(http_config: HttpConfig) -> httpx.Timeout:
+def _client_timeout(http_config: HttpConfig) -> httpx.Timeout:
     """Resolve the timeout policy for an ``httpx.Client``.
 
     The two-knob posture maps onto httpx's four members as: read backs
@@ -68,4 +68,29 @@ def client_timeout(http_config: HttpConfig) -> httpx.Timeout:
     return httpx.Timeout(
         http_config.read_timeout_seconds,
         connect=http_config.connect_timeout_seconds,
+    )
+
+
+def new_http_client(http_config: HttpConfig) -> httpx.Client:
+    """Construct an ``httpx.Client`` carrying the configured transport posture.
+
+    The one place the two-knob ``HttpConfig`` becomes httpx client options:
+    TLS verification (OS trust store behind a TLS-intercepting proxy, the
+    bundled CA store otherwise) and the timeout policy. Both fleetpull
+    construction sites — the transport's held pool and the GeoTab
+    authenticator's fresh per-call client — call this, so the composition
+    can never drift between them.
+
+    Args:
+        http_config: The transport posture.
+
+    Returns:
+        A new, open ``httpx.Client``; the caller owns its lifecycle.
+
+    Side Effects:
+        Constructs an httpx connection pool (opened lazily on first use).
+    """
+    return httpx.Client(
+        verify=_client_verify(http_config),
+        timeout=_client_timeout(http_config),
     )

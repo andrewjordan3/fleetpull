@@ -23,8 +23,13 @@ from fleetpull.endpoints.shared import (
     WatermarkMode,
 )
 from fleetpull.model_contract import ResponseModel
-from fleetpull.network.client import TransportClient
-from fleetpull.network.contract import DecodedPage, HttpMethod, PageAdvance, RequestSpec
+from fleetpull.network.contract import (
+    DecodedPage,
+    EnvelopeFetcher,
+    HttpMethod,
+    PageAdvance,
+    RequestSpec,
+)
 from fleetpull.roster import RosterKey
 from fleetpull.vocabulary import JsonValue, Provider, QuotaScope
 
@@ -63,7 +68,7 @@ _SINGLE_FETCH = SingleFetch()
 class _StubCompletenessCheck:
     """A CompletenessCheck double returning a fixed count."""
 
-    def expected_count(self, client: TransportClient, quota_scope: str) -> int:
+    def expected_count(self, client: EnvelopeFetcher, quota_scope: str) -> int:
         return 0
 
 

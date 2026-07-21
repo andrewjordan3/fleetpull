@@ -82,6 +82,40 @@ def _parse_error_detail(config_path: Path, parse_error: yaml.YAMLError) -> str:
     return f'{config_path}: {problem}'
 
 
+def _with_api_key_from_env(
+    # typing-justified: rewrites the raw provider sections before validation
+    providers: dict[str, object],
+    provider_name: str,
+    # typing-justified: rewrites the raw provider sections before validation
+) -> dict[str, object]:
+    """Merge one static-key provider's environment credential, if resolvable.
+
+    The whole-credential half of the documented asymmetry: the provider's
+    conventional variable supplies ``api_key`` outright, merged only when
+    the key is absent from the YAML section (a YAML literal wins) and the
+    variable carries a non-empty value (empty counts as unset). Shared
+    verbatim by the Motive and Samsara arms.
+
+    Args:
+        providers: The raw ``providers`` mapping.
+        provider_name: The static-key provider to merge (``'motive'`` /
+            ``'samsara'``).
+
+    Returns:
+        The providers mapping with the credential merged, or unchanged.
+
+    Side Effects:
+        Reads the process environment.
+    """
+    section = providers.get(provider_name)
+    if not isinstance(section, dict) or 'api_key' in section:
+        return providers
+    value = os.environ.get(PROVIDER_CREDENTIAL_ENV_VARS[provider_name])
+    if not value:
+        return providers
+    return {**providers, provider_name: {**section, 'api_key': SecretStr(value)}}
+
+
 # typing-justified: rewrites the raw document before validation
 def with_environment_credentials(document: dict[str, object]) -> dict[str, object]:
     """Merge conventional credential environment variables into the document.
@@ -112,15 +146,8 @@ def with_environment_credentials(document: dict[str, object]) -> dict[str, objec
     providers_section = document.get('providers')
     if not isinstance(providers_section, dict):
         return document
-    merged_providers = dict(providers_section)
-    motive_section = merged_providers.get('motive')
-    if isinstance(motive_section, dict) and 'api_key' not in motive_section:
-        motive_value = os.environ.get(PROVIDER_CREDENTIAL_ENV_VARS['motive'])
-        if motive_value:
-            merged_providers['motive'] = {
-                **motive_section,
-                'api_key': SecretStr(motive_value),
-            }
+    merged_providers = _with_api_key_from_env(dict(providers_section), 'motive')
+    merged_providers = _with_api_key_from_env(merged_providers, 'samsara')
     geotab_section = merged_providers.get('geotab')
     if isinstance(geotab_section, dict):
         auth_section = geotab_section.get('auth')
@@ -131,14 +158,6 @@ def with_environment_credentials(document: dict[str, object]) -> dict[str, objec
                     **geotab_section,
                     'auth': {**auth_section, 'password': SecretStr(geotab_value)},
                 }
-    samsara_section = merged_providers.get('samsara')
-    if isinstance(samsara_section, dict) and 'api_key' not in samsara_section:
-        samsara_value = os.environ.get(PROVIDER_CREDENTIAL_ENV_VARS['samsara'])
-        if samsara_value:
-            merged_providers['samsara'] = {
-                **samsara_section,
-                'api_key': SecretStr(samsara_value),
-            }
     return {**document, 'providers': merged_providers}
 
 
@@ -166,21 +185,11 @@ def warn_disabled_providers(providers: ProvidersConfig) -> None:
     Side Effects:
         Logs through this module's logger.
     """
-    motive = providers.motive
-    if motive is not None and motive.api_key is not None and not motive.endpoints:
+    for name, section in providers.named_sections():
+        if section is None or section.credential is None or section.endpoints:
+            continue
         logger.warning(
-            "providers.motive: a credential resolves but 'endpoints' is empty; "
-            'the provider is disabled for this run.'
-        )
-    geotab = providers.geotab
-    if geotab is not None and geotab.auth is not None and not geotab.endpoints:
-        logger.warning(
-            "providers.geotab: a credential resolves but 'endpoints' is empty; "
-            'the provider is disabled for this run.'
-        )
-    samsara = providers.samsara
-    if samsara is not None and samsara.api_key is not None and not samsara.endpoints:
-        logger.warning(
-            "providers.samsara: a credential resolves but 'endpoints' is empty; "
-            'the provider is disabled for this run.'
+            "providers.%s: a credential resolves but 'endpoints' is empty; "
+            'the provider is disabled for this run.',
+            name,
         )

@@ -14,7 +14,13 @@ from pydantic import Field, SecretStr, field_validator
 
 from fleetpull.config.base import ConfigModel
 
-__all__: list[str] = ['GeotabAuthConfig']
+__all__: list[str] = ['DEFAULT_GEOTAB_SERVER', 'GeotabAuthConfig']
+
+# The documented default authentication host. Hoisted as a named constant
+# (and exported through the config face) because it is a shared provider
+# fact: the auth section defaults to it, and the GeoTab spec builders use
+# it as the pre-auth placeholder host for a credential-less config.
+DEFAULT_GEOTAB_SERVER: str = 'my.geotab.com'
 
 
 class GeotabAuthConfig(ConfigModel):
@@ -36,7 +42,7 @@ class GeotabAuthConfig(ConfigModel):
     username: str = Field(min_length=1)
     password: SecretStr
     database: str = Field(min_length=1)
-    server: str = Field(default='my.geotab.com', min_length=1)
+    server: str = Field(default=DEFAULT_GEOTAB_SERVER, min_length=1)
 
     @field_validator('server')
     @classmethod

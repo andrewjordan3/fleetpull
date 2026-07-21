@@ -38,8 +38,14 @@ from enum import StrEnum
 from typing import Final
 
 from fleetpull.exceptions import ConfigurationError
-from fleetpull.state.database import SqliteScalar, StateDatabase
-from fleetpull.timing import Clock, from_iso8601, to_iso8601
+from fleetpull.incremental import DateWindow
+from fleetpull.state.database import (
+    SqliteScalar,
+    StateDatabase,
+    expect_text,
+    parse_stored_instant,
+)
+from fleetpull.timing import Clock, to_iso8601
 from fleetpull.vocabulary import Provider
 
 __all__: list[str] = ['RunLedger', 'RunMode', 'RunStatus']
@@ -175,9 +181,7 @@ def _read_run_mode(connection: sqlite3.Connection, run_id: int) -> RunMode:
     mode_row = connection.execute(_SELECT_RUN_MODE_SQL, (run_id,)).fetchone()
     if mode_row is None:
         raise ValueError(f'no run with run_id {run_id}')
-    stored_mode: SqliteScalar = mode_row[0]
-    if not isinstance(stored_mode, str):
-        raise RuntimeError(f'runs.mode was not text: {stored_mode!r}')
+    stored_mode: str = expect_text(mode_row[0], 'runs.mode')
     try:
         return RunMode(stored_mode)
     except ValueError as error:
@@ -238,17 +242,12 @@ def _max_over_succeeded_runs(
     instant_text: SqliteScalar = aggregate_row[0]
     if instant_text is None:
         return None
-    if not isinstance(instant_text, str):
-        raise RuntimeError(f'runs.{column} was not text: {instant_text!r}')
-    try:
-        return from_iso8601(instant_text)
-    except ValueError as error:
-        raise ConfigurationError(
-            f'state database holds an unparseable run {column}',
-            provider=provider.value,
-            endpoint=endpoint,
-            detail=f'run {column} {instant_text!r} is not ISO-8601 UTC',
-        ) from error
+    return parse_stored_instant(
+        expect_text(instant_text, f'runs.{column}'),
+        provider=provider,
+        endpoint=endpoint,
+        column=f'run {column}',
+    )
 
 
 class RunLedger:
@@ -302,43 +301,39 @@ class RunLedger:
         return self._insert_run(provider, endpoint, RunMode.SNAPSHOT, _RunRange())
 
     def start_window_run(
-        self, provider: Provider, endpoint: str, *, window: tuple[datetime, datetime]
+        self, provider: Provider, endpoint: str, *, window: DateWindow
     ) -> int:
         """
         Open a watermark run over ``window`` (``mode='watermark'``).
 
-        ``window`` is the half-open ``(window_start, window_end)`` the fetch covers,
-        both timezone-aware UTC and serialized via the timing codec, with
-        ``window_start`` strictly before ``window_end``.
+        ``window`` is the half-open resume window the fetch covers, serialized
+        via the timing codec. Well-orderedness is the ``DateWindow``'s own
+        construction invariant (``start < end``), so no ordering re-check
+        happens here; the table's CHECK remains the structural backstop.
 
         Args:
             provider: The provider being fetched.
             endpoint: The endpoint being fetched.
-            window: ``(window_start, window_end)``, both UTC, ``window_start``
-                strictly before ``window_end``.
+            window: The run's half-open resume window, both bounds UTC.
 
         Returns:
             The new run's ``run_id`` (the table's rowid alias).
 
         Raises:
-            ValueError: ``window_start`` is not strictly before ``window_end``; or a
-                bound is naive or not UTC (surfaced from the timing codec) — caller
-                bugs, kept stdlib.
+            ValueError: A bound is naive or not UTC (surfaced from the timing
+                codec) — a caller bug, kept stdlib.
             RuntimeError: The INSERT returned no ``lastrowid``.
 
         Side Effects:
             Opens a connection, inserts one row, and commits.
         """
-        window_start, window_end = window
-        if window_start >= window_end:
-            raise ValueError('window_start must be strictly before window_end')
         return self._insert_run(
             provider,
             endpoint,
             RunMode.WATERMARK,
             _RunRange(
-                window_start_text=to_iso8601(window_start),
-                window_end_text=to_iso8601(window_end),
+                window_start_text=to_iso8601(window.start),
+                window_end_text=to_iso8601(window.end),
             ),
         )
 
@@ -393,7 +388,7 @@ class RunLedger:
                 violation, surfaced loudly.
         """
         started_at: str = to_iso8601(self._clock.now_utc())
-        with self._database.connect() as connection:
+        with self._database.transaction() as connection:
             run_id: int | None = connection.execute(
                 _INSERT_RUN_SQL,
                 (
@@ -407,7 +402,6 @@ class RunLedger:
                     started_at,
                 ),
             ).lastrowid
-            connection.commit()
         if run_id is None:
             raise RuntimeError('runs INSERT returned no lastrowid')
         logger.debug(
@@ -451,7 +445,7 @@ class RunLedger:
         if row_count < 0:
             raise ValueError(f'row_count must be non-negative, got {row_count}')
         ended_at: str = to_iso8601(self._clock.now_utc())
-        with self._database.connect() as connection:
+        with self._database.transaction() as connection:
             mode: RunMode = _read_run_mode(connection, run_id)
             match mode:
                 case RunMode.FEED:
@@ -476,7 +470,6 @@ class RunLedger:
                         _COMPLETE_NONFEED_RUN_SQL,
                         (RunStatus.SUCCEEDED.value, ended_at, row_count, run_id),
                     )
-            connection.commit()
         logger.debug('completed run: run_id=%s row_count=%s', run_id, row_count)
 
     def fail_run(self, run_id: int, *, error_detail: str) -> None:
@@ -498,14 +491,13 @@ class RunLedger:
             Opens a connection, updates the row, and commits.
         """
         ended_at: str = to_iso8601(self._clock.now_utc())
-        with self._database.connect() as connection:
+        with self._database.transaction() as connection:
             affected: int = connection.execute(
                 _FAIL_RUN_SQL,
                 (RunStatus.FAILED.value, ended_at, error_detail, run_id),
             ).rowcount
             if affected == 0:
                 raise ValueError(f'no run with run_id {run_id}')
-            connection.commit()
         logger.debug('failed run: run_id=%s', run_id)
 
     def coverage_frontier(self, provider: Provider, endpoint: str) -> datetime | None:

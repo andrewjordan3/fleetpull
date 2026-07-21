@@ -11,12 +11,15 @@ import ssl
 import pytest
 
 from fleetpull.config import HttpConfig
-from fleetpull.network.posture import client_timeout, client_verify
+from fleetpull.network.posture.client_options import (
+    _client_timeout,
+    _client_verify,
+)
 
 
 class TestClientVerify:
     def test_bundled_ca_verification_by_default(self) -> None:
-        assert client_verify(HttpConfig()) is True
+        assert _client_verify(HttpConfig()) is True
 
     def test_truststore_opt_in_returns_the_os_backed_context(
         self, monkeypatch: pytest.MonkeyPatch
@@ -30,7 +33,7 @@ class TestClientVerify:
             'fleetpull.network.posture.client_options.build_truststore_ssl_context',
             fake_build,
         )
-        assert client_verify(HttpConfig(use_truststore=True)) is sentinel_context
+        assert _client_verify(HttpConfig(use_truststore=True)) is sentinel_context
 
 
 class TestClientTimeout:
@@ -39,7 +42,7 @@ class TestClientTimeout:
         # wait on an established connection; connect is its own knob.
         # This is the assertion that fails loudly if either construction
         # site's semantics are ever hand-rolled apart again.
-        timeout = client_timeout(
+        timeout = _client_timeout(
             HttpConfig(connect_timeout_seconds=7.0, read_timeout_seconds=21.0)
         )
         assert timeout.connect == 7.0

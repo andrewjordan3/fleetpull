@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
-from fleetpull.storage.files import temp_sibling_path
+from fleetpull.storage.atomic import atomic_write_text
 from fleetpull.timing import to_iso8601
 
 __all__: list[str] = [
@@ -142,11 +142,10 @@ def render_metadata_json(snapshot: MetadataSnapshot) -> str:
 def write_metadata_json(endpoint_directory: Path, text: str) -> None:
     """Atomically write ``text`` as the endpoint directory's ``metadata.json``.
 
-    Temp-then-rename in the target's own directory, so the rename is
-    same-filesystem and atomic; a crash leaves the prior file or the new
-    one, never a partial. The endpoint directory is deliberately not
-    created: an absent directory means no data ever landed — an upstream
-    bug surfaced here as ``OSError``, not silenced by a ``mkdir``.
+    ``atomic_write_text``'s temp-then-rename, aimed at the projection's fixed
+    file name. The endpoint directory is deliberately not created: an absent
+    directory means no data ever landed — an upstream bug surfaced here as
+    ``OSError``, not silenced by a ``mkdir``.
 
     Args:
         endpoint_directory: The endpoint's existing output directory.
@@ -159,10 +158,4 @@ def write_metadata_json(endpoint_directory: Path, text: str) -> None:
     Side Effects:
         Writes and renames files inside ``endpoint_directory``.
     """
-    target = endpoint_directory / _METADATA_FILE_NAME
-    temp: Path = temp_sibling_path(target)
-    try:
-        temp.write_text(text, encoding='utf-8')
-        temp.replace(target)
-    finally:
-        temp.unlink(missing_ok=True)
+    atomic_write_text(text, endpoint_directory / _METADATA_FILE_NAME)

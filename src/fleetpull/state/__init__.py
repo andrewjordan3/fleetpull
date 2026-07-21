@@ -6,12 +6,8 @@ cursors, the run ledger, feeder rosters, and the backfill work-unit queue."""
 from fleetpull.state.cursors import CursorKind, CursorStore
 from fleetpull.state.database import StateDatabase
 from fleetpull.state.migrations import migrate_to_head
-from fleetpull.state.rosters import (
-    RosterDelta,
-    RosterStore,
-    is_roster_stale,
-    reconcile,
-)
+from fleetpull.state.reconcile import RosterDelta, is_roster_stale, reconcile
+from fleetpull.state.rosters import RosterStore
 from fleetpull.state.run_ledger import RunLedger, RunStatus
 from fleetpull.state.work_units import (
     ClaimedWorkUnit,

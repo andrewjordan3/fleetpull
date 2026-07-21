@@ -1,6 +1,6 @@
 # src/fleetpull/network/posture/__init__.py
-"""Transport posture: ``HttpConfig`` -> httpx client construction options."""
+"""Transport posture: the one ``HttpConfig`` -> httpx client construction."""
 
-from fleetpull.network.posture.client_options import client_timeout, client_verify
+from fleetpull.network.posture.client_options import new_http_client
 
-__all__: list[str] = ['client_timeout', 'client_verify']
+__all__: list[str] = ['new_http_client']

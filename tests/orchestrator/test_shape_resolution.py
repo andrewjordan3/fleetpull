@@ -137,10 +137,10 @@ def test_param_sweep_resolves_a_fan_out_over_the_declared_values() -> None:
 def test_roster_fan_out_resolves_over_the_supplied_members() -> None:
     shape = RosterFanOut(roster=VEHICLE_IDS_KEY, member_key='vehicle_id')
     pools = _StubPoolSource()
-    seen_shapes: list[RosterFanOut] = []
+    seen_rosters: list[RosterKey] = []
 
-    def members_for(requested: RosterFanOut) -> list[str]:
-        seen_shapes.append(requested)
+    def members_for(requested: RosterKey) -> list[str]:
+        seen_rosters.append(requested)
         return ['101', '202']
 
     driver = resolve_request_driver(
@@ -150,7 +150,7 @@ def test_roster_fan_out_resolves_over_the_supplied_members() -> None:
     assert driver.members == ['101', '202']
     assert driver.member_key == 'vehicle_id'
     assert driver.fetch_pool is pools.pool
-    assert seen_shapes == [shape]
+    assert seen_rosters == [VEHICLE_IDS_KEY]
 
 
 def test_roster_fan_out_without_a_roster_source_raises() -> None:
@@ -168,7 +168,7 @@ def test_roster_fan_out_without_a_roster_source_raises() -> None:
     assert 'vehicle_ids' in message
 
 
-def _supplied_members(supplied: list[str], _requested: RosterFanOut) -> list[str]:
+def _supplied_members(supplied: list[str], _requested: RosterKey) -> list[str]:
     """A roster source returning a fixed membership, ordering preserved."""
     return supplied
 
@@ -181,10 +181,10 @@ def test_batched_roster_fan_out_resolves_sorted_comma_joined_batches() -> None:
     shape = BatchedRosterFanOut(roster=VEHICLE_IDS_KEY, member_key='ids', batch_size=50)
     members = [f'{index:03d}' for index in range(101)]
     pools = _StubPoolSource()
-    seen_shapes: list[RosterFanOut] = []
+    seen_rosters: list[RosterKey] = []
 
-    def members_for(requested: RosterFanOut) -> list[str]:
-        seen_shapes.append(requested)
+    def members_for(requested: RosterKey) -> list[str]:
+        seen_rosters.append(requested)
         return list(reversed(members))
 
     driver = resolve_request_driver(
@@ -199,9 +199,9 @@ def test_batched_roster_fan_out_resolves_sorted_comma_joined_batches() -> None:
     assert driver.member_key == 'ids'
     assert driver.fetch_pool is pools.pool
     # The membership resolves through the SAME source path as a plain
-    # RosterFanOut's arm: the source is handed the per-member fan-out
-    # the batching wraps, naming the batched shape's roster.
-    assert seen_shapes == [RosterFanOut(roster=VEHICLE_IDS_KEY, member_key='ids')]
+    # RosterFanOut's arm: the source is handed the batched shape's own
+    # roster key.
+    assert seen_rosters == [VEHICLE_IDS_KEY]
 
 
 def test_batched_roster_fan_out_batches_are_deterministic() -> None:

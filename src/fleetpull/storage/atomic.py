@@ -1,12 +1,15 @@
 # src/fleetpull/storage/atomic.py
-"""The atomic parquet write: the storage layer's single durability primitive.
+"""The atomic file writes: the storage layer's durability primitives.
 
-Every layout's every write goes through here. A parquet write is not atomic -- a
-crash mid-write corrupts the file -- so the frame is written to a temp sibling and
-renamed onto the target, which POSIX guarantees is atomic on one filesystem. The
-prior target is untouched until the rename; a crash leaves either the old file or
-the new, never a partial one (DESIGN §5 crash-safety). The temp is always cleaned
-up: on success (already renamed away) or on failure.
+Every layout's every write goes through here. A file write is not atomic -- a
+crash mid-write corrupts the file -- so the content is written to a temp sibling
+and renamed onto the target, which POSIX guarantees is atomic on one filesystem.
+The prior target is untouched until the rename; a crash leaves either the old
+file or the new, never a partial one (DESIGN §5 crash-safety). The temp is
+always cleaned up: on success (already renamed away) or on failure.
+``atomic_write_parquet`` is the parquet write every dataset writer uses;
+``atomic_write_text`` is the same temp-then-rename skeleton for the
+``metadata.json`` projection's document text.
 """
 
 import os
@@ -17,7 +20,29 @@ import polars as pl
 from fleetpull.polars_typing import ParquetCompression
 from fleetpull.storage.files import temp_sibling_path
 
-__all__: list[str] = ['atomic_write_parquet']
+__all__: list[str] = ['atomic_write_parquet', 'atomic_write_text']
+
+
+def _fsync_path(path: Path) -> None:
+    """Flush one path's kernel buffers to stable storage.
+
+    The open/fsync/close block the durable-rename recipe applies twice --
+    to the temp file before the rename, to the parent directory after it.
+
+    Args:
+        path: The file or directory to fsync.
+
+    Raises:
+        OSError: The open or fsync failed.
+
+    Side Effects:
+        Issues an ``fsync`` system call.
+    """
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def atomic_write_parquet(
@@ -59,17 +84,39 @@ def atomic_write_parquet(
     try:
         frame.write_parquet(temp, compression=compression)
         if durable:
-            descriptor = os.open(temp, os.O_RDONLY)
-            try:
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
+            _fsync_path(temp)
         temp.replace(target)
         if durable:
-            directory = os.open(target.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
+            _fsync_path(target.parent)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def atomic_write_text(text: str, target: Path) -> None:
+    """Write ``text`` to ``target`` atomically via temp-then-rename.
+
+    The parquet write's temp-then-rename skeleton applied to document text:
+    temp-sibling in the target's own directory, so the rename is
+    same-filesystem and atomic; a crash leaves the prior file or the new one,
+    never a partial. The target's parent directory is deliberately NOT
+    created -- the one caller (the ``metadata.json`` projection) requires an
+    absent endpoint directory to surface as ``OSError``, never be papered
+    over with a ``mkdir``.
+
+    Args:
+        text: The complete document text to persist, written UTF-8.
+        target: The final file path; its parent directory must exist.
+
+    Raises:
+        OSError: The write or rename failed -- including a missing parent
+            directory (the temp is cleaned up first).
+
+    Side Effects:
+        Writes and renames files inside ``target``'s directory.
+    """
+    temp: Path = temp_sibling_path(target)
+    try:
+        temp.write_text(text, encoding='utf-8')
+        temp.replace(target)
     finally:
         temp.unlink(missing_ok=True)

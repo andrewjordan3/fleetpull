@@ -32,7 +32,7 @@ from fleetpull.network.contract import (
     PageDecoder,
     RequestSpec,
 )
-from fleetpull.network.posture import client_timeout, client_verify
+from fleetpull.network.posture import new_http_client
 from fleetpull.network.retry import RetryDecision, decide_retry
 from fleetpull.vocabulary import JsonValue, ResponseCategory
 
@@ -94,10 +94,7 @@ class TransportClient:
         """
         self._profile: ProviderProfile = profile
         self._runtime: ClientRuntime = runtime
-        self._http_client: httpx.Client = httpx.Client(
-            verify=client_verify(runtime.http_config),
-            timeout=client_timeout(runtime.http_config),
-        )
+        self._http_client: httpx.Client = new_http_client(runtime.http_config)
 
     def __enter__(self) -> Self:
         """Return self; the pool is already open."""

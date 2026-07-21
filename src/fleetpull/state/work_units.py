@@ -16,11 +16,13 @@ unit_id = (SELECT ... LIMIT 1) RETURNING ...`` — safe under concurrency becaus
 serializes writers, no app-level lock — that takes the lowest claimable ``unit_id``
 (FIFO), increments ``attempt_count``, and clears the prior attempt's outcome.
 Lifecycle: ``pending → claimed → done | failed``; ``failed`` units are re-served on
-a later pass, capped at ``max_attempts`` (``attempt_count`` increments at claim, so
-a crash mid-execution counts). The cap is mechanism, not shipped policy: the
-orchestrator passes a never-binding cap so a poison unit fails the endpoint loudly
-every invocation instead of being silently skipped (DESIGN §5, 2026-07-20); the
-machinery is retained for a future bounded retry policy.
+a later pass, unconditionally — there is no attempt cap (``attempt_count`` still
+increments at claim, recorded and narrated, so a crash mid-execution counts). A
+finite cap would convert a persistent failure into a silently skipped unit — a
+coverage hole behind an advancing watermark — so a poison unit fails the endpoint
+loudly every invocation instead, and the prefix-advance rule's gap-unreachability
+argument leans on exactly this always-claimable property (DESIGN §5); a future
+bounded retry policy must re-derive that argument before adding one.
 
 Crash recovery is a startup reset: a single ``fleetpull`` invocation runs the whole
 backfill as one process, so at startup any ``claimed`` row is stale (its worker is
@@ -37,9 +39,14 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Final
 
-from fleetpull.exceptions import ConfigurationError
-from fleetpull.state.database import SqliteScalar, StateDatabase
-from fleetpull.timing import Clock, from_iso8601, to_iso8601
+from fleetpull.state.database import (
+    SqliteScalar,
+    StateDatabase,
+    expect_int,
+    expect_text,
+    parse_stored_instant,
+)
+from fleetpull.timing import Clock, to_iso8601
 from fleetpull.vocabulary import Provider
 
 __all__: list[str] = [
@@ -58,7 +65,7 @@ class WorkUnitStatus(StrEnum):
     The ``work_units.status`` lifecycle value.
 
     ``pending`` → ``claimed`` → ``done`` / ``failed``; a ``failed`` unit returns to
-    ``claimed`` when re-served under the attempt cap. The store writes and filters
+    ``claimed`` when re-served on a later claim. The store writes and filters
     on this closed set, so centralizing the four literals keeps them out of
     scattered string form. The values equal the schema CHECK literals exactly; the
     two are held in two places by the same boundary discipline as ``CursorKind``
@@ -124,7 +131,7 @@ class WorkUnitProgress:
         pending: Units awaiting claim.
         claimed: Units currently in flight.
         done: Units completed successfully.
-        failed: Units that failed their last attempt (re-served under the cap).
+        failed: Units that failed their last attempt (re-served on a later pass).
     """
 
     pending: int
@@ -152,8 +159,7 @@ SET status = ?, claimed_at = ?, attempt_count = attempt_count + 1,
     finished_at = NULL, last_error = NULL
 WHERE unit_id = (
     SELECT unit_id FROM work_units
-    WHERE provider = ? AND endpoint = ?
-          AND status IN (?, ?) AND attempt_count < ?
+    WHERE provider = ? AND endpoint = ? AND status IN (?, ?)
     ORDER BY unit_id
     LIMIT 1
 )
@@ -220,42 +226,35 @@ def _build_claimed_unit(
         RuntimeError: A column came back with a type the STRICT schema forbids — a
             SQLite contract violation, surfaced loudly.
     """
-    unit_id, partition_key, chunk_start_text, chunk_end_text, attempt_count = row
-    if not isinstance(unit_id, int):
-        raise RuntimeError(f'work_units.unit_id was not an integer: {unit_id!r}')
-    if partition_key is not None and not isinstance(partition_key, str):
-        raise RuntimeError(
-            f'work_units.partition_key was not text or null: {partition_key!r}'
-        )
-    if not isinstance(chunk_start_text, str):
-        raise RuntimeError(f'work_units.chunk_start was not text: {chunk_start_text!r}')
-    if not isinstance(chunk_end_text, str):
-        raise RuntimeError(f'work_units.chunk_end was not text: {chunk_end_text!r}')
-    if not isinstance(attempt_count, int):
-        raise RuntimeError(
-            f'work_units.attempt_count was not an integer: {attempt_count!r}'
-        )
-    try:
-        chunk_start: datetime = from_iso8601(chunk_start_text)
-        chunk_end: datetime = from_iso8601(chunk_end_text)
-    except ValueError as error:
-        raise ConfigurationError(
-            'state database holds an unparseable work-unit chunk',
-            provider=provider.value,
-            endpoint=endpoint,
-            detail=(
-                f'work unit {unit_id} chunk '
-                f'[{chunk_start_text!r}, {chunk_end_text!r}] is not ISO-8601 UTC'
-            ),
-        ) from error
+    raw_unit_id, raw_partition_key, raw_chunk_start, raw_chunk_end, raw_attempts = row
+    unit_id = expect_int(raw_unit_id, 'work_units.unit_id')
+    partition_key = (
+        None
+        if raw_partition_key is None
+        else expect_text(raw_partition_key, 'work_units.partition_key')
+    )
     spec: WorkUnitSpec = WorkUnitSpec(
         provider=provider,
         endpoint=endpoint,
         partition_key=partition_key,
-        chunk_start=chunk_start,
-        chunk_end=chunk_end,
+        chunk_start=parse_stored_instant(
+            expect_text(raw_chunk_start, 'work_units.chunk_start'),
+            provider=provider,
+            endpoint=endpoint,
+            column=f'work-unit chunk_start (unit {unit_id})',
+        ),
+        chunk_end=parse_stored_instant(
+            expect_text(raw_chunk_end, 'work_units.chunk_end'),
+            provider=provider,
+            endpoint=endpoint,
+            column=f'work-unit chunk_end (unit {unit_id})',
+        ),
     )
-    return ClaimedWorkUnit(unit_id=unit_id, spec=spec, attempt_count=attempt_count)
+    return ClaimedWorkUnit(
+        unit_id=unit_id,
+        spec=spec,
+        attempt_count=expect_int(raw_attempts, 'work_units.attempt_count'),
+    )
 
 
 class WorkUnitStore:
@@ -315,11 +314,10 @@ class WorkUnitStore:
                     to_iso8601(unit.chunk_end),
                 )
             )
-        with self._database.connect() as connection:
+        with self._database.transaction() as connection:
             changes_before: int = connection.total_changes
             connection.executemany(_INSERT_UNIT_SQL, rows)
             inserted: int = connection.total_changes - changes_before
-            connection.commit()
         logger.debug('enqueued %s work units (%s new)', len(rows), inserted)
         return inserted
 
@@ -330,7 +328,7 @@ class WorkUnitStore:
         Called once at backfill startup per endpoint: with no workers live yet, any
         ``claimed`` row is stale (its worker died in a prior crashed invocation), so
         reverting it is safe — no lease, no heartbeat. ``attempt_count`` is left
-        untouched, so a crash-looping unit still reaches the cap. ``done`` /
+        untouched, so a crash-looping unit's attempts stay recorded. ``done`` /
         ``failed`` / ``pending`` rows are not touched.
 
         Args:
@@ -343,7 +341,7 @@ class WorkUnitStore:
         Side Effects:
             Opens a connection, updates the matching rows, and commits.
         """
-        with self._database.connect() as connection:
+        with self._database.transaction() as connection:
             reset_count: int = connection.execute(
                 _RESET_CLAIMED_SQL,
                 (
@@ -353,7 +351,6 @@ class WorkUnitStore:
                     WorkUnitStatus.CLAIMED.value,
                 ),
             ).rowcount
-            connection.commit()
         logger.debug(
             'reset %s claimed work units to pending: provider=%s endpoint=%s',
             reset_count,
@@ -362,32 +359,27 @@ class WorkUnitStore:
         )
         return reset_count
 
-    def claim_next(
-        self, provider: Provider, endpoint: str, *, max_attempts: int
-    ) -> ClaimedWorkUnit | None:
+    def claim_next(self, provider: Provider, endpoint: str) -> ClaimedWorkUnit | None:
         """
         Atomically claim the lowest claimable unit, or return ``None``.
 
-        Claims the lowest-``unit_id`` (FIFO) ``pending`` or ``failed`` unit whose
-        ``attempt_count`` is below ``max_attempts``, in one atomic
-        ``UPDATE ... RETURNING`` that flips it to ``claimed``, increments
-        ``attempt_count`` (so a crash mid-execution still counts toward the cap),
-        and clears the prior attempt's ``finished_at`` / ``last_error``. Safe under
+        Claims the lowest-``unit_id`` (FIFO) ``pending`` or ``failed`` unit, in
+        one atomic ``UPDATE ... RETURNING`` that flips it to ``claimed``,
+        increments ``attempt_count`` (recorded and narrated; a crash
+        mid-execution still counts), and clears the prior attempt's
+        ``finished_at`` / ``last_error``. There is deliberately no attempt cap
+        (the module docstring carries the fail-loud rationale). Safe under
         concurrency without an app-level lock: WAL serializes writers, so a
         competing claim's subquery re-evaluates only after this one commits.
 
         Args:
             provider: The provider whose queue to claim from.
             endpoint: The endpoint whose queue to claim from.
-            max_attempts: The retry cap; a unit at or over it is skipped, so a
-                poison unit lets the backfill terminate. Must be at least 1.
 
         Returns:
             The claimed unit, or ``None`` when nothing is claimable.
 
         Raises:
-            ValueError: ``max_attempts`` is below 1 — it could never satisfy
-                ``attempt_count < max_attempts`` and would silently claim nothing.
             ConfigurationError: The claimed row holds an unparseable chunk —
                 state-store corruption.
             RuntimeError: A claimed column came back with a forbidden type — a
@@ -396,10 +388,8 @@ class WorkUnitStore:
         Side Effects:
             Opens a connection, claims one row, and commits.
         """
-        if max_attempts < 1:
-            raise ValueError(f'max_attempts must be at least 1, got {max_attempts}')
         claimed_at: str = to_iso8601(self._clock.now_utc())
-        with self._database.connect() as connection:
+        with self._database.transaction() as connection:
             row = connection.execute(
                 _CLAIM_NEXT_SQL,
                 (
@@ -409,10 +399,8 @@ class WorkUnitStore:
                     endpoint,
                     WorkUnitStatus.PENDING.value,
                     WorkUnitStatus.FAILED.value,
-                    max_attempts,
                 ),
             ).fetchone()
-            connection.commit()
         if row is None:
             return None
         claimed_unit: ClaimedWorkUnit = _build_claimed_unit(provider, endpoint, row)
@@ -450,7 +438,7 @@ class WorkUnitStore:
         serialized_observation: str | None = (
             to_iso8601(observed_max) if observed_max is not None else None
         )
-        with self._database.connect() as connection:
+        with self._database.transaction() as connection:
             affected: int = connection.execute(
                 _MARK_DONE_SQL,
                 (
@@ -465,7 +453,6 @@ class WorkUnitStore:
                 raise ValueError(
                     f'no claimed work unit with unit_id {unit_id} to mark done'
                 )
-            connection.commit()
         logger.debug('marked work unit done: unit_id=%s', unit_id)
 
     def done_prefix_observation(
@@ -484,7 +471,7 @@ class WorkUnitStore:
         — a never-enqueued window between done units — would not gate the
         prefix. Soundness therefore rests on the four §5 invariants (one
         enqueue site running only after the claim loop drains, the
-        never-binding attempt cap, no row deletion, hole-free planner tiling),
+        capless always-claimable queue, no row deletion, hole-free planner tiling),
         which make such a hole unreachable; the state-layer gap-blindness test
         pins this dependence.
 
@@ -514,27 +501,19 @@ class WorkUnitStore:
         observation = row[0] if row is not None else None
         if observation is None:
             return None
-        if not isinstance(observation, str):
-            raise RuntimeError(
-                'work_units.observed_max came back non-text, violating the '
-                'schema contract'
-            )
-        try:
-            return from_iso8601(observation)
-        except ValueError as error:
-            raise ConfigurationError(
-                'work unit observation unparseable',
-                provider=provider.value,
-                endpoint=endpoint,
-                detail=f'stored observed_max {observation!r}: {error}',
-            ) from error
+        return parse_stored_instant(
+            expect_text(observation, 'work_units.observed_max'),
+            provider=provider,
+            endpoint=endpoint,
+            column='work-unit observed_max',
+        )
 
     def mark_failed(self, unit_id: int, *, error_detail: str) -> None:
         """
         Mark a claimed unit ``failed`` with an error detail.
 
         Only a ``claimed`` unit may be failed. ``attempt_count`` is not touched here
-        — it was already incremented at claim — so the cap still applies on retry.
+        — it was already incremented at claim — so the attempt record stays true.
 
         Args:
             unit_id: The claimed unit to fail.
@@ -548,7 +527,7 @@ class WorkUnitStore:
             Opens a connection, updates the row, and commits.
         """
         finished_at: str = to_iso8601(self._clock.now_utc())
-        with self._database.connect() as connection:
+        with self._database.transaction() as connection:
             affected: int = connection.execute(
                 _MARK_FAILED_SQL,
                 (
@@ -563,7 +542,6 @@ class WorkUnitStore:
                 raise ValueError(
                     f'no claimed work unit with unit_id {unit_id} to mark failed'
                 )
-            connection.commit()
         logger.debug('marked work unit failed: unit_id=%s', unit_id)
 
     def progress(self, provider: Provider, endpoint: str) -> WorkUnitProgress:
@@ -590,13 +568,9 @@ class WorkUnitStore:
             ).fetchall()
         counts: dict[str, int] = {}
         for status_value, count_value in grouped_rows:
-            if not isinstance(status_value, str):
-                raise RuntimeError(f'work_units.status was not text: {status_value!r}')
-            if not isinstance(count_value, int):
-                raise RuntimeError(
-                    f'work-unit count was not an integer: {count_value!r}'
-                )
-            counts[status_value] = count_value
+            counts[expect_text(status_value, 'work_units.status')] = expect_int(
+                count_value, 'work-unit count'
+            )
         return WorkUnitProgress(
             pending=counts.get(WorkUnitStatus.PENDING.value, 0),
             claimed=counts.get(WorkUnitStatus.CLAIMED.value, 0),

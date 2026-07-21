@@ -22,14 +22,46 @@ roster's ``source_endpoint`` to its ``EndpointDefinition``, builds the
 ``SingleRequestDriver``, opens the provider's client, and calls this.
 """
 
-from fleetpull.endpoints.shared import EndpointDefinition
+from fleetpull.endpoints.shared import EndpointDefinition, SnapshotMode
+from fleetpull.exceptions import ConfigurationError
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import TransportClient
 from fleetpull.orchestrator.drivers import RequestDriver
 from fleetpull.orchestrator.streaming import stream_processed_batches
 from fleetpull.records import extract_roster_members
 
-__all__: list[str] = ['harvest_roster_members']
+__all__: list[str] = ['harvest_roster_members', 'require_snapshot_feeder']
+
+
+def require_snapshot_feeder(
+    definition: EndpointDefinition[ResponseModel], source_endpoint: str
+) -> None:
+    """Reject a roster feeder that is not a snapshot endpoint.
+
+    The full-listing requirement, stated once for BOTH reconcile routes --
+    the orchestration entry's feeder tap and the refresh coordinator's
+    harvest: ``reconcile`` is only correct over a complete listing, which
+    only a snapshot-mode feeder produces (a windowed run's partial listing
+    would mass-count absences against every member outside the window). A
+    non-snapshot feeder is a wiring bug, raised loudly before anything runs.
+
+    Args:
+        definition: The feeder endpoint's resolved binding.
+        source_endpoint: The feeder's endpoint name, for the error context.
+
+    Raises:
+        ConfigurationError: The feeder is not snapshot-mode.
+    """
+    if not isinstance(definition.sync_mode, SnapshotMode):
+        raise ConfigurationError(
+            'roster feeder is not a snapshot endpoint',
+            provider=definition.provider.value,
+            endpoint=source_endpoint,
+            detail=(
+                'a roster source must be a full-listing (snapshot) endpoint: '
+                'reconcile is only correct over a complete listing'
+            ),
+        )
 
 
 def harvest_roster_members(

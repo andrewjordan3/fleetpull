@@ -11,22 +11,105 @@ partitioned writer relies on is preserved (nothing is collected up front).
 
 It is the non-feed pipe: ``process_batch`` transforms ``page.records`` and drops
 ``durable_progress`` (the feed cursor token the snapshot and watermark arms never
-use), so the feed arm drives the driver's pages itself in the runner
-(``_consume_feed_pages``), where each page's token commits right after its
+use), so the feed arm drives the driver's pages itself
+(``FeedDrive``), where each page's token commits right after its
 parquet lands. The pipe owns no state and
 resolves no client -- the conductor (the runner, the refresh service) opens the
 run, picks the provider's client, and consumes the stream.
+
+The consumption half lives beside the pipe: ``BatchObserver`` is the generic
+per-frame hook a caller may ride on a run (the caller boundary uses it to tap
+feeder runs for roster reconciliation; the executor stays blind to what it
+does), ``observe_batches`` threads one through a stream transparently, and
+``drain_batches`` is the write-count-and-fold drain the snapshot arm and every
+watermark unit run over their streams.
 """
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from datetime import datetime
+
+import polars as pl
 
 from fleetpull.endpoints.shared import EndpointDefinition, ResumeValue
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import TransportClient
-from fleetpull.orchestrator.batch import ProcessedBatch, WindowContext, process_batch
+from fleetpull.orchestrator.batch import (
+    ProcessedBatch,
+    WindowContext,
+    combine_latest_event_time,
+    process_batch,
+)
 from fleetpull.orchestrator.drivers import RequestDriver
+from fleetpull.storage import DatasetWriter
 
-__all__: list[str] = ['stream_processed_batches']
+__all__: list[str] = [
+    'BatchObserver',
+    'drain_batches',
+    'observe_batches',
+    'stream_processed_batches',
+]
+
+# The generic per-batch hook: called with each post-validation frame as the
+# run streams. The run executor is blind to what an observer does; an observer
+# exception fails the run like any other batch-processing failure.
+type BatchObserver = Callable[[pl.DataFrame], None]
+
+
+def observe_batches(
+    batches: Iterator[ProcessedBatch], observer: BatchObserver | None
+) -> Iterator[ProcessedBatch]:
+    """Pass batches through, handing each post-validation frame to the observer.
+
+    A transparent generator wrapper: with no observer the stream is yielded
+    unchanged; with one, each batch's frame is observed before the batch is
+    yielded onward, so memory stays bounded by one batch either way.
+
+    Args:
+        batches: The run's processed-batch stream.
+        observer: The per-batch hook, or ``None`` for a bare pass-through.
+
+    Yields:
+        The batches, unchanged and in order.
+    """
+    if observer is None:
+        yield from batches
+        return
+    for processed in batches:
+        observer(processed.frame)
+        yield processed
+
+
+def drain_batches(
+    batches: Iterator[ProcessedBatch], writer: DatasetWriter
+) -> tuple[int, datetime | None]:
+    """Consume a processed-batch stream: write, count, and fold as it arrives.
+
+    The shared drain the snapshot arm and every watermark unit run: each
+    batch's frame is handed to
+    the writer as it yields (memory stays bounded by one batch) while the
+    fetched-row count sums and the in-window event-time maximum folds. On
+    the snapshot path every fold candidate is ``None`` (``process_batch``
+    with ``context=None``), so the fold component is ``None`` there and the
+    snapshot arm discards it.
+
+    Args:
+        batches: The run's processed-batch stream, ready to consume.
+        writer: The run's dataset writer, handed each frame in order.
+
+    Returns:
+        The fetched-row count and the folded in-window maximum event time
+        (``None`` on the snapshot path, or when no in-window event was
+        observed).
+    """
+    records_fetched = 0
+    latest_observed: datetime | None = None
+    for processed in batches:
+        writer.write(processed.frame)
+        records_fetched += processed.frame.height
+        latest_observed = combine_latest_event_time(
+            latest_observed, processed.latest_event_time
+        )
+    return records_fetched, latest_observed
 
 
 def stream_processed_batches(

@@ -45,10 +45,12 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Final, Protocol
+from functools import partial
+from typing import Protocol
 
 from fleetpull.incremental import DateWindow
 from fleetpull.orchestrator.outcome import Executed
+from fleetpull.orchestrator.recording import record_failure_safely
 from fleetpull.state import ClaimedWorkUnit, WorkUnitSpec
 from fleetpull.timing import to_iso8601
 from fleetpull.vocabulary import Provider
@@ -56,18 +58,6 @@ from fleetpull.vocabulary import Provider
 __all__: list[str] = ['UnitCrew', 'UnitQueue', 'drive_claimable_units']
 
 logger = logging.getLogger(__name__)
-
-# A unit stays claimable on every invocation until it succeeds: the store's
-# claim API requires a cap, so the loop passes one that never binds (the
-# ``max_attempts`` machinery is retained for a future bounded retry policy).
-# Never-binding is load-bearing twice over (DESIGN section 5, 2026-07-20): a
-# finite cap would convert a persistent failure into a silently skipped unit
-# -- a coverage hole behind an advancing watermark -- and the prefix rule
-# leans on the same fact: a drained claim loop implies every existing unit is
-# done, which is what keeps the prefix read's gap-blindness unreachable. A
-# poison unit therefore fails the endpoint loudly on every invocation
-# instead -- the fail-loud posture.
-_UNIT_ATTEMPT_CAP: Final[int] = 2**31 - 1
 
 
 class UnitQueue(Protocol):
@@ -81,9 +71,7 @@ class UnitQueue(Protocol):
         """Revert orphaned ``claimed`` units to ``pending`` (startup recovery)."""
         ...
 
-    def claim_next(
-        self, provider: Provider, endpoint: str, *, max_attempts: int
-    ) -> ClaimedWorkUnit | None:
+    def claim_next(self, provider: Provider, endpoint: str) -> ClaimedWorkUnit | None:
         """Atomically claim the lowest claimable unit, or return ``None``."""
         ...
 
@@ -159,9 +147,7 @@ class _CrewDrive:
         try:
             while not self._stop_claiming.is_set():
                 claimed = self._crew.queue.claim_next(
-                    self._crew.provider,
-                    self._crew.endpoint,
-                    max_attempts=_UNIT_ATTEMPT_CAP,
+                    self._crew.provider, self._crew.endpoint
                 )
                 if claimed is None:
                     return
@@ -194,7 +180,14 @@ class _CrewDrive:
                 self._crew.endpoint,
                 claimed.unit_id,
             )
-            _mark_failed_safely(self._crew.queue, claimed, unit_failure)
+            record_failure_safely(
+                partial(
+                    self._crew.queue.mark_failed,
+                    claimed.unit_id,
+                    error_detail=str(unit_failure),
+                ),
+                f'work unit {claimed.unit_id}',
+            )
             with self._results_lock:
                 self.failures.append(unit_failure)
             return
@@ -272,30 +265,3 @@ def drive_claimable_units(crew: UnitCrew, *, workers: int) -> list[Executed]:
     if drive.failures:
         raise drive.failures[0]
     return drive.outcomes
-
-
-def _mark_failed_safely(
-    queue: UnitQueue, claimed: ClaimedWorkUnit, unit_failure: Exception
-) -> None:
-    """Record the unit failed without masking the failure that ended it.
-
-    ``mark_failed`` touches SQLite, which can itself fail; that secondary
-    failure must not replace the exception that actually ended the unit (the
-    ``_fail_run_safely`` stance). A unit left ``claimed`` by a failed mark is
-    still recovered: the next invocation's startup reset reverts it.
-
-    Args:
-        queue: The work-unit claim queue.
-        claimed: The unit that failed.
-        unit_failure: The exception that ended it, recorded as the detail.
-
-    Side Effects:
-        Marks the unit failed; on a recording failure, logs and swallows it.
-    """
-    try:
-        queue.mark_failed(claimed.unit_id, error_detail=str(unit_failure))
-    except Exception:
-        logger.exception(
-            'failed to record work unit %s as failed after an earlier error',
-            claimed.unit_id,
-        )

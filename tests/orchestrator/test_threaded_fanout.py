@@ -31,7 +31,7 @@ from fleetpull.endpoints.shared import (
     WatermarkMode,
 )
 from fleetpull.exceptions import ProviderResponseError
-from fleetpull.incremental import IncrementalCursor
+from fleetpull.incremental import DateWindow, IncrementalCursor
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import FetchedPage, TransportClient
 from fleetpull.network.contract import (
@@ -42,7 +42,8 @@ from fleetpull.network.contract import (
 from fleetpull.orchestrator.drivers import FanOutRequestDriver
 from fleetpull.orchestrator.fanout import FetchPool
 from fleetpull.orchestrator.outcome import Executed
-from fleetpull.orchestrator.runner import EndpointRunner, RunStateAccess
+from fleetpull.orchestrator.runner import EndpointRunner
+from fleetpull.orchestrator.spine import RunStateAccess
 from fleetpull.paths import endpoint_directory
 from fleetpull.timing import FrozenClock
 from fleetpull.vocabulary import JsonObject, Provider, QuotaScope
@@ -117,7 +118,7 @@ class _RecordingRecorder:
         return 1
 
     def start_window_run(
-        self, provider: Provider, endpoint: str, *, window: tuple[datetime, datetime]
+        self, provider: Provider, endpoint: str, *, window: DateWindow
     ) -> int:
         return 1
 

@@ -113,13 +113,20 @@ class TestKindGuardBothDirections:
     def test_watermark_never_overwrites_a_feed_token(
         self, cursor_store: CursorStore
     ) -> None:
-        cursor_store.commit_feed_token(Provider.GEOTAB, 'log_records', 'v7')
+        # The token is GeoTab-shaped 16-hex, which sorts lexically BELOW
+        # ISO-8601 text -- so the monotonicity conjunct alone would let
+        # this write through, and only the kind guard refuses it. A token
+        # sorting above ISO text (say 'v7') would mask a deleted kind
+        # guard behind the monotonicity refusal.
+        cursor_store.commit_feed_token(
+            Provider.GEOTAB, 'log_records', '0000000000000042'
+        )
         with pytest.raises(ConfigurationError, match='cross-mode'):
             cursor_store.advance_watermark_forward(
                 Provider.GEOTAB, 'log_records', WATERMARK_INSTANT
             )
         assert cursor_store.get_cursor(Provider.GEOTAB, 'log_records') == FeedToken(
-            from_version='v7'
+            from_version='0000000000000042'
         )
 
 

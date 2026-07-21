@@ -117,7 +117,7 @@ class TestFeedAppendWriter:
         assert result.rows_written == 3
         assert result.files_written == 3
         assert result.duplicates_dropped == 0
-        assert result.deleted_partitions == []
+        assert result.deleted_partitions == ()
 
     def test_duplicate_rows_are_stored_as_emitted(self, tmp_path: Path) -> None:
         # No write-time dedup: a crash-window refetch or a re-emitted version

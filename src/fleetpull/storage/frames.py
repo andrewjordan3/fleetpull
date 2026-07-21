@@ -2,8 +2,9 @@
 """Frame operations the write path composes: the exact-duplicate dedup and the
 half-open window-membership predicate.
 
-Two pure DataFrame helpers. ``drop_exact_duplicates`` is the write-time exact
-dedup (DESIGN §6): the replace-partition and single-file writers run it on
+Pure DataFrame helpers. ``drop_exact_duplicates`` is the write-time exact
+dedup (DESIGN §6), and ``dedup_counting`` is the flag-and-count composition
+the replace-partition and single-file writers run on
 their finalized frames, clearing byte-identical rows as a cheap safety net.
 The feed append cell deliberately does NOT (DESIGN §4's stored-as-emitted
 contract and §14's append-only invariant): crash-window and re-emission
@@ -19,7 +20,30 @@ import polars as pl
 
 from fleetpull.incremental import DateWindow
 
-__all__: list[str] = ['drop_exact_duplicates', 'in_window']
+__all__: list[str] = ['dedup_counting', 'drop_exact_duplicates', 'in_window']
+
+
+def dedup_counting(frame: pl.DataFrame, *, enabled: bool) -> tuple[pl.DataFrame, int]:
+    """Apply the write-time exact dedup when enabled, counting what it dropped.
+
+    The dedup-and-count step every deduping write path runs before
+    persisting -- the finalized single file and each compacted partition --
+    stated once so the flag handling and the dropped-row arithmetic never
+    drift between writers.
+
+    Args:
+        frame: The frame about to be written.
+        enabled: The ``storage.drop_exact_duplicates`` switch; ``False``
+            passes ``frame`` through byte-for-byte.
+
+    Returns:
+        The frame to write and the count of exact-duplicate rows removed
+        (``0`` when disabled or none were found).
+    """
+    if not enabled:
+        return frame, 0
+    written = drop_exact_duplicates(frame)
+    return written, frame.height - written.height
 
 
 def drop_exact_duplicates(frame: pl.DataFrame) -> pl.DataFrame:

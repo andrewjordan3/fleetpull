@@ -8,13 +8,8 @@ resume declaration types."""
 from fleetpull.endpoints.shared.base import (
     CompletenessCheck,
     EndpointDefinition,
-    FeedMode,
     ResumeValue,
-    SnapshotMode,
     SpecBuilder,
-    StorageKind,
-    SyncMode,
-    WatermarkMode,
 )
 from fleetpull.endpoints.shared.request_shape import (
     BatchedRosterFanOut,
@@ -26,6 +21,13 @@ from fleetpull.endpoints.shared.request_shape import (
 )
 from fleetpull.endpoints.shared.resume import require_date_window, require_feed_resume
 from fleetpull.endpoints.shared.spec_builders import StaticGetSpecBuilder
+from fleetpull.endpoints.shared.sync_mode import (
+    FeedMode,
+    SnapshotMode,
+    StorageKind,
+    SyncMode,
+    WatermarkMode,
+)
 from fleetpull.endpoints.shared.url_paths import (
     UrlPathTemplateError,
     render_url_path_template,

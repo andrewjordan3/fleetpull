@@ -23,12 +23,11 @@ range for its single-file output), this builder does not trim: it fetches the wh
 days and lets the writer replace whole partitions.
 
 The mapping aligns with the storage layer's covered dates (``window_dates``):
-``start_date`` is the UTC date of ``window.start`` and ``end_date`` is the UTC date
-of ``window.end - 1 microsecond`` -- the window's last covered date. The epsilon is
-exact because the window's datetimes are microsecond-precision end to end. So what
+``start_date`` is the UTC date of ``window.start`` and ``end_date`` is the window's
+``last_covered_date`` (the one-microsecond derivation is stated once, on
+``DateWindow``). So what
 this builder fetches equals what the writer replaces and prunes: the same date set,
-no edge double-count, idempotent on refetch. Both strings come from
-``to_utc_date_string`` (the timing codec), the house encoder for a date-only param.
+no edge double-count, idempotent on refetch.
 
 This is the dedicated builder for vehicle_locations specifically -- a date-range
 fetch plus a per-vehicle path fan-out. The fleet-wide Motive date-range endpoints
@@ -116,7 +115,7 @@ class MotiveVehicleLocationsSpecBuilder:
         rendered_path = render_url_path_template(self.path_template, member_values)
         url = f'{self.base_url}{rendered_path}'
         start_date = to_utc_date_string(resume_window.start)
-        end_date = to_utc_date_string(resume_window.end - timedelta(microseconds=1))
+        end_date = resume_window.last_covered_date.isoformat()
         params = {'start_date': start_date, 'end_date': end_date}
         return RequestSpec(method=HttpMethod.GET, url=url, params=params)
 

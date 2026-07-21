@@ -14,11 +14,11 @@ from fleetpull.state.database import (
     _DEFAULT_BUSY_TIMEOUT_MS,
     SqliteScalar,
     StateDatabase,
-    apply_connection_pragmas,
-    enable_wal,
+    _apply_connection_pragmas,
+    _enable_wal,
+    _stamp_or_verify_application_id,
+    _verify_quick_check,
     fetch_scalar,
-    stamp_or_verify_application_id,
-    verify_quick_check,
 )
 
 # The path argument to the verify primitives reaches only the ConfigurationError
@@ -70,12 +70,12 @@ class TestFetchScalar:
 class TestApplyConnectionPragmas:
     def test_sets_the_busy_timeout(self, memory_connection: sqlite3.Connection) -> None:
         busy_timeout_ms = 1234
-        apply_connection_pragmas(memory_connection, busy_timeout_ms)
+        _apply_connection_pragmas(memory_connection, busy_timeout_ms)
         actual = fetch_scalar(memory_connection, 'PRAGMA busy_timeout')
         assert actual == busy_timeout_ms
 
     def test_enables_foreign_keys(self, memory_connection: sqlite3.Connection) -> None:
-        apply_connection_pragmas(memory_connection, _DEFAULT_BUSY_TIMEOUT_MS)
+        _apply_connection_pragmas(memory_connection, _DEFAULT_BUSY_TIMEOUT_MS)
         assert fetch_scalar(memory_connection, 'PRAGMA foreign_keys') == 1
 
 
@@ -83,15 +83,15 @@ class TestStampOrVerifyApplicationId:
     def test_stamps_a_fresh_database(
         self, memory_connection: sqlite3.Connection
     ) -> None:
-        stamp_or_verify_application_id(memory_connection, _SAMPLE_PATH)
+        _stamp_or_verify_application_id(memory_connection, _SAMPLE_PATH)
         stamped = fetch_scalar(memory_connection, 'PRAGMA application_id')
         assert stamped == _APPLICATION_ID
 
     def test_accepts_an_already_stamped_database(
         self, memory_connection: sqlite3.Connection
     ) -> None:
-        stamp_or_verify_application_id(memory_connection, _SAMPLE_PATH)
-        stamp_or_verify_application_id(memory_connection, _SAMPLE_PATH)
+        _stamp_or_verify_application_id(memory_connection, _SAMPLE_PATH)
+        _stamp_or_verify_application_id(memory_connection, _SAMPLE_PATH)
         stamped = fetch_scalar(memory_connection, 'PRAGMA application_id')
         assert stamped == _APPLICATION_ID
 
@@ -100,14 +100,14 @@ class TestStampOrVerifyApplicationId:
     ) -> None:
         memory_connection.execute('PRAGMA application_id = 12345')
         with pytest.raises(ConfigurationError, match='another application'):
-            stamp_or_verify_application_id(memory_connection, _SAMPLE_PATH)
+            _stamp_or_verify_application_id(memory_connection, _SAMPLE_PATH)
 
 
 class TestEnableWal:
     def test_converts_to_wal_on_local_disk(self, database_path: Path) -> None:
         connection = sqlite3.connect(database_path)
         try:
-            enable_wal(connection, database_path)
+            _enable_wal(connection, database_path)
             mode = fetch_scalar(connection, 'PRAGMA journal_mode')
         finally:
             connection.close()
@@ -120,14 +120,14 @@ class TestEnableWal:
             patch('fleetpull.state.database.fetch_scalar', return_value='delete'),
             pytest.raises(ConfigurationError, match='filesystem'),
         ):
-            enable_wal(memory_connection, _SAMPLE_PATH)
+            _enable_wal(memory_connection, _SAMPLE_PATH)
 
 
 class TestVerifyQuickCheck:
     def test_passes_on_a_healthy_database(
         self, memory_connection: sqlite3.Connection
     ) -> None:
-        verify_quick_check(memory_connection, _SAMPLE_PATH)
+        _verify_quick_check(memory_connection, _SAMPLE_PATH)
 
     def test_refuses_a_corrupt_database(
         self, memory_connection: sqlite3.Connection
@@ -136,7 +136,7 @@ class TestVerifyQuickCheck:
             patch('fleetpull.state.database.fetch_scalar', return_value='malformed'),
             pytest.raises(ConfigurationError, match='integrity'),
         ):
-            verify_quick_check(memory_connection, _SAMPLE_PATH)
+            _verify_quick_check(memory_connection, _SAMPLE_PATH)
 
 
 class TestDatabasePath:
@@ -255,3 +255,30 @@ class TestRoundTrip:
         assert value == 1
         stamped = _read_pragma(reopened.database_path, 'application_id')
         assert stamped == _APPLICATION_ID
+
+
+class TestTransaction:
+    def test_commits_on_clean_exit(self, database_path: Path) -> None:
+        database = StateDatabase(database_path)
+        database.initialize()
+        with database.transaction() as connection:
+            connection.execute('CREATE TABLE probe (value INTEGER)')
+            connection.execute('INSERT INTO probe (value) VALUES (7)')
+        with database.connect() as connection:
+            assert fetch_scalar(connection, 'SELECT value FROM probe') == 7
+
+    def test_a_raise_discards_the_uncommitted_work(self, database_path: Path) -> None:
+        database = StateDatabase(database_path)
+        database.initialize()
+        with database.transaction() as connection:
+            connection.execute('CREATE TABLE probe (value INTEGER)')
+
+        def insert_then_fail() -> None:
+            with database.transaction() as connection:
+                connection.execute('INSERT INTO probe (value) VALUES (7)')
+                raise RuntimeError('mid-transaction failure')
+
+        with pytest.raises(RuntimeError, match='mid-transaction'):
+            insert_then_fail()
+        with database.connect() as connection:
+            assert fetch_scalar(connection, 'SELECT count(*) FROM probe') == 0

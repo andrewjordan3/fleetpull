@@ -6,7 +6,7 @@ reads it (via the orchestrator, not storage). The fleetpull analogue of
 fleet-telemetry-hub's merge stats.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 
 __all__: list[str] = ['WriteResult']
@@ -31,4 +31,4 @@ class WriteResult:
     rows_written: int
     duplicates_dropped: int
     files_written: int
-    deleted_partitions: list[date] = field(default_factory=list)
+    deleted_partitions: tuple[date, ...] = ()

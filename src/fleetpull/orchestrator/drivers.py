@@ -201,11 +201,12 @@ def _stream_then_verify_pages(
     expected_count = check.expected_count(client, definition.quota_scope.value)
     if harvested_count != expected_count:
         raise ProviderResponseError(
+            provider=definition.provider.value,
+            endpoint=definition.name,
             detail=(
-                f'{definition.provider.value}.{definition.name}: completeness '
-                f'check failed -- provider expects {expected_count} records, '
-                f'harvest returned {harvested_count}'
-            )
+                f'completeness check failed -- provider expects '
+                f'{expected_count} records, harvest returned {harvested_count}'
+            ),
         )
 
 
