@@ -1538,6 +1538,86 @@ addresses build implements them.
    interpret; enforcing a constraint the provider owns would turn a
    provider change into a fleetpull crash for no consumer's benefit.
 
+### Samsara `vehicle_stats_history` probe-settled decisions (2026-07-20)
+
+Settled by the 2026-07-20 live probe session (the captured rows below); the
+vehicle-stats build implements them.
+
+1. **ONE legacy endpoint ships as THREE: `engine_states`, `gps_readings`,
+   `odometer_readings`.** The three stat types of
+   `GET /fleet/vehicles/stats/history` carry fully DISJOINT reading
+   schemas — `{time, value: str}` vs `{time, value: int}` vs the
+   seven-key gps shape — so the drivers decision-1 reasoning ("one
+   entity, one dataset") lands on the SPLIT side here: the `types`
+   param selects among genuinely different entities, not a provider
+   filter quirk over one entity, and a merged dataset would be a
+   union of disjoint schemas every consumer must re-split. Each
+   endpoint requests exactly its own type (`types=engineStates` /
+   `gps` / `obdOdometerMeters`), a FIXED param baked into its spec.
+2. **The grain is the READING.** Wire records are per-vehicle, each
+   nesting one reading-series array per requested type; the §9
+   pipeline represents scalars, not list-of-objects — and unlike the
+   tags/eldSettings exclusions the series IS the endpoint's entire
+   payload, so exclusion is not an option: the stored grain must be
+   the reading. One flat record per series element, with the vehicle's
+   identity synthesized onto each.
+3. **The unnesting is a DECODER: `SamsaraVehicleSeriesPageDecoder`,
+   COMPOSING `SamsaraCursorPageDecoder` by delegation** — the one
+   machinery addition of the triple. The cursor walks the VEHICLE axis
+   within the fixed window (probe-proven: zero vehicle-id overlap
+   across three consecutive pages), so pagination is exactly the
+   standard cursor contract, delegated verbatim to an inner cursor
+   decoder (`first_request` untouched; the advance — including the
+   continuation-without-cursor truncation guard — passed through),
+   while `decode_page` unnests each vehicle's series into flat records
+   carrying synthesized `vehicleId`/`vehicleName`/`vehicleSerial`/
+   `vehicleVin` keys (sourced from `id`/`name` and the `externalIds`
+   object's literal dotted `samsara.serial`/`samsara.vin` keys), each
+   synthesized ONLY when its source is present (the omit-absent-keys
+   posture), reading keys winning any collision — impossible by
+   census, the synthesized names having been chosen collision-free
+   against every observed series key. Rejected: inheritance (it would
+   couple the unnesting to the cursor decoder's internals, against the
+   family's independence idiom) and duplication (the cursor mechanics
+   are per-type-proven wire truth that would drift as two copies).
+   The decoder is Samsara-stats-specific by evidence, not a generic
+   flattener.
+4. **The windowed leaf is the idling_events species at the 512 tier.**
+   Windowed watermark / `DATE_PARTITIONED` / SAMSARA scope /
+   `event_time_column='time'` / the fleet-wide `SingleFetch` default —
+   vehicle attribution is decoder-synthesized per reading, so no
+   fan-out and no roster. One shared `SamsaraVehicleStatsSpecBuilder`
+   serves all three leaves (the Motive `_spec_builders` promotion
+   precedent, arriving with three users at birth), rendering RFC3339
+   `startTime`/`endTime` plus the fixed `types`; `limit` is 512,
+   probed on THIS surface (512 → 200, 513 → 400 — the vehicles/drivers
+   tier, NOT idling's 200; the per-endpoint tier rule). Retrieval is
+   READING-TIME anchored on the half-open `[start, end)` window
+   (probe: a 12:00–13:00Z window returned min 12:00:03.062Z, max
+   12:59:56.881Z), so retrieval and routing coincide natively, no wire
+   pad exists, and the runner's window filter is pure hygiene.
+5. **Engine-state `value` stays a plain `str`.** The observed
+   vocabulary is exactly `{'On', 'Off', 'Idle'}`, but that closure is
+   census-only: the API 400-enforces the `types` INPUT vocabulary
+   (`types=bogusType` → `Invalid stat type(s)`) yet does not enforce
+   output state values, so the enum bar is unmet (the eldExemptReason
+   lesson; the drivers `driverActivationStatus` enum was kept only
+   because the API 400-enforced it). The vocabulary is documented on
+   the model instead.
+6. **`vehicle_serial`/`vehicle_vin` are OPTIONAL.** 74/74 presence on
+   the one censused mixed-type page is not a whole-population oath
+   (the drivers conservative posture), and the vehicles surface proves
+   `externalIds` variance exists in this fleet; the decoder's
+   omit-absent-keys synthesis makes absence a missing key, landing
+   None. `vehicle_id`/`vehicle_name`/`time` plus each type's series
+   core (engine/odometer `value`; the seven always-present gps keys)
+   are REQUIRED — census-always-present on their axes.
+7. **No completeness check** (windowed, deliberately partial — the
+   standing snapshot-only rule); the API-enforced `types` input
+   vocabulary means a typo'd stat type can never read as an empty
+   dataset, and only carrier vehicles are returned per type (no
+   empty-array padding observed), so an empty page is honestly empty.
+
 ### The exception hierarchy (implemented: `exceptions.py`)
 
 The operational errors consumers catch, mirroring the classification
@@ -1638,6 +1718,11 @@ budgets → `RetriesExhaustedError`, failed auth paths →
 | Samsara | Idling-event census (2,200 events, ZERO real nulls — absence-shaped): always present — `eventUuid` (str, the event id), `startTime` (RFC3339 str), `durationMilliseconds` (int; there is NO end key — the interval is start+duration; events were only ever observed complete, with implied ends in the past even in a last-30-minutes probe: in-progress idles appear to materialize on completion, the lookback absorbs late materialization, accepted residual), `asset {id: int}`, `latitude`/`longitude` (floats), `ptoState` (str; only `'inactive'` observed — the value set is NOT evidence-closed, so modeled plain str, not an enum), `fuelConsumedMilliliters` (MIXED int\|float on the wire — modeled float), `fuelCost {amount: str, currency: str}` (money mirrored verbatim as strings), `gaseousFuelConsumedGrams` (int), `gaseousFuelCost {amount, currency}`. Partial: `operator {id: int}` 1546/2200 (driver attribution when known); `airTemperatureMillicelsius` (int) 1833/2200; `address {id: str, addressTypes: list[str]}` 552/2200 (element `'yard'` observed; `addressTypes` itself absent on ~31/552 blocks). NOTE `address.id` is a STRING while `asset.id`/`operator.id` are BARE INTs — mirrored exactly (captured 2026-07-20). |
 | Samsara | `GET /addresses` is a modern-envelope surface: `data` + `pagination {endCursor, hasNextPage}` — the standard cursor contract. The full walk was the WHOLE POPULATION in one page: 25 records, terminal shape on page one. The `limit` tier was probed directly: limit=512 → HTTP 200, limit=513 → HTTP 400 — `/addresses` sits in the vehicles/drivers 512 tier, NOT idling's 200; the per-endpoint tier rule holds, settled by probe, never by sibling assumption (captured 2026-07-20). |
 | Samsara | Address census (25 records — the whole population; no null value anywhere, absence-shaped): always present — `id` (str), `name`, `createdAtTime` (UTC ISO-8601 with milliseconds), `formattedAddress`, `latitude`/`longitude` (floats — the address's center point, present on polygon-fenced records too), `geofence` (object). Partial: `addressTypes` 20/25 (list[str]); `tags` 9/25 (list-of-objects, model-excluded per the Device/User precedent). Nested `geofence` (out of 25 blocks): `circle` 1/25 (`{latitude, longitude, radiusMeters: int}`, all three in the carrying block); `polygon` 24/25 — its ONLY key is `vertices`, a list of `{latitude, longitude}` objects (excluded wholesale, the precedent one level down); `settings` 13/25 (`{showAddresses: bool}`, present in every carrying block). `circle` and `polygon` were mutually exclusive in capture (1 vs 24, never both) — both mirrored optional, NO XOR enforcement (mirror, never interpret) (captured 2026-07-20). |
+| Samsara | `GET /fleet/vehicles/stats/history` is a modern-envelope surface (`data` + `pagination {endCursor, hasNextPage}`, the standard cursor contract) whose cursor walks the **VEHICLE axis** within the fixed `startTime`/`endTime` (RFC3339 UTC) window: three consecutive pages showed ZERO vehicle-id overlap. Each vehicle record nests one reading-series array per requested type. The `limit` tier was probed directly: limit=512 → HTTP 200, limit=513 → HTTP 400 — the vehicles/drivers 512 tier, NOT idling's 200 (captured 2026-07-20). |
+| Samsara | The stats-history `types` param is API-enforced on INPUT: `types=bogusType` and `types=gps,bogusType` both return HTTP 400 `{"message": "Invalid stat type(s): bogusType"}` — loud, never silent-empty, so a typo'd stat type can never read as an empty dataset. Only CARRIER vehicles are returned per requested type (24h walks: engineStates 138 vehicles / 138 with data; obdOdometerMeters 135/135; gps sample 569/569) — no empty-array padding observed (captured 2026-07-20). |
+| Samsara | Stats-history retrieval is READING-TIME anchored on the half-open `[startTime, endTime)` window, probe-proven: a 12:00:00Z–13:00:00Z window returned min_time 12:00:03.062Z and max_time 12:59:56.881Z — readings strictly inside the window, so `event_time_column='time'` routing coincides with retrieval natively, no wire pad (captured 2026-07-20). |
+| Samsara | Stats-history per-vehicle record census (74/74 on the mixed-type page): `id` (str), `name` (str), `externalIds` (object, 74/74) carrying the literal DOTTED wire keys `samsara.serial` (74/74 str) and `samsara.vin` (74/74 str), plus one series array per requested type. One page is not a whole-population oath — serial/vin stay optional on the flat mirror (the drivers conservative posture) (captured 2026-07-20). |
+| Samsara | Stats-history series censuses: `engineStates` (1,045 readings/24h) keys exactly `{time: str, value: str}`, value vocabulary observed exactly `{'On': 475, 'Off': 301, 'Idle': 269}` — census-closed only, NOT API-enforced on output, so modeled plain str. `obdOdometerMeters` (9,480 readings/24h) keys exactly `{time: str, value: int}`, every value int, observed range 3,552,000..1,012,456,215 meters. `gps` (2,512-reading sample over 8 pages): always present — `time` (str), `latitude`/`longitude` (floats), `headingDegrees` (int), `speedMilesPerHour` (MIXED int\|float — modeled float), `isEcuSpeed` (bool), `reverseGeo {formattedLocation: str}`; partial — `address {id: str, name: str}` 401/2512, the address-book reference (captured 2026-07-20). |
 | Motive | 401 body is `{"error_message": ...}`; the documented /vehicle_locations limit was not observed to enforce — generic 429 posture. |
 | Motive | `/v3/vehicle_locations/{vehicle_id}` verified live: envelope `{"vehicle_locations": [{"vehicle_location": {...}}]}`, `located_at` is UTC ISO-8601 (`Z`-suffixed), one non-paginated page per fetch (so `SinglePageDecoder` fits), and a single per-vehicle fetch spans multiple calendar dates (the sample crossed two) — confirming `split_by_date`'s multi-partition output is load-bearing in production, not a theoretical edge: one fetch genuinely fans into several partitions. |
 | Motive | `/v3/vehicle_locations/{vehicle_id}` date bounds pinned by direct probing: day-granular `start_date`/`end_date` are honored inclusively on both bounds — a single-day request returns that full day, a two-day request both complete days. The documented 3-month maximum range is real: long backfills will eventually need request chunking (a range limit, unrelated to the §15 item-1 window defect). |
@@ -2961,7 +3046,13 @@ resolution (item 1, done).
    four are COMPLETE 2026-07-20 (`vehicles`, `drivers`, `trips`,
    `idling_events`). Samsara `addresses` shipped 2026-07-20 (the
    whole-population snapshot on the 512 tier per its §8 decision
-   block, zero shared-machinery changes); the remainder of the legacy
+   block, zero shared-machinery changes). The Samsara
+   `vehicle_stats_history` surface shipped 2026-07-20 as THREE
+   endpoints — `engine_states`, `gps_readings`, `odometer_readings` —
+   per its §8 decision block (one legacy endpoint, three
+   disjoint-schema entities at the reading grain; the series-unnesting
+   decoder composing the cursor decoder by delegation is the one
+   machinery addition); the remainder of the legacy
    wave queues next.* The per-endpoint
    inventory and port queue are tracked in `ENDPOINTS.md` (added
    2026-07-17), updated in the same change as any endpoint addition.

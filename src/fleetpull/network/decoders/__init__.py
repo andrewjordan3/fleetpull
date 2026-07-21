@@ -16,7 +16,10 @@ from fleetpull.network.decoders.motive import (
     MotiveWrappedListPageDecoder,
     MotiveWrappedSinglePageDecoder,
 )
-from fleetpull.network.decoders.samsara import SamsaraCursorPageDecoder
+from fleetpull.network.decoders.samsara import (
+    SamsaraCursorPageDecoder,
+    SamsaraVehicleSeriesPageDecoder,
+)
 from fleetpull.network.decoders.single_page import SinglePageDecoder
 
 __all__: list[str] = [
@@ -25,5 +28,6 @@ __all__: list[str] = [
     'MotiveWrappedListPageDecoder',
     'MotiveWrappedSinglePageDecoder',
     'SamsaraCursorPageDecoder',
+    'SamsaraVehicleSeriesPageDecoder',
     'SinglePageDecoder',
 ]
