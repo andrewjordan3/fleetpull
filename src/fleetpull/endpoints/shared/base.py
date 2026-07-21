@@ -117,10 +117,39 @@ class WatermarkMode:
         cutoff: How far the window's end is held back from the clock, so the most
             recent written partition is always a complete day. Day-granular; zero
             adds no holdback beyond the resolver's own date alignment.
+        fixed_unit_days: The endpoint's fixed work-unit width in whole days, or
+            ``None`` (the default) to tile at ``sync.backfill_chunk_days``. Set
+            only by endpoints whose rows are per-request-window rollups: the
+            provider aggregates over exactly the requested window, so the unit
+            width is part of the ROW'S MEANING and must never float with user
+            configuration — the Samsara fuel-energy probe proved day rollups are
+            NOT a lossless decomposition of wider windows (summing two adjacent
+            day windows reproduced the two-day rollup on only 178 of 267
+            vehicles; DESIGN §8, 2026-07-21). When set, the window planner tiles
+            this endpoint's resume window into units of exactly this many days,
+            ignoring ``sync.backfill_chunk_days``; the config knob remains the
+            default for every endpoint that leaves this ``None``. Validated
+            >= 1 at construction.
     """
 
     lookback: timedelta
     cutoff: timedelta
+    fixed_unit_days: int | None = None
+
+    def __post_init__(self) -> None:
+        """Validate the fixed unit width when one is declared.
+
+        Raises:
+            ValueError: ``fixed_unit_days`` is set but not >= 1 — a
+                zero-or-negative unit width can tile nothing.
+
+        Side Effects:
+            None -- reads fields and may raise.
+        """
+        if self.fixed_unit_days is not None and self.fixed_unit_days < 1:
+            raise ValueError(
+                f'fixed_unit_days must be >= 1 when set, got {self.fixed_unit_days}.'
+            )
 
 
 @dataclass(frozen=True, slots=True)

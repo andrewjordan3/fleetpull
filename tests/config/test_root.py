@@ -489,6 +489,8 @@ class TestExampleFile:
             'odometer_readings',
             'asset_locations',
             'driver_vehicle_assignments',
+            'vehicle_fuel_energy_reports',
+            'driver_fuel_energy_reports',
         )
         geotab = config.providers.geotab
         assert geotab is not None
