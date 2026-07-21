@@ -57,7 +57,9 @@ from fleetpull.config import (
     GeotabAuthConfig,
     GeotabConfig,
     MotiveConfig,
+    ProviderConfig,
     SamsaraConfig,
+    default_provider_sections,
 )
 from fleetpull.endpoints import (
     EndpointRegistry,
@@ -317,22 +319,19 @@ class Sync:
             if section is not None and section.endpoints
         ]
 
-    def _discovery_provider_configs(self) -> list[_ProviderSection]:
+    def _discovery_provider_configs(self) -> list[ProviderConfig]:
         """One config per provider package: the YAML section, or pure defaults.
 
         The discovery walk builds every leaf it finds and requires a config
         per provider package regardless of enablement, so a provider absent
-        from the YAML is represented by its default-constructed config (the
-        ``fetch`` precedent). Enabled providers contribute their YAML
+        from the YAML is represented by its default-constructed config
+        (``default_provider_sections`` -- the roll-call ``fetch`` consumes
+        too). Enabled providers contribute their YAML
         instances, so the limiter budgets derived from this list are the
         user's; a disabled provider's default config merely registers inert
         scopes nothing spends from.
         """
-        defaults: dict[Provider, _ProviderSection] = {
-            Provider.MOTIVE: MotiveConfig(),
-            Provider.GEOTAB: GeotabConfig(),
-            Provider.SAMSARA: SamsaraConfig(),
-        }
+        defaults = default_provider_sections()
         return [
             section if section is not None else defaults[provider]
             for provider, section in _provider_sections(self._config)
@@ -720,16 +719,13 @@ def _required_credential(
 
     The enablement validator guarantees it for any validated config; this
     trips loudly if that invariant is ever bypassed by direct construction.
-    The return is the ingress ``AuthInput`` shape for the section's provider:
-    the ``SecretStr`` key for the static-key providers (Motive, Samsara),
-    GeoTab's four-field credential whole (its password's ``SecretStr``
-    passes straight through -- no unwrap/rewrap).
+    The section's ``credential`` property already carries the ingress
+    ``AuthInput`` shape for its provider: the ``SecretStr`` key for the
+    static-key providers (Motive, Samsara), GeoTab's four-field credential
+    whole (its password's ``SecretStr`` passes straight through -- no
+    unwrap/rewrap).
     """
-    match config:
-        case MotiveConfig() | SamsaraConfig():
-            credential: SecretStr | GeotabAuthConfig | None = config.api_key
-        case GeotabConfig():
-            credential = config.auth
+    credential = config.credential
     if credential is None:
         raise ConfigurationError(
             'provider credential missing',

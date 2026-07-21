@@ -24,7 +24,7 @@ from fleetpull.orchestrator.drivers import (
 from fleetpull.orchestrator.entry import RosterMachinery, run_endpoint
 from fleetpull.orchestrator.fanout import FetchPool
 from fleetpull.orchestrator.outcome import CaughtUp, Executed, RunOutcome
-from fleetpull.orchestrator.runner import BatchObserver
+from fleetpull.orchestrator.streaming import BatchObserver
 from fleetpull.roster import RosterDefinition, RosterKey, RosterRegistry
 from fleetpull.storage import WriteResult
 from fleetpull.vocabulary import Provider, QuotaScope

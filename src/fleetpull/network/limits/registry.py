@@ -5,11 +5,10 @@ derivation of its per-scope values from provider configs."""
 import threading
 from collections.abc import Iterable, Mapping
 
-from fleetpull.config import GeotabConfig, ProviderConfig, RateLimitConfig
+from fleetpull.config import ProviderConfig, RateLimitConfig
 from fleetpull.exceptions import UnknownQuotaScopeError
 from fleetpull.network.limits.limiter import QuotaScopeLimiter
 from fleetpull.timing import Clock, SystemClock
-from fleetpull.vocabulary import QuotaScope
 
 __all__: list[str] = ['RateLimiterRegistry', 'rate_limits_from_configs']
 
@@ -19,16 +18,12 @@ def rate_limits_from_configs(
 ) -> dict[str, RateLimitConfig]:
     """Derive the registry's per-scope rate limits from provider configs.
 
-    Each provider config carries its scope's budget (``rate_limit``, with a
-    documented provider default) and binds the scope it governs
-    (``quota_scope``, a ``ClassVar``), so composition roots hand this their
-    resolved configs and never invent rate-limit numbers. GeoTab meters per
-    method class (DESIGN §8): its ``quota_scope`` ClassVar binds the
-    Get-class scope the generic emission covers, and its other two budgets
-    -- the GetFeed class (the feed endpoints' scope) and the dedicated
-    Authenticate class -- are emitted here under ``QuotaScope.GEOTAB_FEED``
-    and ``QuotaScope.GEOTAB_AUTHENTICATE`` from the same config, so every
-    GeoTab method-class scope is registered wherever a ``GeotabConfig`` is.
+    Each provider config emits every scope its budgets govern
+    (``ProviderConfig.scope_rate_limits``: the one bound ``quota_scope`` in
+    the base, plus a multi-method-class provider's extra scopes -- GeoTab's
+    feed and authenticate classes -- in its override), so composition roots
+    hand this their resolved configs and never invent rate-limit numbers,
+    and no provider is special-cased here.
 
     Args:
         provider_configs: The resolved provider configs for this run -- the
@@ -37,14 +32,9 @@ def rate_limits_from_configs(
     Returns:
         The quota-scope-keyed map ``RateLimiterRegistry`` is constructed on.
     """
-    configs = list(provider_configs)  # the Iterable may be one-shot
-    rate_limits = {config.quota_scope.value: config.rate_limit for config in configs}
-    for config in configs:
-        if isinstance(config, GeotabConfig):
-            rate_limits[QuotaScope.GEOTAB_FEED.value] = config.feed_rate_limit
-            rate_limits[QuotaScope.GEOTAB_AUTHENTICATE.value] = (
-                config.authenticate_rate_limit
-            )
+    rate_limits: dict[str, RateLimitConfig] = {}
+    for config in provider_configs:
+        rate_limits.update(config.scope_rate_limits())
     return rate_limits
 
 

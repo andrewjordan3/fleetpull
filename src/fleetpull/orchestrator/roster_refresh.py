@@ -67,33 +67,31 @@ masks a stale roster.
 Collaborators are injected, not assembled: the pure ``reconcile`` /
 ``is_roster_stale`` are called directly; the ``EndpointRegistry`` is the immutable
 catalog passed concrete; the stateful surfaces are narrow Protocols (``RosterAccess``,
-``FeederRunLedger``, ``ClientSource``) the composition root satisfies with the real
-store, ledger, and client registry. ``ClientSource`` mirrors the run executor's; it is
-redefined here rather than imported to keep the two orchestrator modules independent.
+``FeederRunLedger``, and the spine's shared ``ClientSource``) the composition
+root satisfies with the real store, ledger, and client registry.
 """
 
 import logging
 import threading
 from datetime import datetime
+from functools import partial
 from typing import Protocol
 
 from fleetpull.endpoints import EndpointRegistry
-from fleetpull.endpoints.shared import SnapshotMode
-from fleetpull.exceptions import (
-    ConfigurationError,
-    FleetpullError,
-    ProviderResponseError,
-)
-from fleetpull.network.client import TransportClient
+from fleetpull.exceptions import FleetpullError, ProviderResponseError
 from fleetpull.orchestrator.drivers import SingleRequestDriver
-from fleetpull.orchestrator.roster_harvest import harvest_roster_members
+from fleetpull.orchestrator.recording import record_failure_safely
+from fleetpull.orchestrator.roster_harvest import (
+    harvest_roster_members,
+    require_snapshot_feeder,
+)
+from fleetpull.orchestrator.spine import ClientSource
 from fleetpull.roster import RosterDefinition, RosterKey
 from fleetpull.state import RosterDelta, is_roster_stale, reconcile
 from fleetpull.timing import Clock
 from fleetpull.vocabulary import Provider
 
 __all__: list[str] = [
-    'ClientSource',
     'FeederRunLedger',
     'RosterAccess',
     'RosterRefreshCoordinator',
@@ -137,14 +135,6 @@ class FeederRunLedger(Protocol):
 
     def fail_run(self, run_id: int, *, error_detail: str) -> None:
         """Close a run as failed with an error detail."""
-        ...
-
-
-class ClientSource(Protocol):
-    """The client-lookup surface the coordinator needs (a subset of the registry)."""
-
-    def client_for(self, provider: Provider) -> TransportClient:
-        """Return the open transport client for a provider."""
         ...
 
 
@@ -251,13 +241,7 @@ class RosterRefreshCoordinator:
         if current and not is_roster_stale(last_success, now, definition.max_age):
             return
         feeder = self._endpoint_registry.get(provider, definition.source_endpoint)
-        if not isinstance(feeder.sync_mode, SnapshotMode):
-            raise ConfigurationError(
-                'roster feeder is not a snapshot endpoint',
-                provider=provider.value,
-                endpoint=definition.source_endpoint,
-                detail='a roster source must be a full-listing (snapshot) endpoint',
-            )
+        require_snapshot_feeder(feeder, definition.source_endpoint)
         client = self._client_source.client_for(provider)
         logger.info(
             'roster refresh started: provider=%s roster=%s feeder=%s members_held=%d',
@@ -279,7 +263,10 @@ class RosterRefreshCoordinator:
             # ``apply_listing`` wrapper would deadlock.
             self._reconcile_listing(definition, listed)
         except (FleetpullError, ValueError) as failure:
-            self._fail_run_safely(run_id, failure)
+            record_failure_safely(
+                partial(self._ledger.fail_run, run_id, error_detail=str(failure)),
+                f'harvest run {run_id}',
+            )
             if not current:
                 raise
             logger.warning(
@@ -374,25 +361,3 @@ class RosterRefreshCoordinator:
             definition.key,
             reconcile(current, listed, definition.eviction_threshold),
         )
-
-    def _fail_run_safely(self, run_id: int, error: Exception) -> None:
-        """Record the harvest run failed without masking the original error.
-
-        The run executor's stance: ``fail_run`` touches SQLite, which can
-        itself fail; that secondary failure must not replace the harvest
-        failure driving the degrade-or-reraise decision. Log it and move on.
-
-        Args:
-            run_id: The harvest run to mark failed.
-            error: The harvest failure, recorded as the detail.
-
-        Side Effects:
-            Records the run failed; on a recording failure, logs and swallows it.
-        """
-        try:
-            self._ledger.fail_run(run_id, error_detail=str(error))
-        except Exception:
-            logger.exception(
-                'failed to record harvest run %s as failed after an earlier error',
-                run_id,
-            )

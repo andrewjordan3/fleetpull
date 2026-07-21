@@ -40,7 +40,8 @@ from fleetpull.incremental import DateWatermark, DateWindow, IncrementalCursor
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import FetchedPage, TransportClient
 from fleetpull.orchestrator.outcome import Executed
-from fleetpull.orchestrator.runner import EndpointRunner, RunStateAccess
+from fleetpull.orchestrator.runner import EndpointRunner
+from fleetpull.orchestrator.spine import RunStateAccess
 from fleetpull.state import (
     ClaimedWorkUnit,
     CursorStore,
@@ -78,7 +79,7 @@ class _RecordingRecorder:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self.windows: list[tuple[datetime, datetime]] = []
+        self.windows: list[DateWindow] = []
         self.completed: list[tuple[int, int]] = []
         self.failed: list[tuple[int, str]] = []
 
@@ -91,7 +92,7 @@ class _RecordingRecorder:
         raise AssertionError('a windowed run must never open a feed run')
 
     def start_window_run(
-        self, provider: Provider, endpoint: str, *, window: tuple[datetime, datetime]
+        self, provider: Provider, endpoint: str, *, window: DateWindow
     ) -> int:
         with self._lock:
             self.windows.append(window)
@@ -281,11 +282,17 @@ def test_single_and_multi_unit_plans_write_identical_bytes(
     multi_recorder, multi_cursors, multi_outcome = _run_to_completion(
         tmp_path / 'multi', chunk_days=2, monkeypatch=monkeypatch
     )
-    assert single_recorder.windows == [(_WINDOW_START, _WINDOW_END)]
+    assert single_recorder.windows == [DateWindow(start=_WINDOW_START, end=_WINDOW_END)]
     assert multi_recorder.windows == [
-        (datetime(2026, 6, 10, tzinfo=UTC), datetime(2026, 6, 12, tzinfo=UTC)),
-        (datetime(2026, 6, 12, tzinfo=UTC), datetime(2026, 6, 14, tzinfo=UTC)),
-        (datetime(2026, 6, 14, tzinfo=UTC), _WINDOW_END),
+        DateWindow(
+            start=datetime(2026, 6, 10, tzinfo=UTC),
+            end=datetime(2026, 6, 12, tzinfo=UTC),
+        ),
+        DateWindow(
+            start=datetime(2026, 6, 12, tzinfo=UTC),
+            end=datetime(2026, 6, 14, tzinfo=UTC),
+        ),
+        DateWindow(start=datetime(2026, 6, 14, tzinfo=UTC), end=_WINDOW_END),
     ]
     single_bytes = _partition_bytes(tmp_path / 'single')
     assert sorted(single_bytes) == [
@@ -352,9 +359,7 @@ def test_one_day_chunks_commit_per_day_with_identical_bytes(
     recorder, cursors, _ = _run_to_completion(
         tmp_path / 'daily', chunk_days=1, monkeypatch=monkeypatch
     )
-    assert recorder.windows == [
-        (_daily_window(day).start, _daily_window(day).end) for day in range(10, 15)
-    ]
+    assert recorder.windows == [_daily_window(day) for day in range(10, 15)]
     # 2026-06-13 held no rows: its unit records a NULL observation, the
     # prefix maximum is unchanged, and the forward-only guard applies
     # nothing for it.
@@ -444,7 +449,7 @@ def test_orphaned_claimed_unit_is_reclaimed_and_rerun_whole(
             )
         ]
     )
-    orphaned = store.claim_next(Provider.MOTIVE, _ENDPOINT, max_attempts=10)
+    orphaned = store.claim_next(Provider.MOTIVE, _ENDPOINT)
     assert orphaned is not None  # left claimed: the simulated crash
 
     cursors = _FaithfulCursorAccess(
@@ -532,7 +537,7 @@ def test_startup_prefix_heal_advances_the_cursor_before_any_claim(
             ),
         ]
     )
-    crashed = store.claim_next(Provider.MOTIVE, _ENDPOINT, max_attempts=10)
+    crashed = store.claim_next(Provider.MOTIVE, _ENDPOINT)
     assert crashed is not None
     store.mark_done(crashed.unit_id, observed_max=datetime(2026, 6, 10, 20, tzinfo=UTC))
 
@@ -622,9 +627,7 @@ class _ScriptedUnits:
     def reset_claimed_to_pending(self, provider: Provider, endpoint: str) -> int:
         raise AssertionError('the race test never resets')
 
-    def claim_next(
-        self, provider: Provider, endpoint: str, *, max_attempts: int
-    ) -> ClaimedWorkUnit | None:
+    def claim_next(self, provider: Provider, endpoint: str) -> ClaimedWorkUnit | None:
         raise AssertionError('the race test never claims')
 
     def mark_done(self, unit_id: int, *, observed_max: datetime | None) -> None:
@@ -700,7 +703,8 @@ def test_concurrent_prefix_commits_cannot_regress_the_cursor(tmp_path: Path) -> 
     )
     commit_threads = [
         threading.Thread(
-            target=runner._commit_watermark_prefix, args=(Provider.MOTIVE, _ENDPOINT)
+            target=runner._watermark_drive._commit_watermark_prefix,
+            args=(Provider.MOTIVE, _ENDPOINT),
         )
         for _ in range(2)
     ]

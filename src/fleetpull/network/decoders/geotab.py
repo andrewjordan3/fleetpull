@@ -24,13 +24,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Final
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
 from fleetpull.exceptions import ProviderResponseError
 from fleetpull.network.contract import (
     DecodedPage,
     PageAdvance,
     RequestSpec,
+    StrictEnvelopeSlice,
     validated_envelope_slice,
 )
 from fleetpull.vocabulary import JsonObject, JsonValue
@@ -48,49 +49,49 @@ _OFFSET_KEY: Final[str] = 'offset'
 _ID_KEY: Final[str] = 'id'
 
 
-class _GeotabFeedResult(BaseModel):
+class _GeotabFeedResult(StrictEnvelopeSlice):
     """GetFeed's result: the records and the durable cursor.
 
     ``data`` is typed as a list of JSON objects so the decoder's
-    ``list[JsonObject]`` records return is honored at validation time;
-    strict=True / extra='ignore' rationale: see motive.py's _MotivePageEcho.
+    ``list[JsonObject]`` records return is honored at validation time.
     """
-
-    model_config = ConfigDict(frozen=True, extra='ignore', strict=True)
 
     data: list[JsonObject]
     to_version: str = Field(alias='toVersion')
 
 
-class _GeotabFeedEnvelope(BaseModel):
+class _GeotabFeedEnvelope(StrictEnvelopeSlice):
     """Envelope slice: locates the feed result."""
-
-    model_config = ConfigDict(frozen=True, extra='ignore', strict=True)
 
     result: _GeotabFeedResult
 
 
 def _params_from_body(
-    sent_body: Mapping[str, JsonValue], method_label: str
-) -> tuple[Mapping[str, JsonValue], int]:
-    """Locate the sent body's JSON-RPC ``params`` and ``resultsLimit``.
+    sent: RequestSpec, method_label: str
+) -> tuple[Mapping[str, JsonValue], Mapping[str, JsonValue], int]:
+    """Locate the sent spec's JSON-RPC body, ``params``, and ``resultsLimit``.
 
     The sent body is fleetpull's own construction, not provider data, so
     malformation here is a caller bug -- stdlib ``ValueError``, no slice
-    model. Shared by both GeoTab decoders (same module, same provider).
+    model -- and the body-is-present guard lives here too, stated once.
+    Shared by both GeoTab decoders (same module, same provider).
 
     Args:
-        sent_body: The JSON-RPC body of the spec under inspection.
-        method_label: The method-class word for the error message
+        sent: The spec under inspection.
+        method_label: The method-class word for the error messages
             (``'feed'`` / ``'Get'``).
 
     Returns:
-        The ``params`` mapping and the integer ``resultsLimit``.
+        The JSON-RPC body, its ``params`` mapping, and the integer
+        ``resultsLimit``.
 
     Raises:
-        ValueError: When ``params`` or ``resultsLimit`` is missing or
-            mistyped.
+        ValueError: When the spec carries no JSON-RPC body, or ``params``
+            or ``resultsLimit`` is missing or mistyped.
     """
+    if sent.json_body is None:
+        raise ValueError(f'GeoTab {method_label} requests require a JSON-RPC body')
+    sent_body: Mapping[str, JsonValue] = sent.json_body
     params_value: JsonValue = sent_body.get(_PARAMS_KEY)
     if not isinstance(params_value, Mapping):
         raise ValueError(
@@ -103,7 +104,7 @@ def _params_from_body(
             f'GeoTab {method_label} request params must carry an integer '
             f'{_RESULTS_LIMIT_KEY!r}'
         )
-    return params_value, results_limit
+    return sent_body, params_value, results_limit
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,10 +143,7 @@ class GeotabFeedPageDecoder:
             ValueError: When ``sent`` is malformed for this decoder -- a
                 caller bug, deliberately stdlib.
         """
-        if sent.json_body is None:
-            raise ValueError('GeoTab feed requests require a JSON-RPC body')
-        sent_body: Mapping[str, JsonValue] = sent.json_body
-        sent_params, results_limit = _params_from_body(sent_body, 'feed')
+        sent_body, sent_params, results_limit = _params_from_body(sent, 'feed')
         feed = validated_envelope_slice(_GeotabFeedEnvelope, envelope).result
         if len(feed.data) < results_limit:
             # The terminal page still carries the resume point.
@@ -184,14 +182,8 @@ class GeotabFeedPageDecoder:
         )
 
 
-class _GeotabGetEnvelope(BaseModel):
-    """Envelope slice: ``Get`` returns records as a plain top-level list.
-
-    strict=True / extra='ignore' rationale: see motive.py's
-    _MotivePageEcho.
-    """
-
-    model_config = ConfigDict(frozen=True, extra='ignore', strict=True)
+class _GeotabGetEnvelope(StrictEnvelopeSlice):
+    """Envelope slice: ``Get`` returns records as a plain top-level list."""
 
     result: list[JsonObject]
 
@@ -294,10 +286,7 @@ class GeotabGetPageDecoder:
             ValueError: When ``sent`` is malformed for this decoder -- a
                 caller bug, deliberately stdlib.
         """
-        if sent.json_body is None:
-            raise ValueError('GeoTab Get requests require a JSON-RPC body')
-        sent_body: Mapping[str, JsonValue] = sent.json_body
-        sent_params, _results_limit = _params_from_body(sent_body, 'Get')
+        sent_body, sent_params, _results_limit = _params_from_body(sent, 'Get')
         sent_sort = _sort_from_params(sent_params)
         records = validated_envelope_slice(_GeotabGetEnvelope, envelope).result
         if not records:

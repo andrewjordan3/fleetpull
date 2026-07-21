@@ -16,8 +16,8 @@ version-token stream and appends every emitted record into its event date's
 partition as numbered `part-NNNNN.parquet` files — stored as emitted,
 nothing ever deleted or replaced, the consumer reconciling calculated feeds
 by `(id, max version)` and active feeds by `id` (DESIGN §4). The feed
-MACHINERY is built in full (2026-07-21); no feed endpoint has shipped yet —
-the queue is below.
+MACHINERY is built in full and the first five feed verticals ride it
+unchanged (shipped 2026-07-21); the remaining feed queue is below.
 
 ## Shipped
 
@@ -53,6 +53,11 @@ method-class quota scopes (`geotab_get` for `Get` at ~650/min,
 | `users` | `Get User` | snapshot | — | The devices pattern bound to `User` (seek walk + `GetCountOf`); id-sort proven live for this type. Scalar mirror — list-of-object and IAM blocks excluded per the Device precedent. |
 | `trips` | `Get Trip` + `TripSearch` window | windowed watermark | `stop` | The window rides `search.fromDate`/`toDate` beside the id-sort seek walk. `TripSearch` matches by STOP time (prediction-confirmed), so retrieval and routing coincide on `stop`. Trip recalculation inside the lookback is absorbed by window refetch; beyond-lookback recalcs wait for the feed arm (accepted residual, DESIGN §4). |
 | `exception_events` | `Get ExceptionEvent` + windowed search | windowed watermark | `active_from` | Id-sort rejected outright for this type, so the seek template is unavailable: the binding declares the `BisectedWindowFetch` shape (limit 5,000, one-minute floor) and the bisecting driver halves on the exactly-full overflow signal. OVERLAP-anchored matching; unfiltered rule stream by design — rule selection is the consumer's one-expression job. |
+| `log_records` | `GetFeed LogRecord` | feed | `date_time` | The first feed vertical: the ACTIVE GPS stream — no per-record version, so append-only is trivially complete and the consumer reconciles by `id` (DESIGN §4). Whole-page census 2,000/2,000 every key → all-required mirror; `speed` a bare int mirrored verbatim. >50,000 records/day on the probed tenant; `resultsLimit` 50,000 (the protocol max). |
+| `status_data` | `GetFeed StatusData` | feed | `date_time` | The log_records binding with the entity swapped: an active feed that, unlike LogRecord, carries a per-record `version` — mirrored as wire truth. `data` (the diagnostic value) is mixed int\|float → float; `controller` a census-open plain str. ~24,500 records/hour; `resultsLimit` 50,000. The name is the wire's uncountable vocabulary (no plural to form). |
+| `fill_ups` | `GetFeed FillUp` | feed | `date_time` | Calculated fuel-stop detections, reconciled `(id, max version)`. ESTIMATES-ONLY TENANT (DESIGN §8): no fuel-transaction integration, so every fuel value is provider-derived — `cost` 0.0 throughout, `fuelTransactions` excluded as value-unobservable (empty on 100/100; on integrated tenants it populates with a never-captured shape). The `-1.0` `derivedVolume` sentinel is mirrored verbatim; `driver` is the object-or-`UnknownDriverId` sentinel (the Trip mechanism); `confidence` a comma-joined token list kept one plain str. `resultsLimit` 10,000 — the DOCUMENTED cap, dual provenance: a 50,000 request was ACCEPTED at the 380-record population, so the cap was unprobeable. |
+| `fuel_and_energy_used` | `GetFeed FuelAndEnergyUsed` | feed | `date_time` | A WIRE-VOCABULARY name, not a plural (the driver_idle_rollups precedent — DESIGN §8). Calculated per-trip fuel/energy totals, reconciled `(id, max version)`; `FuelUsed` is NOT ported — observed identical to this surface week-wide on the probed tenant, and the provider documents THIS surface as FuelUsed's successor. The estimates-only caveat applies; `confidence` census-open (`'None'` on 1,994/2,000). `resultsLimit` 50,000. |
+| `fuel_tax_details` | `GetFeed FuelTaxDetail` | feed | `enter_time` | Calculated IFTA jurisdiction segments — the segment materializes where it begins, so `enter_time` is the event time. The version identity is the `versions` LIST of 16-hex component tokens (list[scalar]); the hourly arrays may be EMPTY lists, mirrored as such; `driver` is the object-or-sentinel mechanism. The estimates-only caveat applies. `resultsLimit` 50,000. |
 
 ### Samsara
 
@@ -125,15 +130,21 @@ Not in the legacy hub (GeoTab is new in fleetpull). Two directions:
   unsignaled (the dated accepted residual, DESIGN §4). The probed
   **14-vertical feed queue**, each to ship on its own probe-then-build
   vertical:
-  - *The five original feed entities:* `LogRecord`, `StatusData` (active —
-    append-only-complete; StatusData also carries a per-record version),
-    `FillUp`, `FuelAndEnergyUsed`, `FuelTaxDetail` (calculated — versions
-    re-emitted, reconciled by `(id, max version)`; the fuel family carries
-    the estimates-only-tenant caveat, and `FuelUsed` is NOT ported —
-    observed identical to `FuelAndEnergyUsed` on the probed tenant, its
-    provider-documented successor). `Trip` and `ExceptionEvent` stay on
-    their shipped `Get` verticals; migrating them to the feed is a
-    recorded evaluation item, not queue debt.
+  - *The five original feed entities — ALL SHIPPED 2026-07-21* (feed wave
+    one, zero shared-machinery changes; the DESIGN §8 block carries the
+    probe-settled decisions):
+
+    | Feed entity | Endpoint | Status |
+    |---|---|---|
+    | `LogRecord` | `log_records` | **shipped 2026-07-21** (active — append-only-complete, no per-record version) |
+    | `StatusData` | `status_data` | **shipped 2026-07-21** (active, WITH a per-record version — mirrored) |
+    | `FillUp` | `fill_ups` | **shipped 2026-07-21** (calculated; the estimates-only caveat; the 10,000 documented-cap dual provenance) |
+    | `FuelAndEnergyUsed` | `fuel_and_energy_used` | **shipped 2026-07-21** (wire-vocabulary name, not a plural; `FuelUsed` NOT ported — observed identical on the probed tenant, its provider-documented predecessor) |
+    | `FuelTaxDetail` | `fuel_tax_details` | **shipped 2026-07-21** (calculated; the `versions` list identity; the estimates-only caveat) |
+
+    `Trip` and `ExceptionEvent` stay on their shipped `Get` verticals;
+    migrating them to the feed is a recorded evaluation item, not queue
+    debt.
   - *Tier 1:* `FaultData`, `DutyStatusLog`, `DriverChange`, `DVIRLog`.
   - *Tier 2:* `AnnotationLog`, `ShipmentLog`, `Audit`, `TextMessage`,
     `MediaFile`.

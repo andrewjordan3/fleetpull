@@ -39,8 +39,8 @@ class MotiveFleetDateRangeSpecBuilder:
     The ``SpecBuilder`` for Motive watermark endpoints with no fan-out:
     injects the resume window as ``start_date`` / ``end_date``, mapped
     exactly as the vehicle_locations builder maps them — ``start_date``
-    is the UTC date of ``window.start`` and ``end_date`` the UTC date of
-    ``window.end - 1 microsecond`` (the window's last covered date) —
+    is the UTC date of ``window.start`` and ``end_date`` the window's
+    ``last_covered_date`` (the derivation lives on ``DateWindow``) —
     then widened by ``window_pad_days`` whole days on each side.
 
     Attributes:
@@ -85,9 +85,7 @@ class MotiveFleetDateRangeSpecBuilder:
         resume_window = require_date_window(resume, type(self).__name__)
         pad = timedelta(days=self.window_pad_days)
         start_date = to_utc_date_string(resume_window.start - pad)
-        end_date = to_utc_date_string(
-            resume_window.end - timedelta(microseconds=1) + pad
-        )
+        end_date = (resume_window.last_covered_date + pad).isoformat()
         params = {'start_date': start_date, 'end_date': end_date}
         return RequestSpec(
             method=HttpMethod.GET,

@@ -48,12 +48,9 @@ from fleetpull.api.auth_ingress import (
 )
 from fleetpull.api.identity import FeedEndpoint, SnapshotEndpoint, WindowedEndpoint
 from fleetpull.config import (
-    GeotabConfig,
     HttpConfig,
-    MotiveConfig,
-    ProviderConfig,
     RetryConfig,
-    SamsaraConfig,
+    default_provider_sections,
 )
 from fleetpull.endpoints import build_endpoint_registry
 from fleetpull.exceptions import ConfigurationError
@@ -62,32 +59,11 @@ from fleetpull.network.limits import RateLimiterRegistry, rate_limits_from_confi
 from fleetpull.orchestrator import FetchPoolRegistry, resolve_request_driver
 from fleetpull.records import models_to_dataframe, validate_records
 from fleetpull.timing import SystemClock
-from fleetpull.vocabulary import JsonObject, Provider
+from fleetpull.vocabulary import JsonObject
 
 __all__: list[str] = ['fetch']
 
 logger = logging.getLogger(__name__)
-
-
-def _default_provider_configs() -> dict[Provider, ProviderConfig]:
-    """Every provider config the discovery registry needs, at pure defaults.
-
-    One instance per provider package under ``endpoints/`` -- the
-    registry walk builds every discovered leaf, so each provider with
-    leaves needs its config here even when the requested endpoint
-    belongs to another. Extends as provider endpoint packages land.
-
-    Returns:
-        The default-constructed provider configs by provider, whose
-        values feed ``build_endpoint_registry`` and
-        ``rate_limits_from_configs`` and whose keying sizes the
-        requested provider's fetch pool.
-    """
-    return {
-        Provider.MOTIVE: MotiveConfig(),
-        Provider.GEOTAB: GeotabConfig(),
-        Provider.SAMSARA: SamsaraConfig(),
-    }
 
 
 # typing-justified: ingress guard; input unknowable by design; object forces narrowing
@@ -200,7 +176,7 @@ def fetch(
     use (DESIGN §10).
     """
     _require_snapshot_identity(endpoint)
-    provider_configs = _default_provider_configs()
+    provider_configs = default_provider_sections()
     registry = build_endpoint_registry(list(provider_configs.values()))
     definition = registry.get(endpoint.provider, endpoint.name)
     runtime = ClientRuntime(

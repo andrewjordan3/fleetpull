@@ -39,6 +39,7 @@ from fleetpull.endpoints.shared import (
     BisectedWindowFetch,
     EndpointDefinition,
     ResumeValue,
+    require_date_window,
 )
 from fleetpull.exceptions import ProviderResponseError
 from fleetpull.incremental import DateWindow
@@ -108,21 +109,17 @@ class BisectingWindowDriver:
                 full page (the loud no-narrower failure), or a record
                 arrived without a parseable anchor timestamp.
         """
-        if not isinstance(resume, DateWindow):
-            raise TypeError(
-                'BisectingWindowDriver requires a DateWindow resume, '
-                f'got {type(resume).__name__}.'
-            )
+        window = require_date_window(resume, type(self).__name__)
         tally = _BisectionTally()
-        yield from self._drive_window(definition, client, resume, tally)
+        yield from self._drive_window(definition, client, window, tally)
         if tally.overflows:
             logger.info(
                 'bisection complete: provider=%s endpoint=%s window_start=%s '
                 'window_end=%s leaves=%d overflows=%d',
                 definition.provider.value,
                 definition.name,
-                resume.start.isoformat(),
-                resume.end.isoformat(),
+                window.start.isoformat(),
+                window.end.isoformat(),
                 tally.leaves,
                 tally.overflows,
             )
@@ -169,15 +166,16 @@ class BisectingWindowDriver:
         width = window.end - window.start
         if width <= self.shape.floor:
             raise ProviderResponseError(
+                provider=definition.provider.value,
+                endpoint=definition.name,
                 detail=(
-                    f'{definition.provider.value}.{definition.name}: a '
-                    f'{width} window starting {window.start.isoformat()} '
+                    f'a {width} window starting {window.start.isoformat()} '
                     f'still returned {len(records)} records — the window '
                     f'cannot be narrowed under the provider record cap. '
                     f'The stream is denser than windowed fetching can '
                     f'enumerate; the provider feed transport is the '
                     f'escape for this endpoint at this density.'
-                )
+                ),
             )
         tally.overflows += 1
         logger.debug(
@@ -231,21 +229,23 @@ class BisectingWindowDriver:
             raw_value = record.get(wire_key)
             if not isinstance(raw_value, str):
                 raise ProviderResponseError(
+                    provider=definition.provider.value,
+                    endpoint=definition.name,
                     detail=(
-                        f'{definition.provider.value}.{definition.name}: '
                         f'record is missing the anchor timestamp '
                         f'{wire_key!r} bisection routes by.'
-                    )
+                    ),
                 )
             try:
                 anchor = datetime.fromisoformat(raw_value)
             except ValueError as error:
                 raise ProviderResponseError(
+                    provider=definition.provider.value,
+                    endpoint=definition.name,
                     detail=(
-                        f'{definition.provider.value}.{definition.name}: '
                         f'unparseable anchor timestamp {raw_value!r} under '
                         f'{wire_key!r}.'
-                    )
+                    ),
                 ) from error
             if window.start <= anchor < window.end:
                 anchored.append(record)

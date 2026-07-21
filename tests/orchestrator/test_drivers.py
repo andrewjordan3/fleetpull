@@ -20,6 +20,7 @@ from fleetpull.incremental import DateWindow
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import FetchedPage, TransportClient
 from fleetpull.network.contract import (
+    EnvelopeFetcher,
     HttpMethod,
     PageDecoder,
     RequestSpec,
@@ -310,7 +311,7 @@ class _ScriptedCheck:
         self._counts = iter(counts)
         self.scopes_seen: list[str] = []
 
-    def expected_count(self, client: TransportClient, quota_scope: str) -> int:
+    def expected_count(self, client: EnvelopeFetcher, quota_scope: str) -> int:
         self.scopes_seen.append(quota_scope)
         return next(self._counts)
 

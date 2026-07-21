@@ -16,15 +16,15 @@ from fleetpull.network.decoders.geotab import (
     GeotabGetPageDecoder,
 )
 from fleetpull.network.decoders.motive import (
-    MotiveWindowReportPageDecoder,
     MotiveWrappedListPageDecoder,
     MotiveWrappedSinglePageDecoder,
 )
+from fleetpull.network.decoders.motive_reports import MotiveWindowReportPageDecoder
 from fleetpull.network.decoders.samsara import (
     SamsaraCursorPageDecoder,
     SamsaraVehicleSeriesPageDecoder,
-    SamsaraWindowReportPageDecoder,
 )
+from fleetpull.network.decoders.samsara_reports import SamsaraWindowReportPageDecoder
 from fleetpull.network.decoders.single_page import SinglePageDecoder
 
 __all__: list[str] = [

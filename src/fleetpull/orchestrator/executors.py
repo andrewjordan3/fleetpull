@@ -6,6 +6,10 @@ as a context-managed collaborator (the ``ProviderClientRegistry`` precedent):
 ``__enter__`` creates one ``ThreadPoolExecutor`` per configured provider,
 sized ``max_workers = rate_limit.max_concurrency``, and ``__exit__`` shuts
 every pool down deterministically -- success or failure, no leaked threads.
+The lifecycle machinery (publish-on-success enter, closed-before-release
+exit, the RuntimeError-vs-ConfigurationError lookup split) is the generic
+``ProviderResourceRegistry``'s (the network client face); this subclass
+supplies pool construction and the error nouns.
 Per-provider pools by construction, so one provider's 429 penalty can never
 park another provider's workers (the starvation fix), and a fan-out run's
 in-flight ceiling equals the limiter's concurrency semaphore, which the pool
@@ -29,10 +33,9 @@ in-flight ceiling claim above holds unchanged and nothing here resized.
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
-from types import TracebackType
-from typing import Self
+from typing import ClassVar
 
-from fleetpull.exceptions import ConfigurationError
+from fleetpull.network.client import ProviderResourceRegistry
 from fleetpull.orchestrator.fanout import FetchPool
 from fleetpull.vocabulary import Provider
 
@@ -44,22 +47,21 @@ __all__: list[str] = ['FetchPoolRegistry']
 _SUBMISSION_WINDOW_FACTOR: int = 2
 
 
-class FetchPoolRegistry:
+class FetchPoolRegistry(ProviderResourceRegistry[FetchPool]):
     """Owns one fetch worker pool per provider, keyed by ``Provider``.
 
-    A resource-owning context manager. ``__enter__`` creates every configured
-    provider's ``ThreadPoolExecutor`` and returns self; ``__exit__`` shuts
-    each one down with ``wait=True``, so no worker thread outlives the run
-    that composed it, on success and on failure alike. ``pool_for`` returns a
-    provider's ``FetchPool``; use it only inside the ``with`` block::
+    A resource-owning context manager (the generic base's semantics):
+    ``__exit__`` shuts each pool down with ``wait=True``, so no worker thread
+    outlives the run that composed it, on success and on failure alike.
+    ``pool_for`` returns a provider's ``FetchPool``; use it only inside the
+    ``with`` block::
 
         with FetchPoolRegistry(workers_by_provider) as fetch_pools:
             pool = fetch_pools.pool_for(definition.provider)
-
-    ``pool_for`` outside an open ``with`` block raises ``RuntimeError`` (a
-    caller bug), distinct from an unconfigured provider, which raises
-    ``ConfigurationError`` -- the ``ProviderClientRegistry`` semantics.
     """
+
+    _resource_noun: ClassVar[str] = 'fetch pool'
+    _lookup_description: ClassVar[str] = 'pool_for'
 
     def __init__(self, workers_by_provider: Mapping[Provider, int]) -> None:
         """
@@ -73,57 +75,39 @@ class FetchPoolRegistry:
         Side Effects:
             None -- pools are created on ``__enter__``, not here.
         """
+        super().__init__(workers_by_provider)
         self._workers_by_provider: dict[Provider, int] = dict(workers_by_provider)
-        self._pools: dict[Provider, FetchPool] = {}
-        self._stack: ExitStack = ExitStack()
-        self._open: bool = False
 
-    def __enter__(self) -> Self:
-        """Create one worker pool per configured provider.
-
-        Side Effects:
-            Constructs one ``ThreadPoolExecutor`` per provider (threads spawn
-            lazily on first submit). On a later construction failure, the
-            pools already created are shut down before propagating.
-        """
-        pools: dict[Provider, FetchPool] = {}
-        with ExitStack() as stack:
-            for provider, worker_count in self._workers_by_provider.items():
-                executor = stack.enter_context(
-                    ThreadPoolExecutor(
-                        max_workers=worker_count,
-                        thread_name_prefix=f'fleetpull-{provider.value}-fetch',
-                    )
-                )
-                pools[provider] = FetchPool(
-                    executor=executor,
-                    submission_window=_SUBMISSION_WINDOW_FACTOR * worker_count,
-                )
-            self._stack = stack.pop_all()
-        self._pools = pools
-        self._open = True
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> bool:
-        """Shut every pool down, joining its workers, forwarding the context.
+    def _open_resource(self, stack: ExitStack, provider: Provider) -> FetchPool:
+        """Create one provider's worker pool with its fixed submission window.
 
         ``ThreadPoolExecutor.__exit__`` is ``shutdown(wait=True)``: every
-        worker thread is joined before this returns, so a failing run cannot
-        leak threads into the caller. The instance is marked closed first, so
-        a shutdown error still leaves the registry unusable rather than
-        apparently-open.
+        worker thread is joined when the stack unwinds, so a failing run
+        cannot leak threads into the caller.
+
+        Args:
+            stack: The enter's unwind stack; the pool's shutdown registers
+                here.
+            provider: The provider whose pool to create.
+
+        Returns:
+            The provider's ``FetchPool``.
 
         Side Effects:
-            Joins every pool's worker threads.
+            Constructs one ``ThreadPoolExecutor`` (threads spawn lazily on
+            first submit).
         """
-        self._open = False
-        self._pools = {}
-        return bool(self._stack.__exit__(exc_type, exc_value, traceback))
+        worker_count = self._workers_by_provider[provider]
+        executor = stack.enter_context(
+            ThreadPoolExecutor(
+                max_workers=worker_count,
+                thread_name_prefix=f'fleetpull-{provider.value}-fetch',
+            )
+        )
+        return FetchPool(
+            executor=executor,
+            submission_window=_SUBMISSION_WINDOW_FACTOR * worker_count,
+        )
 
     def pool_for(self, provider: Provider) -> FetchPool:
         """Return the fetch pool for a provider.
@@ -141,16 +125,4 @@ class FetchPoolRegistry:
             ConfigurationError: The registry is open but the provider has no
                 configured pool.
         """
-        if not self._open:
-            raise RuntimeError(
-                'FetchPoolRegistry is not open; call pool_for inside its `with` block'
-            )
-        pool = self._pools.get(provider)
-        if pool is None:
-            configured = ', '.join(sorted(p.value for p in self._pools)) or 'none'
-            raise ConfigurationError(
-                'no fetch pool configured for provider',
-                provider=provider.value,
-                detail=f'configured providers: {configured}',
-            )
-        return pool
+        return self._resource_for(provider)

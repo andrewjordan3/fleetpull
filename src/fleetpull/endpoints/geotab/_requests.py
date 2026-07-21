@@ -38,19 +38,18 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Final
 
-from pydantic import BaseModel, ConfigDict
-
-from fleetpull.config import GeotabConfig
+from fleetpull.config import DEFAULT_GEOTAB_SERVER, GeotabConfig
 from fleetpull.endpoints.shared import (
     ResumeValue,
     require_date_window,
     require_feed_resume,
 )
 from fleetpull.incremental import DateWindow, FeedSeed, FeedToken
-from fleetpull.network.client import TransportClient
 from fleetpull.network.contract import (
+    EnvelopeFetcher,
     HttpMethod,
     RequestSpec,
+    StrictEnvelopeSlice,
     validated_envelope_slice,
 )
 from fleetpull.timing import to_iso8601
@@ -66,12 +65,6 @@ __all__: list[str] = [
 
 # The JSON-RPC ingress path every GeoTab method POSTs to.
 _API_PATH: Final[str] = '/apiv1'
-
-# Pre-auth placeholder host for a default-constructed (credential-less)
-# config -- mirrors GeotabAuthConfig's server default; the session
-# strategy retargets every prepared request, so no request ever leaves
-# for this host un-retargeted.
-_DEFAULT_SERVER: Final[str] = 'my.geotab.com'
 
 # Wire-protocol tokens: module-private Final constants, colocated with
 # the strategies that emit them (the constants-scope precedent;
@@ -113,7 +106,10 @@ def server_host(config: GeotabConfig) -> str:
     """
     if config.auth is not None:
         return config.auth.server
-    return _DEFAULT_SERVER
+    # Pre-auth placeholder host for a default-constructed (credential-less)
+    # config; the session strategy retargets every prepared request, so no
+    # request ever leaves for this host un-retargeted.
+    return DEFAULT_GEOTAB_SERVER
 
 
 def _post_spec(server: str, json_body: dict[str, JsonValue]) -> RequestSpec:
@@ -371,15 +367,12 @@ class GeotabGetFeedSpecBuilder:
         )
 
 
-class _GetCountOfEnvelope(BaseModel):
+class _GetCountOfEnvelope(StrictEnvelopeSlice):
     """Envelope slice: ``GetCountOf`` returns the count under ``result``.
 
-    strict=True so a stringly count fails loudly instead of coercing
-    (and a boolean never passes as an integer); extra='ignore' per the
-    house slice-model pattern.
+    A ``StrictEnvelopeSlice``, so a stringly count fails loudly instead
+    of coercing and a boolean never passes as an integer.
     """
-
-    model_config = ConfigDict(frozen=True, extra='ignore', strict=True)
 
     result: int
 
@@ -405,11 +398,12 @@ class GetCountOfCheck:
     server: str
     type_name: str
 
-    def expected_count(self, client: TransportClient, quota_scope: str) -> int:
+    def expected_count(self, client: EnvelopeFetcher, quota_scope: str) -> int:
         """Return GeoTab's reported count of the harvested entity.
 
         Args:
-            client: The open transport client the harvest ran on.
+            client: The open transport client the harvest ran on (its
+                single-request ``fetch_envelope`` surface).
             quota_scope: The endpoint's rate-limit scope key
                 (``GEOTAB_GET`` -- the count spends from the same
                 method-class budget as the data pages).

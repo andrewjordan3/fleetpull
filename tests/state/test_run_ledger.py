@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from fleetpull.exceptions import ConfigurationError
+from fleetpull.incremental import DateWindow
 from fleetpull.state.database import StateDatabase
 from fleetpull.state.migrations import migrate_to_head
 from fleetpull.state.run_ledger import RunLedger, RunMode, RunStatus
@@ -161,7 +162,9 @@ class TestStartWindowRun:
         self, run_ledger: RunLedger, database_path: Path
     ) -> None:
         run_id = run_ledger.start_window_run(
-            Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
+            Provider.SAMSARA,
+            'trips',
+            window=DateWindow(start=WINDOW_START, end=WINDOW_END),
         )
         assert isinstance(run_id, int)
         run = _read_run(database_path, run_id)
@@ -176,17 +179,20 @@ class TestStartWindowRun:
         assert run['ended_at'] is None
 
     @pytest.mark.parametrize(
-        'window',
+        ('window_start', 'window_end'),
         [
             (WINDOW_END, WINDOW_START),  # inverted: start after end
             (WINDOW_START, WINDOW_START),  # empty: start equals end
         ],
     )
-    def test_rejects_a_non_increasing_window(
-        self, run_ledger: RunLedger, window: tuple[datetime, datetime]
+    def test_a_non_increasing_window_is_unrepresentable(
+        self, window_start: datetime, window_end: datetime
     ) -> None:
-        with pytest.raises(ValueError, match='window_start must be strictly before'):
-            run_ledger.start_window_run(Provider.SAMSARA, 'trips', window=window)
+        # start_window_run takes a DateWindow, whose construction enforces
+        # start < end -- the ledger's former ordering re-check moved to the
+        # type, and the table's CHECK remains the structural backstop.
+        with pytest.raises(ValueError, match='start < end'):
+            DateWindow(start=window_start, end=window_end)
 
 
 class TestStartFeedRun:
@@ -224,7 +230,9 @@ class TestCompleteRun:
         self, run_ledger: RunLedger, frozen_clock: FrozenClock, database_path: Path
     ) -> None:
         run_id = run_ledger.start_window_run(
-            Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
+            Provider.SAMSARA,
+            'trips',
+            window=DateWindow(start=WINDOW_START, end=WINDOW_END),
         )
         frozen_clock.advance(timedelta(hours=2))
         run_ledger.complete_run(run_id, row_count=42)
@@ -239,7 +247,9 @@ class TestCompleteRun:
         self, run_ledger: RunLedger
     ) -> None:
         run_id = run_ledger.start_window_run(
-            Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
+            Provider.SAMSARA,
+            'trips',
+            window=DateWindow(start=WINDOW_START, end=WINDOW_END),
         )
         with pytest.raises(ValueError, match='to_version is only valid for feed runs'):
             run_ledger.complete_run(run_id, row_count=1, to_version='nope')
@@ -281,7 +291,9 @@ class TestCompleteRun:
 
     def test_rejects_a_negative_row_count(self, run_ledger: RunLedger) -> None:
         run_id = run_ledger.start_window_run(
-            Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
+            Provider.SAMSARA,
+            'trips',
+            window=DateWindow(start=WINDOW_START, end=WINDOW_END),
         )
         with pytest.raises(ValueError, match='non-negative'):
             run_ledger.complete_run(run_id, row_count=-1)
@@ -296,7 +308,9 @@ class TestFailRun:
         self, run_ledger: RunLedger, frozen_clock: FrozenClock, database_path: Path
     ) -> None:
         run_id = run_ledger.start_window_run(
-            Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
+            Provider.SAMSARA,
+            'trips',
+            window=DateWindow(start=WINDOW_START, end=WINDOW_END),
         )
         frozen_clock.advance(timedelta(minutes=5))
         run_ledger.fail_run(run_id, error_detail='boom: read timeout')
@@ -317,13 +331,19 @@ class TestCoverageFrontier:
         earlier = run_ledger.start_window_run(
             Provider.SAMSARA,
             'trips',
-            window=(datetime(2026, 6, 1, tzinfo=UTC), datetime(2026, 6, 2, tzinfo=UTC)),
+            window=DateWindow(
+                start=datetime(2026, 6, 1, tzinfo=UTC),
+                end=datetime(2026, 6, 2, tzinfo=UTC),
+            ),
         )
         run_ledger.complete_run(earlier, row_count=1)
         later = run_ledger.start_window_run(
             Provider.SAMSARA,
             'trips',
-            window=(datetime(2026, 6, 4, tzinfo=UTC), datetime(2026, 6, 5, tzinfo=UTC)),
+            window=DateWindow(
+                start=datetime(2026, 6, 4, tzinfo=UTC),
+                end=datetime(2026, 6, 5, tzinfo=UTC),
+            ),
         )
         run_ledger.complete_run(later, row_count=2)
 
@@ -332,25 +352,27 @@ class TestCoverageFrontier:
 
     def test_ignores_running_failed_and_feed_runs(self, run_ledger: RunLedger) -> None:
         succeeded = run_ledger.start_window_run(
-            Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
+            Provider.SAMSARA,
+            'trips',
+            window=DateWindow(start=WINDOW_START, end=WINDOW_END),
         )
         run_ledger.complete_run(succeeded, row_count=1)
         # A running watermark run with a later window_end — not succeeded, ignored.
         run_ledger.start_window_run(
             Provider.SAMSARA,
             'trips',
-            window=(
-                datetime(2026, 6, 9, tzinfo=UTC),
-                datetime(2026, 6, 10, tzinfo=UTC),
+            window=DateWindow(
+                start=datetime(2026, 6, 9, tzinfo=UTC),
+                end=datetime(2026, 6, 10, tzinfo=UTC),
             ),
         )
         # A failed watermark run with the latest window_end — ignored.
         failed = run_ledger.start_window_run(
             Provider.SAMSARA,
             'trips',
-            window=(
-                datetime(2026, 6, 19, tzinfo=UTC),
-                datetime(2026, 6, 20, tzinfo=UTC),
+            window=DateWindow(
+                start=datetime(2026, 6, 19, tzinfo=UTC),
+                end=datetime(2026, 6, 20, tzinfo=UTC),
             ),
         )
         run_ledger.fail_run(failed, error_detail='nope')
@@ -389,13 +411,17 @@ class TestLastSuccessAt:
         self, run_ledger: RunLedger, frozen_clock: FrozenClock
     ) -> None:
         earlier = run_ledger.start_window_run(
-            Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
+            Provider.SAMSARA,
+            'trips',
+            window=DateWindow(start=WINDOW_START, end=WINDOW_END),
         )
         frozen_clock.advance(timedelta(hours=1))
         run_ledger.complete_run(earlier, row_count=1)
         frozen_clock.advance(timedelta(hours=1))
         later = run_ledger.start_window_run(
-            Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
+            Provider.SAMSARA,
+            'trips',
+            window=DateWindow(start=WINDOW_START, end=WINDOW_END),
         )
         frozen_clock.advance(timedelta(hours=1))
         run_ledger.complete_run(later, row_count=2)
@@ -408,7 +434,9 @@ class TestLastSuccessAt:
         self, run_ledger: RunLedger, frozen_clock: FrozenClock
     ) -> None:
         succeeded = run_ledger.start_window_run(
-            Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
+            Provider.SAMSARA,
+            'trips',
+            window=DateWindow(start=WINDOW_START, end=WINDOW_END),
         )
         frozen_clock.advance(timedelta(hours=1))
         run_ledger.complete_run(succeeded, row_count=1)
@@ -416,13 +444,17 @@ class TestLastSuccessAt:
         # A later failed run — ignored despite its later ended_at.
         frozen_clock.advance(timedelta(hours=1))
         failed = run_ledger.start_window_run(
-            Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
+            Provider.SAMSARA,
+            'trips',
+            window=DateWindow(start=WINDOW_START, end=WINDOW_END),
         )
         frozen_clock.advance(timedelta(hours=1))
         run_ledger.fail_run(failed, error_detail='nope')
         # A later running run carries no ended_at — ignored.
         run_ledger.start_window_run(
-            Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
+            Provider.SAMSARA,
+            'trips',
+            window=DateWindow(start=WINDOW_START, end=WINDOW_END),
         )
 
         assert run_ledger.last_success_at(Provider.SAMSARA, 'trips') == success_time
@@ -496,7 +528,9 @@ class TestDurability:
         self, run_ledger: RunLedger, database_path: Path
     ) -> None:
         run_id = run_ledger.start_window_run(
-            Provider.SAMSARA, 'trips', window=(WINDOW_START, WINDOW_END)
+            Provider.SAMSARA,
+            'trips',
+            window=DateWindow(start=WINDOW_START, end=WINDOW_END),
         )
         reopened = RunLedger(
             StateDatabase(database_path),

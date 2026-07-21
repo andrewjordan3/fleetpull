@@ -16,7 +16,12 @@ matching mode, and every discovered endpoint must appear here with the
 mode-matching identity type.
 """
 
-from fleetpull.api.identity import EndpointIdentity, SnapshotEndpoint, WindowedEndpoint
+from fleetpull.api.identity import (
+    EndpointIdentity,
+    FeedEndpoint,
+    SnapshotEndpoint,
+    WindowedEndpoint,
+)
 from fleetpull.vocabulary import Provider
 
 __all__: list[str] = ['Endpoints', 'available_endpoints']
@@ -91,37 +96,33 @@ class Endpoints:
         exception_events: WindowedEndpoint = WindowedEndpoint(
             Provider.GEOTAB, 'exception_events'
         )
+        log_records: FeedEndpoint = FeedEndpoint(Provider.GEOTAB, 'log_records')
+        status_data: FeedEndpoint = FeedEndpoint(Provider.GEOTAB, 'status_data')
+        fill_ups: FeedEndpoint = FeedEndpoint(Provider.GEOTAB, 'fill_ups')
+        fuel_and_energy_used: FeedEndpoint = FeedEndpoint(
+            Provider.GEOTAB, 'fuel_and_energy_used'
+        )
+        fuel_tax_details: FeedEndpoint = FeedEndpoint(
+            Provider.GEOTAB, 'fuel_tax_details'
+        )
 
 
 def available_endpoints() -> tuple[EndpointIdentity, ...]:
     """Enumerate the whole catalog -- its manifest, in declaration order.
 
+    Derived from the provider namespaces themselves: each namespace's
+    class ``vars()`` preserves declaration order, so the manifest is the
+    catalog read back, never a hand-kept repeat that could drift from it
+    (the parity test still proves both directions against discovery).
+
     Returns:
-        Every identity the ``Endpoints`` catalog exposes.
+        Every identity the ``Endpoints`` catalog exposes -- Motive, then
+        Samsara, then GeoTab, each in declaration order.
     """
-    return (
-        Endpoints.Motive.vehicles,
-        Endpoints.Motive.vehicle_locations,
-        Endpoints.Motive.driving_periods,
-        Endpoints.Motive.idle_events,
-        Endpoints.Motive.groups,
-        Endpoints.Motive.users,
-        Endpoints.Motive.vehicle_utilizations,
-        Endpoints.Motive.driver_idle_rollups,
-        Endpoints.Samsara.vehicles,
-        Endpoints.Samsara.drivers,
-        Endpoints.Samsara.trips,
-        Endpoints.Samsara.idling_events,
-        Endpoints.Samsara.addresses,
-        Endpoints.Samsara.engine_states,
-        Endpoints.Samsara.gps_readings,
-        Endpoints.Samsara.odometer_readings,
-        Endpoints.Samsara.asset_locations,
-        Endpoints.Samsara.driver_vehicle_assignments,
-        Endpoints.Samsara.vehicle_fuel_energy_reports,
-        Endpoints.Samsara.driver_fuel_energy_reports,
-        Endpoints.Geotab.devices,
-        Endpoints.Geotab.users,
-        Endpoints.Geotab.trips,
-        Endpoints.Geotab.exception_events,
+    provider_namespaces = (Endpoints.Motive, Endpoints.Samsara, Endpoints.Geotab)
+    return tuple(
+        attribute
+        for namespace in provider_namespaces
+        for attribute in vars(namespace).values()
+        if isinstance(attribute, (SnapshotEndpoint, WindowedEndpoint, FeedEndpoint))
     )

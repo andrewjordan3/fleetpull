@@ -70,9 +70,7 @@ class _FakeQueue:
                     reset += 1
             return reset
 
-    def claim_next(
-        self, provider: Provider, endpoint: str, *, max_attempts: int
-    ) -> ClaimedWorkUnit | None:
+    def claim_next(self, provider: Provider, endpoint: str) -> ClaimedWorkUnit | None:
         with self._lock:
             for unit_id, row in enumerate(self._rows, start=1):
                 claimable = row['status'] in (
@@ -81,7 +79,7 @@ class _FakeQueue:
                 )
                 attempts = row['attempts']
                 assert isinstance(attempts, int)
-                if claimable and attempts < max_attempts:
+                if claimable:
                     row['status'] = WorkUnitStatus.CLAIMED
                     row['attempts'] = attempts + 1
                     spec = row['spec']

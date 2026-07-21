@@ -19,7 +19,7 @@ boundary), is deferred there exactly as ``DateWatermark`` defers it.
 """
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 __all__: list[str] = ['DateWindow']
 
@@ -76,3 +76,19 @@ class DateWindow:
                 f'DateWindow requires start < end; got start={self.start!r}, '
                 f'end={self.end!r}'
             )
+
+    @property
+    def last_covered_date(self) -> date:
+        """
+        The last calendar date the half-open window covers.
+
+        The ``(end - 1µs).date()`` derivation, stated once: the exclusive
+        ``end`` itself is not covered, so a window ending exactly at UTC
+        midnight does not cover that date while a mid-day ``end`` does. The
+        one-microsecond step back is exact because every datetime in
+        fleetpull is microsecond-precision UTC end to end (DESIGN §3/§4).
+
+        Returns:
+            The UTC calendar date of the last covered instant.
+        """
+        return (self.end - timedelta(microseconds=1)).date()

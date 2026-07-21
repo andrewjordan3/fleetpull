@@ -6,22 +6,26 @@ database lives at the resolved path passed to :class:`StateDatabase` at
 construction; this module does not derive that path (runtime config resolves it —
 see the prompt context).
 
-Layout is a functional core under a thin shell. The module-level functions
-(:func:`fetch_scalar`, :func:`apply_connection_pragmas`,
-:func:`stamp_or_verify_application_id`, :func:`enable_wal`,
-:func:`verify_quick_check`) are stateless database primitives: each takes an
-explicit ``connection`` and does one thing. :class:`StateDatabase` is the shell
+Layout is a functional core under a thin shell. The public module-level
+functions are the stateless primitives the store layers above import and
+reuse: :func:`fetch_scalar` (the migration runner's version read),
+:func:`expect_text` / :func:`expect_int` (the STRICT-schema narrowings every
+store applies to a read column), and :func:`parse_stored_instant` (the
+stored-ISO-8601 parse whose failure is state-store corruption). The
+verification primitives (:func:`_apply_connection_pragmas`,
+:func:`_stamp_or_verify_application_id`, :func:`_enable_wal`,
+:func:`_verify_quick_check`) are module-private — only :class:`StateDatabase`
+sequences them. :class:`StateDatabase` is the shell
 that owns the path, creates the file, sequences the verification primitives at
-startup, and hands out per-connection-configured connections. The primitives are
-public (no leading underscore) because the schema/cursor/ledger layers built on
-this substrate import and reuse them; keeping them out of the class keeps that
-class from growing into a God object.
+startup, and hands out per-connection-configured connections — plain reads via
+:meth:`StateDatabase.connect`, writes via :meth:`StateDatabase.transaction`
+(the commit-on-clean-exit wrapper every store's write runs in).
 
-The module owns no tables and no transactions. Schema DDL, the schema-version
-gate (``user_version``), transaction isolation, and the watermark/ledger/
-work-unit representations all belong to the layers above and arrive in later
-prompts. The module imports nothing about parquet (DESIGN §5/§11: state knows
-nothing about parquet); its only internal dependency is the exception hierarchy.
+The module owns no tables. Schema DDL, the schema-version gate
+(``user_version``), and the watermark/ledger/work-unit representations all
+belong to the layers above (the migration runner keeps its own BEGIN-based
+transaction). The module imports nothing about parquet (DESIGN §5/§11: state
+knows nothing about parquet).
 
 Failure stances:
     - A path holding a different application's SQLite file (foreign
@@ -40,19 +44,21 @@ import logging
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Final
 
 from fleetpull.exceptions import ConfigurationError
+from fleetpull.timing import from_iso8601
+from fleetpull.vocabulary import Provider
 
 __all__: list[str] = [
     'SqliteScalar',
     'StateDatabase',
-    'apply_connection_pragmas',
-    'enable_wal',
+    'expect_int',
+    'expect_text',
     'fetch_scalar',
-    'stamp_or_verify_application_id',
-    'verify_quick_check',
+    'parse_stored_instant',
 ]
 
 logger = logging.getLogger(__name__)
@@ -79,7 +85,8 @@ def fetch_scalar(connection: sqlite3.Connection, statement: str) -> SqliteScalar
     """
     Execute a single-row, single-column statement and return its raw value.
 
-    The shared read primitive beneath the verification helpers: it centralizes
+    The shared read primitive beneath the verification helpers and the
+    migration runner's version read: it centralizes
     the fetch and the empty-result guard so callers narrow a known type rather
     than re-handling the cursor.
 
@@ -103,7 +110,87 @@ def fetch_scalar(connection: sqlite3.Connection, statement: str) -> SqliteScalar
     return row[0]
 
 
-def apply_connection_pragmas(
+def expect_text(value: SqliteScalar, column: str) -> str:
+    """
+    Narrow a read scalar to the TEXT its STRICT schema promises.
+
+    The shared narrowing every store applies to a column it reads: a non-text
+    value under a ``TEXT`` STRICT column is a SQLite contract violation,
+    surfaced loudly rather than coerced.
+
+    Args:
+        value: The raw scalar as SQLite returned it.
+        column: The column's name (e.g. ``'cursors.kind'``), for the error.
+
+    Returns:
+        The value as text.
+
+    Raises:
+        RuntimeError: ``value`` is not text.
+    """
+    if not isinstance(value, str):
+        raise RuntimeError(f'{column} was not text: {value!r}')
+    return value
+
+
+def expect_int(value: SqliteScalar, column: str) -> int:
+    """
+    Narrow a read scalar to the INTEGER its STRICT schema promises.
+
+    The integer twin of :func:`expect_text`.
+
+    Args:
+        value: The raw scalar as SQLite returned it.
+        column: The column's name (e.g. ``'work_units.unit_id'``), for the
+            error.
+
+    Returns:
+        The value as an integer.
+
+    Raises:
+        RuntimeError: ``value`` is not an integer.
+    """
+    if not isinstance(value, int):
+        raise RuntimeError(f'{column} was not an integer: {value!r}')
+    return value
+
+
+def parse_stored_instant(
+    text: str, *, provider: Provider, endpoint: str, column: str
+) -> datetime:
+    """
+    Parse a stored ISO-8601 UTC instant; failure is state-store corruption.
+
+    The shared read-side parse behind every store's persisted timestamp: the
+    stores only ever write ``to_iso8601`` text, so a stored value that does
+    not parse back is state-store corruption and raises ``ConfigurationError``
+    (the uniform §5 stance).
+
+    Args:
+        text: The stored text to parse.
+        provider: The provider whose row this is, for the error context.
+        endpoint: The endpoint whose row this is, for the error context.
+        column: What the value is (e.g. ``'run window_end'``), naming the
+            corrupt datum in the raised error.
+
+    Returns:
+        The parsed timezone-aware UTC datetime.
+
+    Raises:
+        ConfigurationError: ``text`` is not parseable ISO-8601 UTC.
+    """
+    try:
+        return from_iso8601(text)
+    except ValueError as error:
+        raise ConfigurationError(
+            f'state database holds an unparseable {column}',
+            provider=provider.value,
+            endpoint=endpoint,
+            detail=f'{column} {text!r} is not ISO-8601 UTC',
+        ) from error
+
+
+def _apply_connection_pragmas(
     connection: sqlite3.Connection, busy_timeout_ms: int
 ) -> None:
     """
@@ -125,7 +212,7 @@ def apply_connection_pragmas(
     connection.execute('PRAGMA foreign_keys = ON')
 
 
-def stamp_or_verify_application_id(
+def _stamp_or_verify_application_id(
     connection: sqlite3.Connection, database_path: Path
 ) -> None:
     """
@@ -165,7 +252,7 @@ def stamp_or_verify_application_id(
         )
 
 
-def enable_wal(connection: sqlite3.Connection, database_path: Path) -> None:
+def _enable_wal(connection: sqlite3.Connection, database_path: Path) -> None:
     """
     Switch the database to WAL journaling and confirm it took.
 
@@ -201,7 +288,7 @@ def enable_wal(connection: sqlite3.Connection, database_path: Path) -> None:
         )
 
 
-def verify_quick_check(connection: sqlite3.Connection, database_path: Path) -> None:
+def _verify_quick_check(connection: sqlite3.Connection, database_path: Path) -> None:
     """
     Run SQLite's integrity check and refuse a corrupt database.
 
@@ -243,8 +330,10 @@ class StateDatabase:
     §5). This class is the thin lifecycle shell over the module's database
     primitives: :meth:`initialize` creates the file, stamps and verifies it, and
     converts it to WAL; :meth:`connect` hands out per-connection-configured
-    connections. It holds only the path and the busy-timeout — the mechanics are
-    the module-level functions above, and the schema, transactions, and path
+    connections and :meth:`transaction` wraps one in the stores' shared
+    commit-on-clean-exit policy. It holds only the path and the busy-timeout —
+    the mechanics are
+    the module-level functions above, and the schema and path
     resolution belong to other layers.
 
     Threading: SQLite connections are not shared across threads, so each worker
@@ -280,9 +369,9 @@ class StateDatabase:
 
         Creates the database's parent directory if absent, opens (creating the
         file on first run) a connection, and verifies the database in order:
-        :func:`stamp_or_verify_application_id` (a foreign ``application_id`` is
+        :func:`_stamp_or_verify_application_id` (a foreign ``application_id`` is
         refused before any other write, so a non-fleetpull file is never
-        mutated), then :func:`enable_wal`, then :func:`verify_quick_check`.
+        mutated), then :func:`_enable_wal`, then :func:`_verify_quick_check`.
 
         Idempotent: a second call against an already-initialized database
         re-confirms the ``application_id``, WAL, and integrity, then returns.
@@ -303,9 +392,9 @@ class StateDatabase:
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
         connection: sqlite3.Connection = sqlite3.connect(self._database_path)
         try:
-            stamp_or_verify_application_id(connection, self._database_path)
-            enable_wal(connection, self._database_path)
-            verify_quick_check(connection, self._database_path)
+            _stamp_or_verify_application_id(connection, self._database_path)
+            _enable_wal(connection, self._database_path)
+            _verify_quick_check(connection, self._database_path)
         finally:
             connection.close()
         logger.info('State database ready: path=%s', self._database_path)
@@ -317,12 +406,12 @@ class StateDatabase:
 
         Opens the database (which must already exist — call :meth:`initialize`
         once at startup first), applies the per-connection pragmas via
-        :func:`apply_connection_pragmas`, yields the connection, and closes it on
+        :func:`_apply_connection_pragmas`, yields the connection, and closes it on
         exit. Each thread that touches SQLite calls this for its own connection.
 
-        Transaction policy (isolation mode, explicit ``BEGIN``/``COMMIT``) is
-        deliberately not set here; it is owned by the write layers built on this
-        substrate.
+        This is the plain (read) connection: nothing is committed. A store's
+        write runs in :meth:`transaction` instead; the migration runner keeps
+        its own explicit ``BEGIN``-based transaction.
 
         Yields:
             A ready ``sqlite3.Connection`` with the per-connection pragmas
@@ -343,7 +432,33 @@ class StateDatabase:
             )
         connection: sqlite3.Connection = sqlite3.connect(self._database_path)
         try:
-            apply_connection_pragmas(connection, self._busy_timeout_ms)
+            _apply_connection_pragmas(connection, self._busy_timeout_ms)
             yield connection
         finally:
             connection.close()
+
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        """
+        Open a connection whose work commits on clean exit of the block.
+
+        The stores' shared write policy, stated once: :meth:`connect`, yield,
+        and ``commit`` only when the block exits cleanly. An exception
+        propagates without committing, and the closing connection discards the
+        uncommitted work — a store's raise-before-commit guard therefore never
+        persists the refused write. Transactions stay tiny by construction
+        (DESIGN §5): one store operation per block, never an HTTP call inside.
+
+        Yields:
+            A ready ``sqlite3.Connection``; everything executed on it commits
+            together on clean exit.
+
+        Raises:
+            RuntimeError: Per :meth:`connect`.
+
+        Side Effects:
+            Opens and closes a SQLite connection; commits on clean exit.
+        """
+        with self.connect() as connection:
+            yield connection
+            connection.commit()

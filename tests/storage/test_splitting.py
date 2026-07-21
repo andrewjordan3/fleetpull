@@ -1,11 +1,11 @@
-# tests/storage/test_partition.py
-"""Tests for fleetpull.storage.partition."""
+# tests/storage/test_splitting.py
+"""Tests for fleetpull.storage.splitting."""
 
 from datetime import UTC, date, datetime
 
 import polars as pl
 
-from fleetpull.storage.partition import split_by_date
+from fleetpull.storage.splitting import split_by_date
 
 
 def _frame(rows: list[tuple[datetime, int]]) -> pl.DataFrame:
