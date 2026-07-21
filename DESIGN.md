@@ -1,6 +1,6 @@
 # fleetpull — Design Document
 
-**Status:** Design settled through the two-verb public API (§10) and config-driven sync. Shipped end-to-end: the `fetch` API; `Sync(config_path).run()`; the yaml-run CLI (`fleetpull sync <config>`) and the per-endpoint `metadata.json` projection (both 2026-07-17); work-unit planning with crash resume, the three-grain concurrency ladder, and the per-provider fan-out executor; and the full endpoint inventory ENDPOINTS.md tracks as the manifest of record — the Motive and Samsara legacy waves are COMPLETE (2026-07-21), and the GeoTab `Get` verticals ship beside the feed wave below. The GeoTab feed MACHINERY is built in full (2026-07-21: the append-log storage cell, the kind-guarded token commit, the per-page feed drive, the `GEOTAB_FEED` rate class, the shared `GetFeed` spec builder, and the `FeedEndpoint` catalog identity — §3/§4/§5/§14); feed wave one shipped 2026-07-21 (`log_records`, `status_data`, `fill_ups`, `fuel_and_energy_used`, `fuel_tax_details` — the first APPEND_LOG datasets); feed wave two shipped 2026-07-21 (`fault_data`, `duty_status_logs`, `driver_changes`, `dvir_logs` — the Tier 1 entities, again zero machinery changes); wave three queues in ENDPOINTS.md, and trips ships windowed until its feed vertical lands (§8). See §15 for run status and the build roadmap.
+**Status:** Design settled through the two-verb public API (§10) and config-driven sync. Shipped end-to-end: the `fetch` API; `Sync(config_path).run()`; the yaml-run CLI (`fleetpull sync <config>`) and the per-endpoint `metadata.json` projection (both 2026-07-17); work-unit planning with crash resume, the three-grain concurrency ladder, and the per-provider fan-out executor; and the full endpoint inventory ENDPOINTS.md tracks as the manifest of record — the Motive and Samsara legacy waves are COMPLETE (2026-07-21), and the GeoTab `Get` verticals ship beside the feed wave below. The GeoTab feed MACHINERY is built in full (2026-07-21: the append-log storage cell, the kind-guarded token commit, the per-page feed drive, the `GEOTAB_FEED` rate class, the shared `GetFeed` spec builder, and the `FeedEndpoint` catalog identity — §3/§4/§5/§14); feed wave one shipped 2026-07-21 (`log_records`, `status_data`, `fill_ups`, `fuel_and_energy_used`, `fuel_tax_details` — the first APPEND_LOG datasets); feed wave two shipped 2026-07-21 (`fault_data`, `duty_status_logs`, `driver_changes`, `dvir_logs` — the Tier 1 entities, again zero machinery changes); feed wave three shipped 2026-07-21 (`annotation_logs`, `shipment_logs`, `audits`, `text_messages`, `media_files` — the Tier 2 entities, again zero machinery changes; `text_messages` and `media_files` anchor `event_time_column` on `sent`/`from_date` for want of a `dateTime` key, and `text_messages` is append-only like FaultData), and trips ships windowed until its feed vertical lands (§8). See §15 for run status and the build roadmap.
 **Name:** `fleetpull` — final. Describes exactly what the package does and nothing more (PyPI availability confirmed 2026-06-10).
 **Relationship to fleet-telemetry-hub:** New package, not a rewrite. fleet-telemetry-hub remains in production untouched while fleetpull is built.
 
@@ -2440,6 +2440,126 @@ data semantics and never other tenants' shapes. Seeding via
    dual-provenance lesson's other arm: absent a documented lower cap
    and absent probe evidence either way, the protocol maximum stands.
 
+### GeoTab feed wave three probe-settled decisions (2026-07-21)
+
+Settled by the 2026-07-21 SCALE census (walked AT SCALE, not the thin
+banked 30-day sample — these numbers supersede any smaller sample; the
+captured population sizes below); the `annotation_logs` /
+`shipment_logs` / `audits` / `text_messages` / `media_files` verticals
+(the Tier 2 feed queue) implement them. ALL censuses here are
+TENANT-SCOPED observations (the port discipline's standing rule): they
+prove the probed account's shapes and surface behavior at capture time,
+never data semantics and never other tenants' shapes. ALL timestamp
+fields were confirmed RFC3339 UTC (Z-suffixed) — parsed tz-aware.
+
+1. **Zero shared-machinery changes, a third time.** Each leaf is the
+   wave-one/-two declaration set: `FeedMode` + `StorageKind.APPEND_LOG`
+   + an `event_time_column`, the shared `GeotabGetFeedSpecBuilder`
+   (per-leaf `typeName` and `resultsLimit` only), the shared
+   `GeotabFeedPageDecoder`, and `QuotaScope.GEOTAB_FEED`. Nothing under
+   the orchestrator, network, records, storage, or state layers moved —
+   and no shared-MODEL addition either (unlike wave two's
+   nested-location pair): the `messageContent` block and every ref
+   model are per-leaf shapes. All five declare the 50,000
+   protocol-maximum `resultsLimit` (no lower documented per-type cap;
+   the SCALE census cannot probe a cap the population never reaches —
+   the FillUp dual-provenance lesson's other arm).
+
+2. **The wave-two conservative requiredness posture carries forward.**
+   A tenant SCALE census still cannot promise another tenant's
+   presence, so STRUCTURAL requiredness is limited to `id`, the
+   event-time field (see decision 3 — it MUST be required and non-null
+   because storage partitions on it), `version` WHERE THE TYPE CARRIES
+   ONE (decision 4), and the primary entity ref where one is chosen
+   (decision 5). Every other field is optional even where census-total.
+   Every reference field rides `bare_id_to_reference` — including the
+   census-object-only and census-string-only refs — on the StatusData
+   census-scope lesson (a tenant census cannot prove the absent arm
+   absent). Every vocabulary-ish key (`commodity`, `mediaType`,
+   `status`, `name`, `contentType`, ...) is census-open plain str,
+   never an enum.
+
+3. **TWO event_time_column DEPARTURES — because two types carry no
+   `dateTime` key.** `annotation_logs`, `shipment_logs`, and `audits`
+   carry `dateTime` and anchor `event_time_column='date_time'` (the
+   wave-one/-two default). But **`text_messages` has NO `dateTime` key**
+   — its send instant is `sent` (25,000/25,000), so it anchors
+   `event_time_column='sent'` and the model's `sent` field is required
+   (the event-time identity). And **`media_files` has NO `dateTime`
+   key** — its media-start instant is `fromDate` (55/55), so it anchors
+   `event_time_column='from_date'` and `from_date` is required. These
+   are the first feed verticals whose event time is a domain field
+   other than `dateTime`/`enter_time`.
+
+4. **The version split — and a second append-only-complete type.**
+   `annotation_logs`, `shipment_logs`, `audits`, and `media_files` all
+   carry a per-record `version` and reconcile `(id, max version)` (the
+   editable/calculated-feed stance). **`text_messages` carries NO
+   `version` key** — the FaultData/LogRecord asymmetry: append-only
+   storage is trivially complete and the consumer reconciles by `id`
+   alone. Its delivered/read receipts DO re-emit a message under newer
+   FEED `toVersion` tokens and are stored-as-emitted — the feed's own
+   versioning, not a per-record `version` key.
+
+5. **Per-vertical primary-ref choices.**
+   - `annotation_logs` (8,857): refs `driver{id}` + `dutyStatusLog{id}`,
+     both object-only at scale, both ride the lift. Primary ref
+     `dutyStatusLog` (the annotated log — the annotation's subject)
+     required; `driver` optional. `dutyStatusLog` is the
+     BACK-REFERENCE completing the wave-two loop: `DutyStatusLog.
+     annotations` is an id-list of AnnotationLog ids, and
+     `AnnotationLog.dutyStatusLog.id` points back to the DutyStatusLog
+     (the bidirectional join `annotation_logs.duty_status_log__id` ↔
+     `duty_status_logs.annotations`).
+   - `shipment_logs` (2,771): refs `device{id}` + `driver{id}`, both
+     object-only at scale, both ride the lift. Primary ref `driver`
+     (the log-family convention) required; `device` optional.
+     `activeFrom`/`activeTo` are the shipment's active window.
+   - `audits` (20,000): NO refs at all — the simplest vertical, no ref
+     models. Required: `id`, `dateTime`, `version`.
+   - `text_messages` (25,000): ref `device{id}` optional (a message has
+     no required primary entity). Required: `id`, `sent`.
+   - `media_files` (55): refs `device` (PROVEN MIXED, decision 7) +
+     `driver` (string-only observed), both ride the lift, BOTH OPTIONAL
+     — a media file's primary entity is ambiguous (it may attach to a
+     device or a driver), so neither is promoted. Required: `id`,
+     `from_date`, `version`.
+
+6. **The `messageContent` list[str] DIRECT-FIELD decision (contrast the
+   wave-two annotations reduction).** `text_messages.messageContent` is
+   a nested block `{contentType: str, ids: list[str]}` (200/200 nested,
+   25,000/25,000 present) — both keys required WITHIN the block on the
+   nested-block-required convention. Its `ids` is a PLAIN `list[str]`:
+   the elements ARE strings on the wire, and the records layer supports
+   `list[scalar]` directly, so this is a §9 list-of-scalar DIRECT field
+   — NOT the DutyStatusLog `annotations` strict id-lift, where the
+   elements were `{id}` OBJECTS needing reduction. The distinction is
+   the wire shape: string elements ride directly, object elements
+   reduce.
+
+7. **`media_files.device` is PROVEN MIXED at scale — both arms
+   covered.** The SCALE census walked 42 bare-string and 13 `{id}`
+   object device arms (proven mixed, unlike wave two's mostly
+   object-only refs), so `device` gets BOTH-arm fixture and test
+   coverage; `driver` was string-only observed (55/55) and rides the
+   lift defensively (the census-scope lesson — a census cannot prove
+   the object arm absent). Both land as `*__id`.
+
+8. **The three `media_files` empty-container exclusions (the
+   `defectList.children` doctrine).** `metaData` (EMPTY object on all
+   55), `tags` (EMPTY list on all 55), and `thumbnails` (EMPTY list on
+   all 55) are EXCLUDED from the model: their element/content shape is
+   unobservable at this tenant, the records layer supports only
+   observable shapes, and `extra='ignore'` absorbs them wire-side (each
+   pinned with an absorption test — a record populating any of the
+   three still validates). REVISIT when a tenant populates them.
+
+9. **The thin-MediaFile-evidence caveat.** MediaFile is genuinely thin
+   at this tenant — 55 records over a 730-day window — so the model is
+   conservative accordingly and the caveat is recorded on the module
+   docstring. Every arm above is what those 55 records showed; the
+   census cannot speak for a tenant that uses media at volume.
+
 ### The exception hierarchy (implemented: `exceptions.py`)
 
 The operational errors consumers catch, mirroring the classification
@@ -2527,6 +2647,11 @@ budgets → `RetriesExhaustedError`, failed auth paths →
 | GeoTab | DutyStatusLog feed census (2,000 walked, 30-day seeded pull): census-total `dateTime` (the event time), `deferralMinutes` (int), `deferralStatus`, `device` (MIXED object-or-string), `driver` (MIXED object-or-string), `editDateTime`, `eventRecordStatus` (int), `id`, `isIgnored`/`isTransitioning` (bools), `malfunction`/`origin`/`state`/`status` (strs), `version`; partial-presence `annotations` 126/2,000 (elements EXACTLY `{id}`, 200/200 sampled), `distanceSinceValidCoordinates` 308 (int\|float), `engineHours` 1,844 (int\|float), `eventCode` 1,623 (int), `eventType` 1,753 (int), `location` 1,859 (`{location: {x, y}}`), `odometer` 1,863 (int\|float), `sequence` 1,753 (str), `verifyDateTime` 765 (captured 2026-07-21). |
 | GeoTab | DriverChange feed census (1,114 walked, 30-day seeded pull; six keys, all census-total): `dateTime` (the event time), `device` (`{id}` object), `driver` (MIXED `{id, isDriver: bool}`-object-or-string), `id`, `type` (census-open str), `version` (captured 2026-07-21). |
 | GeoTab | DVIRLog feed census (500 walked, 30-day seeded pull): census-total `authorityAddress`/`authorityName`/`certifyRemark`/`driverRemark` (strs), `dateTime` (the event time), `defectList` (`{children, id, name}` — `children` an EMPTY list on ALL 500), `driver` (`{id}`), `duration` (an opaque duration str), `id`, `isInspectedByDriver` (bool), `logType` (str), `version`; partial-presence `device` (`{id}`) / `engineHours` (int-only on carriers) / `odometer` (float) at 205/500 each, `location` 496/500 (`{location: {x, y}}`), `trailer` (`{id}`) 295/500 (captured 2026-07-21). |
+| GeoTab | AnnotationLog feed census (8,857 walked AT SCALE; six keys, all census-total): `comment` (str), `dateTime` (the event time), `driver` (`{id}` object at scale), `dutyStatusLog` (`{id}` object at scale — the BACK-REFERENCE to DutyStatusLog whose `annotations` id-list points here), `id`, `version`. Both refs object-only at scale, both ride the defensive lift (captured 2026-07-21). |
+| GeoTab | ShipmentLog feed census (2,771 walked AT SCALE; ten keys, all census-total): `activeFrom`/`activeTo` (RFC3339 strs — the shipment's active window), `commodity` (str), `dateTime` (the event time), `device` (`{id}` object at scale), `documentNumber` (str), `driver` (`{id}` object at scale), `id`, `shipperName` (str), `version` (captured 2026-07-21). |
+| GeoTab | Audit feed census (20,000 walked AT SCALE; six keys, all census-total): `comment` (str), `dateTime` (the event time), `id`, `name` (str), `userName` (str), `version`. NO reference fields at all — the simplest feed vertical (captured 2026-07-21). |
+| GeoTab | TextMessage feed census (25,000 walked AT SCALE): `activeFrom`/`activeTo` (RFC3339 strs), `device` (`{id}` object at scale), `id`, `isDirectionToVehicle` (bool), `messageContent` (`{contentType: str, ids: list[str]}` nested block — 200/200 nested, ids elements ARE strings on the wire), `messageSize` (int), `recipient` (str), `sent` (RFC3339 str — the event time). **NO `dateTime` key AND NO `version` key** — append-only-complete like FaultData/LogRecord; `delivered`/`read` (RFC3339 receipt strs) on 24,995/25,000. Delivered/read receipts re-emit under newer FEED `toVersion`, stored-as-emitted (captured 2026-07-21). |
+| GeoTab | MediaFile feed census (55 walked over a 730-day window — genuinely THIN data): `device` (MIXED — 42 bare-str / 13 `{id}` object, PROVEN mixed at scale), `driver` (str, 55/55), `fromDate` (RFC3339 str — the event time; **NO `dateTime` key**), `id`, `mediaType` (str), `name` (str), `solutionId` (str), `status` (str), `toDate` (RFC3339 str), `version`; `metaData` (EMPTY object on all 55), `tags` (EMPTY list on all 55), `thumbnails` (EMPTY list on all 55) — the three documented exclusions, element/content shape unobservable. `resultsLimit` 50,000 (captured 2026-07-21). |
 | Samsara | 429 with fractional `Retry-After` (e.g. `0.40235`); 401 body is `{"message": ...}`; 5xx bodies are plain strings, never JSON. |
 | Samsara | Success responses carry NO rate-limit headers (`Date`/`Content-Type`/`Content-Length`/`Connection`/`Request-Id`/`Strict-Transport-Security` only) — the Motive posture: the real budget is unobservable outside a 429, so the config's self-limiting default carries the load. `Request-Id` is the support correlation handle (captured 2026-07-17). |
 | Samsara | `/fleet/vehicles` cursor mechanics proven live: the `after` advance continued across a real page boundary with no overlap or loss (ids ascend numerically straight across it), a fresh `endCursor` per page, and the TERMINAL page carries `hasNextPage: false` beside an EMPTY-STRING `endCursor` — not absent, not null — the shape the decoder's promised-continuation guard is calibrated against. The documented 512 `limit` maximum was honored exactly (608-vehicle fleet: 512 + 96) (captured 2026-07-17). |
@@ -4105,6 +4230,17 @@ resolution (item 1, done).
    id-list, the DVIRLog `defectList.children` documented exclusion,
    the shared nested-location pair promoted into
    `models/geotab/shared.py`, and again ZERO shared-machinery changes.
+   **GeoTab feed wave three shipped 2026-07-21** — the five Tier 2 feed
+   entities (`annotation_logs`, `shipment_logs`, `audits`,
+   `text_messages`, `media_files`) per their §8 SCALE-census decision
+   block: the two `event_time_column` departures (`text_messages` on
+   `sent`, `media_files` on `from_date`, both for want of a `dateTime`
+   key), the `text_messages` no-version append-only stance, the
+   `messageContent` `list[str]` direct-field decision (contrast the
+   wave-two annotations reduction), the `annotation_logs`→
+   `duty_status_logs` back-reference, the three `media_files`
+   empty-container exclusions on thin 55-record evidence, and once more
+   ZERO shared-machinery changes — the GeoTab feed queue is now empty.
    The per-endpoint
    inventory and port queue are tracked in `ENDPOINTS.md` (added
    2026-07-17), updated in the same change as any endpoint addition.

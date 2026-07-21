@@ -111,6 +111,11 @@ class Endpoints:
         )
         driver_changes: FeedEndpoint = FeedEndpoint(Provider.GEOTAB, 'driver_changes')
         dvir_logs: FeedEndpoint = FeedEndpoint(Provider.GEOTAB, 'dvir_logs')
+        annotation_logs: FeedEndpoint = FeedEndpoint(Provider.GEOTAB, 'annotation_logs')
+        shipment_logs: FeedEndpoint = FeedEndpoint(Provider.GEOTAB, 'shipment_logs')
+        audits: FeedEndpoint = FeedEndpoint(Provider.GEOTAB, 'audits')
+        text_messages: FeedEndpoint = FeedEndpoint(Provider.GEOTAB, 'text_messages')
+        media_files: FeedEndpoint = FeedEndpoint(Provider.GEOTAB, 'media_files')
 
 
 def available_endpoints() -> tuple[EndpointIdentity, ...]:

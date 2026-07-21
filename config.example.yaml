@@ -165,7 +165,7 @@ providers:
       # server: my.geotab.com              # optional; the authentication host
 
     # The endpoints to sync, by catalog name. The feed endpoints
-    # (log_records through dvir_logs) drive GeoTab's GetFeed
+    # (log_records through media_files) drive GeoTab's GetFeed
     # version-token stream into append-only storage.
     endpoints:
       - devices
@@ -181,6 +181,11 @@ providers:
       - duty_status_logs
       - driver_changes
       - dvir_logs
+      - annotation_logs
+      - shipment_logs
+      - audits
+      - text_messages
+      - media_files
 
     # Per-provider window knobs for watermark endpoints (GeoTab trips and
     # exception_events; the feed endpoints resume from a version token and

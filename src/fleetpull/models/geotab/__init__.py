@@ -1,6 +1,12 @@
 # src/fleetpull/models/geotab/__init__.py
 """GeoTab response models; the face re-exports each endpoint module's models."""
 
+from fleetpull.models.geotab.annotation_log import (
+    AnnotationLog,
+    AnnotationLogDriverRef,
+    AnnotationLogDutyStatusLogRef,
+)
+from fleetpull.models.geotab.audit import Audit
 from fleetpull.models.geotab.device import CustomFeatures, Device, DeviceFlags
 from fleetpull.models.geotab.driver_change import (
     DriverChange,
@@ -53,6 +59,11 @@ from fleetpull.models.geotab.fuel_tax_detail import (
     FuelTaxDetailDriverRef,
 )
 from fleetpull.models.geotab.log_record import LogRecord, LogRecordDeviceRef
+from fleetpull.models.geotab.media_file import (
+    MediaFile,
+    MediaFileDeviceRef,
+    MediaFileDriverRef,
+)
 from fleetpull.models.geotab.shared import (
     GeotabAddressedLocation,
     GeotabCoordinate,
@@ -61,10 +72,20 @@ from fleetpull.models.geotab.shared import (
     bare_id_to_reference,
     parse_timespan,
 )
+from fleetpull.models.geotab.shipment_log import (
+    ShipmentLog,
+    ShipmentLogDeviceRef,
+    ShipmentLogDriverRef,
+)
 from fleetpull.models.geotab.status_data import (
     StatusData,
     StatusDataDeviceRef,
     StatusDataDiagnosticRef,
+)
+from fleetpull.models.geotab.text_message import (
+    TextMessage,
+    TextMessageContent,
+    TextMessageDeviceRef,
 )
 from fleetpull.models.geotab.trip import (
     Trip,
@@ -75,6 +96,10 @@ from fleetpull.models.geotab.trip import (
 from fleetpull.models.geotab.user import User, UserAccessGroupFilterRef
 
 __all__: list[str] = [
+    'AnnotationLog',
+    'AnnotationLogDriverRef',
+    'AnnotationLogDutyStatusLogRef',
+    'Audit',
     'CustomFeatures',
     'Device',
     'DeviceFlags',
@@ -118,9 +143,18 @@ __all__: list[str] = [
     'GeotabTimeSpan',
     'LogRecord',
     'LogRecordDeviceRef',
+    'MediaFile',
+    'MediaFileDeviceRef',
+    'MediaFileDriverRef',
+    'ShipmentLog',
+    'ShipmentLogDeviceRef',
+    'ShipmentLogDriverRef',
     'StatusData',
     'StatusDataDeviceRef',
     'StatusDataDiagnosticRef',
+    'TextMessage',
+    'TextMessageContent',
+    'TextMessageDeviceRef',
     'Trip',
     'TripDeviceRef',
     'TripDriverRef',
