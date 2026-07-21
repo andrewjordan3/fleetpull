@@ -17,6 +17,7 @@ from fleetpull.endpoints.shared.base import (
     WatermarkMode,
 )
 from fleetpull.endpoints.shared.request_shape import (
+    BatchedRosterFanOut,
     BisectedWindowFetch,
     ParamSweep,
     RequestShape,
@@ -31,6 +32,7 @@ from fleetpull.endpoints.shared.url_paths import (
 )
 
 __all__: list[str] = [
+    'BatchedRosterFanOut',
     'BisectedWindowFetch',
     'CompletenessCheck',
     'EndpointDefinition',

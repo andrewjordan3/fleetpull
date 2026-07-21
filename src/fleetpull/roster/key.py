@@ -2,7 +2,7 @@
 """The roster identity: ``RosterKey``, the opaque handle a consumer references.
 
 A ``RosterKey`` names one roster -- ``(provider, name)`` -- and is the only roster
-fact a fan-out consumer carries (its ``RosterFanOut.roster``): the consumer knows
+fact a fan-out consumer carries (its shape's ``roster`` field): the consumer knows
 *that* a roster of its keys exists, never where those keys come from. The mapping
 from a key to its source endpoint and column lives in the ``RosterRegistry`` (the
 ``RosterDefinition``), and the persisted members live in the ``RosterStore``, both

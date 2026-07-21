@@ -3,15 +3,17 @@
 
 The seam owns exactly the shape-to-driver dispatch: each ``RequestShape``
 member resolves to its driver, the fanned shapes draw the provider's pool,
-and a ``RosterFanOut`` with no roster source (the stateless-caller case)
-fails loudly instead of fetching a partial fleet.
+and a roster-backed shape with no roster source (the stateless-caller
+case) fails loudly instead of fetching a partial fleet.
 """
 
 from datetime import datetime, timedelta
+from functools import partial
 
 import pytest
 
 from fleetpull.endpoints.shared import (
+    BatchedRosterFanOut,
     BisectedWindowFetch,
     EndpointDefinition,
     ParamSweep,
@@ -155,6 +157,103 @@ def test_roster_fan_out_without_a_roster_source_raises() -> None:
     # The stateless-caller case (fetch): a roster fan-out needs durable
     # roster state, so resolution refuses instead of fetching nothing.
     shape = RosterFanOut(roster=VEHICLE_IDS_KEY, member_key='vehicle_id')
+    with pytest.raises(ConfigurationError, match='no roster source') as raised:
+        resolve_request_driver(
+            _windowed_definition(shape),
+            fetch_pools=_StubPoolSource(),
+            roster_members=None,
+        )
+    message = str(raised.value)
+    assert 'shaped' in message
+    assert 'vehicle_ids' in message
+
+
+def _supplied_members(supplied: list[str], _requested: RosterFanOut) -> list[str]:
+    """A roster source returning a fixed membership, ordering preserved."""
+    return supplied
+
+
+def test_batched_roster_fan_out_resolves_sorted_comma_joined_batches() -> None:
+    # 101 members at batch_size=50 chunk into chains of 50/50/1, each
+    # chain's value the sorted comma-joined batch -- the batch is
+    # transport packing on the member-agnostic fan-out driver, so each
+    # batch string is simply one member.
+    shape = BatchedRosterFanOut(roster=VEHICLE_IDS_KEY, member_key='ids', batch_size=50)
+    members = [f'{index:03d}' for index in range(101)]
+    pools = _StubPoolSource()
+    seen_shapes: list[RosterFanOut] = []
+
+    def members_for(requested: RosterFanOut) -> list[str]:
+        seen_shapes.append(requested)
+        return list(reversed(members))
+
+    driver = resolve_request_driver(
+        _windowed_definition(shape), fetch_pools=pools, roster_members=members_for
+    )
+    assert isinstance(driver, FanOutRequestDriver)
+    assert driver.members == (
+        ','.join(members[0:50]),
+        ','.join(members[50:100]),
+        '100',
+    )
+    assert driver.member_key == 'ids'
+    assert driver.fetch_pool is pools.pool
+    # The membership resolves through the SAME source path as a plain
+    # RosterFanOut's arm: the source is handed the per-member fan-out
+    # the batching wraps, naming the batched shape's roster.
+    assert seen_shapes == [RosterFanOut(roster=VEHICLE_IDS_KEY, member_key='ids')]
+
+
+def test_batched_roster_fan_out_batches_are_deterministic() -> None:
+    # Members sort before chunking, so identical rosters produce
+    # identical batches regardless of the source's ordering.
+    shape = BatchedRosterFanOut(roster=VEHICLE_IDS_KEY, member_key='ids', batch_size=2)
+    orderings = (['303', '101', '202'], ['101', '202', '303'], ['202', '303', '101'])
+    batch_tuples = set()
+    for ordering in orderings:
+        driver = resolve_request_driver(
+            _windowed_definition(shape),
+            fetch_pools=_StubPoolSource(),
+            roster_members=partial(_supplied_members, ordering),
+        )
+        assert isinstance(driver, FanOutRequestDriver)
+        batch_tuples.add(tuple(driver.members))
+    assert batch_tuples == {('101,202', '303')}
+
+
+def test_batched_roster_fan_out_smaller_roster_is_one_chain() -> None:
+    # A batch_size larger than the roster packs the whole membership
+    # into a single chain.
+    shape = BatchedRosterFanOut(roster=VEHICLE_IDS_KEY, member_key='ids', batch_size=50)
+    driver = resolve_request_driver(
+        _windowed_definition(shape),
+        fetch_pools=_StubPoolSource(),
+        roster_members=partial(_supplied_members, ['202', '101']),
+    )
+    assert isinstance(driver, FanOutRequestDriver)
+    assert driver.members == ('101,202',)
+
+
+def test_batched_roster_fan_out_rejects_a_comma_carrying_member() -> None:
+    # A comma inside one member would silently widen the batch on the
+    # wire (more ids than members -- past the API cap, or addressing an
+    # unintended asset); corrupt roster data surfaces loudly at the
+    # packing seam instead.
+    shape = BatchedRosterFanOut(roster=VEHICLE_IDS_KEY, member_key='ids', batch_size=50)
+    with pytest.raises(ConfigurationError, match='join delimiter') as raised:
+        resolve_request_driver(
+            _windowed_definition(shape),
+            fetch_pools=_StubPoolSource(),
+            roster_members=partial(_supplied_members, ['101', '2,02', '303']),
+        )
+    assert "'2,02'" in str(raised.value)
+
+
+def test_batched_roster_fan_out_without_a_roster_source_raises() -> None:
+    # The stateless-caller refusal covers the batched shape identically:
+    # batching is transport packing, and the roster state it packs is
+    # exactly what the in-memory fetch verb lacks.
+    shape = BatchedRosterFanOut(roster=VEHICLE_IDS_KEY, member_key='ids', batch_size=50)
     with pytest.raises(ConfigurationError, match='no roster source') as raised:
         resolve_request_driver(
             _windowed_definition(shape),
