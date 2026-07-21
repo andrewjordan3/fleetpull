@@ -3,9 +3,12 @@
 The seek-walk boundary fixture and its six Device records, the trailer-
 shape record, the terminal empty page, and the ``GetCountOf`` envelope
 -- all Captured from live GeoTab and scrubbed per the Data Hygiene
-convention before commit (synthetic ids, names, VINs; load-bearing
-properties preserved: ids strictly ascending, page 2's request offset
-equal to page 1's last record id, the boundary ids hex-consecutive).
+convention before commit (ids are pure inventions carrying no mapping
+to any real identifier; names and VINs synthetic; the structural
+properties are what the scrub preserves: ids strictly ascending, page
+2's request offset equal to page 1's last record id, the boundary ids
+hex-consecutive, distinctness and cross-module device references
+intact).
 
 Shared by the seek-decoder tests, the Device model tests, and the
 fetch/Sync end-to-end tests -- a multi-consumer capture set, so it lives
@@ -134,7 +137,7 @@ SEEK_PAGE_1_RESPONSE_JSON: str = r"""
             "autoGroups": [],
             "customParameters": [],
             "enableMustReprogram": false,
-            "engineVehicleIdentificationNumber": "4SYNTHV1N00000001",
+            "engineVehicleIdentificationNumber": "4SYNTHV1N00000017",
             "ensureHotStart": false,
             "gpsOffDelay": 0,
             "licensePlate": "0000001",
@@ -143,7 +146,7 @@ SEEK_PAGE_1_RESPONSE_JSON: str = r"""
             "minor": 42,
             "parameterVersion": 10,
             "pinDevice": true,
-            "vehicleIdentificationNumber": "4SYNTHV1N00000001",
+            "vehicleIdentificationNumber": "4SYNTHV1N00000017",
             "parameterVersionOnDevice": 7,
             "comment": "",
             "groups": [
@@ -151,7 +154,7 @@ SEEK_PAGE_1_RESPONSE_JSON: str = r"""
                     "id": "GroupVehicleId"
                 },
                 {
-                    "id": "bE001"
+                    "id": "b44A1"
                 }
             ],
             "timeZoneId": "America/Los_Angeles",
@@ -172,7 +175,7 @@ SEEK_PAGE_1_RESPONSE_JSON: str = r"""
                 "ratePlans": []
             },
             "deviceType": "GO7",
-            "id": "b101",
+            "id": "b8E2",
             "ignoreDownloadsUntil": "1986-01-01T00:00:00.000Z",
             "communicationThresholdIntervalMoving": 86400,
             "communicationThresholdIntervalStationary": 86400,
@@ -272,7 +275,7 @@ SEEK_PAGE_1_RESPONSE_JSON: str = r"""
             "autoGroups": [],
             "customParameters": [],
             "enableMustReprogram": false,
-            "engineVehicleIdentificationNumber": "4SYNTHV1N00000002",
+            "engineVehicleIdentificationNumber": "4SYNTHV1N00000009",
             "ensureHotStart": false,
             "gpsOffDelay": 0,
             "licensePlate": "0000002",
@@ -281,7 +284,7 @@ SEEK_PAGE_1_RESPONSE_JSON: str = r"""
             "minor": 47,
             "parameterVersion": 9,
             "pinDevice": true,
-            "vehicleIdentificationNumber": "4SYNTHV1N00000002",
+            "vehicleIdentificationNumber": "4SYNTHV1N00000009",
             "parameterVersionOnDevice": 6,
             "comment": "",
             "groups": [
@@ -289,7 +292,7 @@ SEEK_PAGE_1_RESPONSE_JSON: str = r"""
                     "id": "GroupVehicleId"
                 },
                 {
-                    "id": "bE001"
+                    "id": "b44A1"
                 }
             ],
             "timeZoneId": "America/Los_Angeles",
@@ -310,7 +313,7 @@ SEEK_PAGE_1_RESPONSE_JSON: str = r"""
                 "ratePlans": []
             },
             "deviceType": "GO7",
-            "id": "b102",
+            "id": "b8E7",
             "ignoreDownloadsUntil": "1986-01-01T00:00:00.000Z",
             "communicationThresholdIntervalMoving": 86400,
             "communicationThresholdIntervalStationary": 86400,
@@ -413,7 +416,7 @@ SEEK_PAGE_1_RESPONSE_JSON: str = r"""
             "wifiHotspotLimits": [],
             "autoGroups": [
                 {
-                    "id": "bE003"
+                    "id": "b44C2"
                 }
             ],
             "customParameters": [
@@ -425,7 +428,7 @@ SEEK_PAGE_1_RESPONSE_JSON: str = r"""
                 }
             ],
             "enableMustReprogram": false,
-            "engineVehicleIdentificationNumber": "4SYNTHV1N00000003",
+            "engineVehicleIdentificationNumber": "4SYNTHV1N00000021",
             "ensureHotStart": false,
             "gpsOffDelay": 0,
             "licensePlate": "0000003",
@@ -434,7 +437,7 @@ SEEK_PAGE_1_RESPONSE_JSON: str = r"""
             "minor": 42,
             "parameterVersion": 24,
             "pinDevice": true,
-            "vehicleIdentificationNumber": "4SYNTHV1N00000003",
+            "vehicleIdentificationNumber": "4SYNTHV1N00000021",
             "vinInfoMake": "Freightliner",
             "vinInfoModel": "New Cascadia 126\" Day cab",
             "vinInfoYear": "2020",
@@ -449,7 +452,7 @@ SEEK_PAGE_1_RESPONSE_JSON: str = r"""
                     "id": "GroupVehicleId"
                 },
                 {
-                    "id": "bE003"
+                    "id": "b44C2"
                 }
             ],
             "timeZoneId": "America/Los_Angeles",
@@ -471,7 +474,7 @@ SEEK_PAGE_1_RESPONSE_JSON: str = r"""
                 "ratePlans": []
             },
             "deviceType": "GO9",
-            "id": "b105",
+            "id": "b8F3",
             "ignoreDownloadsUntil": "1986-01-01T00:00:00.000Z",
             "maxSecondsBetweenLogs": 200,
             "name": "synthetic-unit-003",
@@ -501,7 +504,7 @@ SEEK_PAGE_1_RESPONSE_JSON: str = r"""
 SEEK_PAGE_1_RESPONSE: dict[str, JsonValue] = json.loads(SEEK_PAGE_1_RESPONSE_JSON)
 
 # Captured: seek walk page 2 request -- its sort.offset equals page 1's
-# last record id (the no-loss/no-overlap seam; 0xb105 + 1 == 0xb106).
+# last record id (the no-loss/no-overlap seam; 0xb8F3 + 1 == 0xb8F4).
 SEEK_PAGE_2_REQUEST_JSON: str = r"""
 {
     "method": "Get",
@@ -511,7 +514,7 @@ SEEK_PAGE_2_REQUEST_JSON: str = r"""
         "sort": {
             "sortBy": "id",
             "sortDirection": "asc",
-            "offset": "b105"
+            "offset": "b8F3"
         },
         "credentials": {
             "database": "exampledb",
@@ -615,7 +618,7 @@ SEEK_PAGE_2_RESPONSE_JSON: str = r"""
                 }
             ],
             "enableMustReprogram": false,
-            "engineVehicleIdentificationNumber": "4SYNTHV1N00000004",
+            "engineVehicleIdentificationNumber": "4SYNTHV1N00000013",
             "ensureHotStart": false,
             "gpsOffDelay": 0,
             "licensePlate": "0000004",
@@ -624,7 +627,7 @@ SEEK_PAGE_2_RESPONSE_JSON: str = r"""
             "minor": 44,
             "parameterVersion": 18,
             "pinDevice": true,
-            "vehicleIdentificationNumber": "4SYNTHV1N00000004",
+            "vehicleIdentificationNumber": "4SYNTHV1N00000013",
             "vinInfoMake": "Freightliner",
             "vinInfoModel": "New Cascadia 126\" Day cab",
             "vinInfoYear": "2019",
@@ -639,7 +642,7 @@ SEEK_PAGE_2_RESPONSE_JSON: str = r"""
                     "id": "GroupVehicleId"
                 },
                 {
-                    "id": "bE002"
+                    "id": "b44B7"
                 }
             ],
             "timeZoneId": "America/Los_Angeles",
@@ -661,7 +664,7 @@ SEEK_PAGE_2_RESPONSE_JSON: str = r"""
                 "ratePlans": []
             },
             "deviceType": "GO9",
-            "id": "b106",
+            "id": "b8F4",
             "ignoreDownloadsUntil": "1986-01-01T00:00:00.000Z",
             "maxSecondsBetweenLogs": 200,
             "name": "synthetic-unit-004",
@@ -770,7 +773,7 @@ SEEK_PAGE_2_RESPONSE_JSON: str = r"""
                 }
             ],
             "enableMustReprogram": false,
-            "engineVehicleIdentificationNumber": "4SYNTHV1N00000005",
+            "engineVehicleIdentificationNumber": "4SYNTHV1N00000002",
             "ensureHotStart": false,
             "gpsOffDelay": 0,
             "licensePlate": "0000005",
@@ -779,7 +782,7 @@ SEEK_PAGE_2_RESPONSE_JSON: str = r"""
             "minor": 20,
             "parameterVersion": 16,
             "pinDevice": true,
-            "vehicleIdentificationNumber": "4SYNTHV1N00000005",
+            "vehicleIdentificationNumber": "4SYNTHV1N00000002",
             "parameterVersionOnDevice": 10,
             "comment": "",
             "groups": [
@@ -787,12 +790,12 @@ SEEK_PAGE_2_RESPONSE_JSON: str = r"""
                     "id": "GroupVehicleId"
                 },
                 {
-                    "id": "bE001"
+                    "id": "b44A1"
                 }
             ],
             "timeZoneId": "America/Los_Angeles",
             "deviceType": "GO9",
-            "id": "b107",
+            "id": "b8F8",
             "ignoreDownloadsUntil": "1986-01-01T00:00:00.000Z",
             "communicationThresholdIntervalMoving": 86400,
             "communicationThresholdIntervalStationary": 86400,
@@ -886,7 +889,7 @@ SEEK_PAGE_2_RESPONSE_JSON: str = r"""
             "wifiHotspotLimits": [],
             "autoGroups": [
                 {
-                    "id": "bE003"
+                    "id": "b44C2"
                 }
             ],
             "customParameters": [
@@ -898,7 +901,7 @@ SEEK_PAGE_2_RESPONSE_JSON: str = r"""
                 }
             ],
             "enableMustReprogram": false,
-            "engineVehicleIdentificationNumber": "4SYNTHV1N00000006",
+            "engineVehicleIdentificationNumber": "4SYNTHV1N00000025",
             "ensureHotStart": false,
             "gpsOffDelay": 0,
             "licensePlate": "0000006",
@@ -907,7 +910,7 @@ SEEK_PAGE_2_RESPONSE_JSON: str = r"""
             "minor": 27,
             "parameterVersion": 21,
             "pinDevice": true,
-            "vehicleIdentificationNumber": "4SYNTHV1N00000006",
+            "vehicleIdentificationNumber": "4SYNTHV1N00000025",
             "parameterVersionOnDevice": 18,
             "comment": "",
             "groups": [
@@ -918,12 +921,12 @@ SEEK_PAGE_2_RESPONSE_JSON: str = r"""
                     "id": "GroupVehicleId"
                 },
                 {
-                    "id": "bE003"
+                    "id": "b44C2"
                 }
             ],
             "timeZoneId": "America/Los_Angeles",
             "deviceType": "GO9",
-            "id": "b10A",
+            "id": "b91C",
             "ignoreDownloadsUntil": "1986-01-01T00:00:00.000Z",
             "communicationThresholdIntervalMoving": 86400,
             "communicationThresholdIntervalStationary": 86400,
@@ -979,7 +982,7 @@ TRAILER_DEVICE_RECORD_JSON: str = r"""
     ],
     "timeZoneId": "America/New_York",
     "deviceType": "None",
-    "id": "b179",
+    "id": "b9A4",
     "ignoreDownloadsUntil": "1986-01-01T00:00:00.000Z",
     "communicationThresholdIntervalMoving": 86400,
     "communicationThresholdIntervalStationary": 86400,

@@ -58,12 +58,12 @@ GETFEED_EMPTY_RESPONSE_JSON: str = (
 GETFEED_ADVANCE_RESPONSE_JSON: str = (
     '{"result": {"data": [{"latitude": 40.1000001, "longitude":'
     ' -100.1000001, "speed": 96, "dateTime": "2026-07-09T15:34:55.000Z",'
-    ' "device": {"id": "b101"}, "id": "b14c3e1"}, {"latitude":'
-    ' 40.2000002, "longitude": -100.2000002, "speed": 9, "dateTime":'
-    ' "2026-07-09T15:34:56.000Z", "device": {"id": "b102"}, "id":'
+    ' "device": {"id": "b8E2"}, "id": "b14c3e1"}, {"latitude":'
+    ' 40.2018276, "longitude": -100.2018276, "speed": 9, "dateTime":'
+    ' "2026-07-09T15:34:56.000Z", "device": {"id": "b8E7"}, "id":'
     ' "b14c3e2"}, {"latitude": 40.3000003, "longitude": -100.3000003,'
     ' "speed": 0, "dateTime": "2026-07-09T15:34:56.000Z", "device":'
-    ' {"id": "b103"}, "id": "b14c3e3"}], "toVersion":'
+    ' {"id": "b8EB"}, "id": "b14c3e3"}], "toVersion":'
     ' "000000000014c3e3"}, "jsonrpc": "2.0"}'
 )
 
@@ -241,9 +241,9 @@ class TestGeotabGetPageDecoder:
             build_get_spec(), SEEK_PAGE_1_RESPONSE
         )
         assert [record['id'] for record in decoded.records] == [
-            'b101',
-            'b102',
-            'b105',
+            'b8E2',
+            'b8E7',
+            'b8F3',
         ]
         assert decoded.advance.next_spec is not None
         assert decoded.advance.next_spec.json_body is not None
@@ -261,7 +261,7 @@ class TestGeotabGetPageDecoder:
 
     def test_the_captured_boundary_ids_are_hex_consecutive(self) -> None:
         # The no-loss/no-overlap seam, visible in the fixture itself:
-        # page 1 ends at 0xb105 and page 2 begins at 0xb106.
+        # page 1 ends at 0xb8F3 and page 2 begins at 0xb8F4.
         page_1_records = SEEK_PAGE_1_RESPONSE['result']
         page_2_records = SEEK_PAGE_2_RESPONSE['result']
         assert isinstance(page_1_records, list)
@@ -305,7 +305,7 @@ class TestGeotabGetPageDecoder:
         assert isinstance(next_params, dict)
         next_sort = next_params['sort']
         assert isinstance(next_sort, dict)
-        assert next_sort['offset'] == 'b10A'
+        assert next_sort['offset'] == 'b91C'
 
     def test_last_id_key_is_never_written(self) -> None:
         # Enforced by construction (probe-settled decision 1: the probe
@@ -323,7 +323,7 @@ class TestGeotabGetPageDecoder:
         [
             {'jsonrpc': '2.0'},  # result missing entirely
             {'result': 'not a list', 'jsonrpc': '2.0'},
-            {'result': [{'id': 'b101'}, 'not an object'], 'jsonrpc': '2.0'},
+            {'result': [{'id': 'b8E2'}, 'not an object'], 'jsonrpc': '2.0'},
         ],
     )
     def test_malformed_envelope_raises(self, envelope: JsonValue) -> None:
@@ -384,7 +384,7 @@ def test_windowed_search_survives_the_seek_advance() -> None:
     }
     next_sort = next_params['sort']
     assert isinstance(next_sort, dict)
-    assert next_sort['offset'] == 'b12AC4214'
+    assert next_sort['offset'] == 'b7F3A83E5'
     # The advance reproduces the captured page-2 request's sort exactly.
     captured_page_2_params = TRIP_SEEK_PAGE_2_REQUEST['params']
     assert isinstance(captured_page_2_params, dict)

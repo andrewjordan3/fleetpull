@@ -51,7 +51,7 @@ class TestFixtureProperties:
         assert isinstance(page_2_params, dict)
         page_2_sort = page_2_params['sort']
         assert isinstance(page_2_sort, dict)
-        assert page_2_sort['offset'] == last['id'] == 'b12AC4214'
+        assert page_2_sort['offset'] == last['id'] == 'b7F3A83E5'
 
     def test_versions_ascend_in_id_order(self) -> None:
         versions = [record['version'] for record in TRIP_RECORDS]
@@ -71,25 +71,25 @@ class TestFixtureProperties:
         wire_shapes = {type(record['driver']).__name__ for record in TRIP_RECORDS}
         assert wire_shapes == {'str', 'dict'}
 
-    def test_b106_is_the_device_on_both_sides_of_the_boundary(self) -> None:
+    def test_b8f4_is_the_device_on_both_sides_of_the_boundary(self) -> None:
         devices = [Trip.model_validate(record).device for record in TRIP_RECORDS]
         assert devices[2] is not None
         assert devices[3] is not None
-        assert devices[2].id == devices[3].id == 'b106'
+        assert devices[2].id == devices[3].id == 'b8F4'
 
 
 class TestTripValidation:
     def test_every_committed_record_validates(self) -> None:
         trips = [Trip.model_validate(record) for record in _ALL_RECORDS]
         assert [trip.id for trip in trips] == [
-            'b12AC4053',
-            'b12AC4055',
-            'b12AC4214',
-            'b12AC423F',
-            'b12AC430C',
-            'b12AC4374',
-            'b12AC4D3D',
-            'b12AC4FF9',
+            'b7F3A8210',
+            'b7F3A8266',
+            'b7F3A83E5',
+            'b7F3A8472',
+            'b7F3A84D9',
+            'b7F3A8560',
+            'b7F3A8C44',
+            'b7F3A8E12',
         ]
 
     def test_full_record_populates_every_field(self) -> None:
@@ -101,7 +101,7 @@ class TestTripValidation:
         for field_name in Trip.model_fields:
             assert getattr(full, field_name) is not None, field_name
         assert isinstance(full.driver, TripDriverRef)
-        assert full.driver.id == 'b156'
+        assert full.driver.id == 'b4B82'
         assert full.driver.is_driver is True
 
     def test_unattributed_record_lands_the_sentinel_as_driver_id(self) -> None:
@@ -161,7 +161,7 @@ class TestTripFrame:
             assert (driver_id == 'UnknownDriverId') == (is_driver is None)
         # The absent-key shape: average_speed null on the zero-distance row.
         assert frame['average_speed'].null_count() == 1
-        assert frame.filter(pl.col('id') == 'b12AC4FF9')['average_speed'][0] is None
+        assert frame.filter(pl.col('id') == 'b7F3A8E12')['average_speed'][0] is None
 
     def test_empty_input_carries_the_full_schema(self) -> None:
         populated = models_to_dataframe(

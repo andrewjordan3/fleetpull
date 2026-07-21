@@ -136,9 +136,9 @@ class TestTripValidation:
         end = trip.end_coordinates
         assert isinstance(start, TripCoordinates)
         assert isinstance(end, TripCoordinates)
-        assert start.latitude == pytest.approx(34.0001)
-        assert start.longitude == pytest.approx(-118.0001)
-        assert end.latitude == pytest.approx(34.0501)
+        assert start.latitude == pytest.approx(40.2001)
+        assert start.longitude == pytest.approx(-100.2001)
+        assert end.latitude == pytest.approx(40.2051)
 
     def test_the_maximal_record_carries_both_address_blocks(self) -> None:
         trip = Trip.model_validate(TRIP_RECORDS[0])

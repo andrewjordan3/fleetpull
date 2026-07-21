@@ -212,7 +212,7 @@ def test_geotab_devices_end_to_end_through_the_session_stack(
         },
     )
     assert frame.height == 6
-    assert frame['id'].to_list() == ['b101', 'b102', 'b105', 'b106', 'b107', 'b10A']
+    assert frame['id'].to_list() == ['b8E2', 'b8E7', 'b8F3', 'b8F4', 'b8F8', 'b91C']
     assert frame.schema['active_to'] == pl.Datetime(time_unit='us', time_zone='UTC')
     # Exactly one Authenticate fired for the whole walk.
     assert len(handler.authenticate_bodies) == 1

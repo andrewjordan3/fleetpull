@@ -57,8 +57,8 @@ IDLING_EVENTS_PAGE_RESPONSE_JSON: str = r"""
             "operator": {
                 "id": 91000001
             },
-            "latitude": 34.0001,
-            "longitude": -118.0001,
+            "latitude": 40.2001,
+            "longitude": -100.2001,
             "ptoState": "inactive",
             "fuelConsumedMilliliters": 2500,
             "fuelCost": {
@@ -85,8 +85,8 @@ IDLING_EVENTS_PAGE_RESPONSE_JSON: str = r"""
             "asset": {
                 "id": 90000002
             },
-            "latitude": 34.0501,
-            "longitude": -118.0501,
+            "latitude": 40.2051,
+            "longitude": -100.2051,
             "ptoState": "inactive",
             "fuelConsumedMilliliters": 800,
             "fuelCost": {
@@ -129,8 +129,8 @@ IDLING_EVENTS_TERMINAL_RESPONSE_JSON: str = r"""
             "operator": {
                 "id": 91000002
             },
-            "latitude": 34.1001,
-            "longitude": -118.1001,
+            "latitude": 40.2101,
+            "longitude": -100.2101,
             "ptoState": "inactive",
             "fuelConsumedMilliliters": 123.5,
             "fuelCost": {

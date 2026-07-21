@@ -6,11 +6,14 @@ variants (both ``viewDriversOwnDataOnly`` values, the ``America8Day`` /
 three non-driver variants (the ``accessGroupFilter`` carrier, a
 service-style account, the ``hh:mm:ss tt`` date-format and ``Usd``
 variants) -- plus the ``GetCountOf`` envelope. Captured from live GeoTab
-and scrubbed per the Data Hygiene convention before commit (synthetic
-ids, names, logins, phone and license and carrier numbers, company
-identity, GUIDs; load-bearing properties preserved: the driver-only key
-block present on exactly the ``isDriver: true`` records, absent -- not
-null -- elsewhere; exactly one ``accessGroupFilter``; the
+and scrubbed per the Data Hygiene convention before commit (ids are
+pure inventions carrying no mapping to any real identifier -- ordering
+and distinctness are the preserved properties; names, logins, phone and
+license and carrier numbers, license-province categoricals, company
+identity, and GUIDs synthetic; load-bearing properties preserved: the
+driver-only key block present on exactly the ``isDriver: true``
+records, absent -- not null -- elsewhere; exactly one
+``accessGroupFilter``; the
 authority/company equality classes; the 2050 still-active sentinel; all
 timestamps, locale fields, and GeoTab vocabulary verbatim).
 
@@ -38,7 +41,7 @@ USERS_RESPONSE_JSON: str = r"""
             ],
             "keys": [],
             "viewDriversOwnDataOnly": true,
-            "licenseProvince": "CA",
+            "licenseProvince": "OH",
             "licenseNumber": "L0000001",
             "isMaintenanceNotificationEnabled": false,
             "isServiceDisruptionNotificationsEnabled": false,
@@ -86,9 +89,9 @@ USERS_RESPONSE_JSON: str = r"""
             "isExemptHOSEnabled": false,
             "isAdverseDrivingEnabled": true,
             "maxPCDistancePerDay": 0,
-            "authorityName": "Synthetic Recovery Services",
+            "authorityName": "Example Fleet Services",
             "authorityAddress": "100 Synthetic Blvd Synthetic City CA 00000",
-            "id": "bA01",
+            "id": "b5CE1",
             "isEULAAccepted": true,
             "isNewsEnabled": true,
             "isLabsEnabled": true,
@@ -121,7 +124,7 @@ USERS_RESPONSE_JSON: str = r"""
             "timeZoneId": "America/Los_Angeles",
             "userAuthenticationType": "BasicAuthentication",
             "zoneDisplayMode": "Default",
-            "companyName": "Synthetic Recovery Services",
+            "companyName": "Example Fleet Services",
             "companyAddress": "100 Synthetic Blvd Synthetic City CA 00000",
             "carrierNumber": "1000001",
             "lastAccessDate": "2026-07-15T13:16:19.215Z",
@@ -143,7 +146,7 @@ USERS_RESPONSE_JSON: str = r"""
             ],
             "keys": [],
             "viewDriversOwnDataOnly": false,
-            "licenseProvince": "AZ",
+            "licenseProvince": "VT",
             "licenseNumber": "L0000002",
             "isMaintenanceNotificationEnabled": false,
             "isServiceDisruptionNotificationsEnabled": false,
@@ -191,9 +194,9 @@ USERS_RESPONSE_JSON: str = r"""
             "isExemptHOSEnabled": false,
             "isAdverseDrivingEnabled": true,
             "maxPCDistancePerDay": 0,
-            "authorityName": "Synthetic Recovery Services",
+            "authorityName": "Example Fleet Services",
             "authorityAddress": "100 Synthetic Blvd Synthetic City CA 00000",
-            "id": "bA02",
+            "id": "b5CE4",
             "isEULAAccepted": true,
             "isNewsEnabled": true,
             "isLabsEnabled": true,
@@ -226,7 +229,7 @@ USERS_RESPONSE_JSON: str = r"""
             "timeZoneId": "America/Los_Angeles",
             "userAuthenticationType": "BasicAuthentication",
             "zoneDisplayMode": "Default",
-            "companyName": "Synthetic Recovery Services",
+            "companyName": "Example Fleet Services",
             "companyAddress": "100 Synthetic Blvd Synthetic City CA 00000",
             "carrierNumber": "1000001",
             "lastAccessDate": "2026-07-15T08:03:32.420Z",
@@ -248,7 +251,7 @@ USERS_RESPONSE_JSON: str = r"""
             ],
             "keys": [],
             "viewDriversOwnDataOnly": false,
-            "licenseProvince": "CA",
+            "licenseProvince": "OH",
             "licenseNumber": "L0000003",
             "isMaintenanceNotificationEnabled": false,
             "isServiceDisruptionNotificationsEnabled": false,
@@ -296,9 +299,9 @@ USERS_RESPONSE_JSON: str = r"""
             "isExemptHOSEnabled": false,
             "isAdverseDrivingEnabled": true,
             "maxPCDistancePerDay": 0,
-            "authorityName": "Synthetic Recovery Services",
+            "authorityName": "Example Fleet Services",
             "authorityAddress": "100 Synthetic Blvd Synthetic City CA 00000",
-            "id": "bA03",
+            "id": "b5CF2",
             "isEULAAccepted": true,
             "isNewsEnabled": true,
             "isLabsEnabled": true,
@@ -331,7 +334,7 @@ USERS_RESPONSE_JSON: str = r"""
             "timeZoneId": "America/Los_Angeles",
             "userAuthenticationType": "BasicAuthentication",
             "zoneDisplayMode": "Default",
-            "companyName": "Synthetic Recovery Services",
+            "companyName": "Example Fleet Services",
             "companyAddress": "100 Synthetic Blvd Synthetic City CA 00000",
             "carrierNumber": "1000001",
             "lastAccessDate": "2026-07-15T08:36:22.308Z",
@@ -353,7 +356,7 @@ USERS_RESPONSE_JSON: str = r"""
             ],
             "keys": [],
             "viewDriversOwnDataOnly": false,
-            "licenseProvince": "CA",
+            "licenseProvince": "OH",
             "licenseNumber": "L0000004",
             "isMaintenanceNotificationEnabled": false,
             "isServiceDisruptionNotificationsEnabled": false,
@@ -401,9 +404,9 @@ USERS_RESPONSE_JSON: str = r"""
             "isExemptHOSEnabled": false,
             "isAdverseDrivingEnabled": true,
             "maxPCDistancePerDay": 0,
-            "authorityName": "Synthetic Recovery Services",
+            "authorityName": "Example Fleet Services",
             "authorityAddress": "100 Synthetic Blvd Synthetic City CA 00000",
-            "id": "bA04",
+            "id": "b5D07",
             "isEULAAccepted": true,
             "isNewsEnabled": true,
             "isLabsEnabled": true,
@@ -447,7 +450,7 @@ USERS_RESPONSE_JSON: str = r"""
             "timeZoneId": "America/Los_Angeles",
             "userAuthenticationType": "BasicAuthentication",
             "zoneDisplayMode": "Default",
-            "companyName": "Synthetic Recovery Services",
+            "companyName": "Example Fleet Services",
             "companyAddress": "100 Synthetic Blvd Synthetic City CA 00000",
             "carrierNumber": "1000001",
             "lastAccessDate": "2026-05-26T12:44:56.575Z",
@@ -472,12 +475,12 @@ USERS_RESPONSE_JSON: str = r"""
             "acceptedEULA": 20,
             "wifiEULA": 0,
             "activeDashboardReports": [
-                "bB01",
-                "bB02",
-                "bB03",
-                "bB04",
-                "bB05",
-                "bB06"
+                "b71E2",
+                "b71E5",
+                "b71E9",
+                "b71F0",
+                "b71F4",
+                "b71F8"
             ],
             "activeDefaultDashboards": [],
             "jobPriorities": [],
@@ -485,12 +488,12 @@ USERS_RESPONSE_JSON: str = r"""
             "activeFrom": "2025-10-09T21:01:36.030Z",
             "activeTo": "2050-01-01T00:00:00.000Z",
             "availableDashboardReports": [
-                "bB01",
-                "bB02",
-                "bB03",
-                "bB04",
-                "bB05",
-                "bB06"
+                "b71E2",
+                "b71E5",
+                "b71E9",
+                "b71F0",
+                "b71F4",
+                "b71F8"
             ],
             "cannedResponseOptions": [],
             "changePassword": false,
@@ -525,9 +528,9 @@ USERS_RESPONSE_JSON: str = r"""
             "isExemptHOSEnabled": false,
             "isAdverseDrivingEnabled": true,
             "maxPCDistancePerDay": 0,
-            "authorityName": "Synthetic Recovery Services",
+            "authorityName": "Example Fleet Services",
             "authorityAddress": "100 Synthetic Blvd Synthetic City CA 00000",
-            "id": "bA05",
+            "id": "b5D13",
             "isEULAAccepted": true,
             "isNewsEnabled": true,
             "isLabsEnabled": true,
@@ -573,7 +576,7 @@ USERS_RESPONSE_JSON: str = r"""
             "privateUserGroups": [],
             "reportGroups": [
                 {
-                    "id": "bC01"
+                    "id": "b6A17"
                 }
             ],
             "securityGroups": [
@@ -586,7 +589,7 @@ USERS_RESPONSE_JSON: str = r"""
             "timeZoneId": "America/Los_Angeles",
             "userAuthenticationType": "BasicAuthentication",
             "zoneDisplayMode": "Default",
-            "companyName": "Synthetic Recovery Services",
+            "companyName": "Example Fleet Services",
             "companyAddress": "100 Synthetic Blvd Synthetic City CA 00000",
             "carrierNumber": "",
             "lastAccessDate": "2025-10-09T21:01:36.445Z",
@@ -611,12 +614,12 @@ USERS_RESPONSE_JSON: str = r"""
             "acceptedEULA": 20,
             "wifiEULA": 0,
             "activeDashboardReports": [
-                "bB01",
-                "bB02",
-                "bB03",
-                "bB04",
-                "bB05",
-                "bB06"
+                "b71E2",
+                "b71E5",
+                "b71E9",
+                "b71F0",
+                "b71F4",
+                "b71F8"
             ],
             "activeDefaultDashboards": [],
             "jobPriorities": [],
@@ -624,12 +627,12 @@ USERS_RESPONSE_JSON: str = r"""
             "activeFrom": "2026-03-17T15:50:22.363Z",
             "activeTo": "2050-01-01T00:00:00.000Z",
             "availableDashboardReports": [
-                "bB01",
-                "bB02",
-                "bB03",
-                "bB04",
-                "bB05",
-                "bB06"
+                "b71E2",
+                "b71E5",
+                "b71E9",
+                "b71F0",
+                "b71F4",
+                "b71F8"
             ],
             "cannedResponseOptions": [],
             "changePassword": false,
@@ -661,9 +664,9 @@ USERS_RESPONSE_JSON: str = r"""
             "isExemptHOSEnabled": false,
             "isAdverseDrivingEnabled": true,
             "maxPCDistancePerDay": 0,
-            "authorityName": "Synthetic Recovery Services",
+            "authorityName": "Example Fleet Services",
             "authorityAddress": "100 Synthetic Blvd Synthetic City CA 00000",
-            "id": "bA06",
+            "id": "b5D2A",
             "isEULAAccepted": true,
             "isNewsEnabled": true,
             "isLabsEnabled": true,
@@ -707,7 +710,7 @@ USERS_RESPONSE_JSON: str = r"""
             "timeZoneId": "America/Los_Angeles",
             "userAuthenticationType": "BasicAuthentication",
             "zoneDisplayMode": "Default",
-            "companyName": "Synthetic Recovery Services",
+            "companyName": "Example Fleet Services",
             "companyAddress": "100 Synthetic Blvd Synthetic City CA 00000",
             "carrierNumber": "",
             "lastAccessDate": "2026-03-23T16:53:00.681Z",
@@ -732,14 +735,14 @@ USERS_RESPONSE_JSON: str = r"""
             "acceptedEULA": 20,
             "wifiEULA": 0,
             "activeDashboardReports": [
-                "bB01",
-                "bB02",
-                "bB03",
-                "bB04",
-                "bB05",
-                "bB06",
-                "bFFFFFFFFFFFFB001",
-                "bFFFFFFFFFFFFB002"
+                "b71E2",
+                "b71E5",
+                "b71E9",
+                "b71F0",
+                "b71F4",
+                "b71F8",
+                "bFFFFFFFFFFFF9C3D",
+                "bFFFFFFFFFFFF9C4A"
             ],
             "activeDefaultDashboards": [],
             "jobPriorities": [
@@ -765,14 +768,14 @@ USERS_RESPONSE_JSON: str = r"""
             "activeFrom": "2026-06-11T14:32:35.200Z",
             "activeTo": "2050-01-01T00:00:00.000Z",
             "availableDashboardReports": [
-                "bB01",
-                "bB02",
-                "bB03",
-                "bB04",
-                "bB05",
-                "bB06",
-                "bFFFFFFFFFFFFB001",
-                "bFFFFFFFFFFFFB002"
+                "b71E2",
+                "b71E5",
+                "b71E9",
+                "b71F0",
+                "b71F4",
+                "b71F8",
+                "bFFFFFFFFFFFF9C3D",
+                "bFFFFFFFFFFFF9C4A"
             ],
             "cannedResponseOptions": [],
             "changePassword": false,
@@ -804,9 +807,9 @@ USERS_RESPONSE_JSON: str = r"""
             "isExemptHOSEnabled": false,
             "isAdverseDrivingEnabled": true,
             "maxPCDistancePerDay": 0,
-            "authorityName": "Synthetic Recovery Services",
+            "authorityName": "Example Fleet Services",
             "authorityAddress": "100 Synthetic Blvd Synthetic City CA 00000",
-            "id": "bA07",
+            "id": "b5D3B",
             "isEULAAccepted": true,
             "isNewsEnabled": true,
             "isLabsEnabled": true,
@@ -850,7 +853,7 @@ USERS_RESPONSE_JSON: str = r"""
             "timeZoneId": "America/Chicago",
             "userAuthenticationType": "BasicAuthentication",
             "zoneDisplayMode": "Default",
-            "companyName": "Synthetic Recovery Services",
+            "companyName": "Example Fleet Services",
             "companyAddress": "100 Synthetic Blvd Synthetic City CA 00000",
             "carrierNumber": "",
             "lastAccessDate": "2026-07-16T13:29:41.359Z",

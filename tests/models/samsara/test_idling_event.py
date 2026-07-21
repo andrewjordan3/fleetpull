@@ -139,8 +139,8 @@ class TestIdlingEventValidation:
 
     def test_the_coordinates(self) -> None:
         event = IdlingEvent.model_validate(IDLING_EVENT_RECORDS[0])
-        assert event.latitude == pytest.approx(34.0001)
-        assert event.longitude == pytest.approx(-118.0001)
+        assert event.latitude == pytest.approx(40.2001)
+        assert event.longitude == pytest.approx(-100.2001)
 
     def test_pto_state_is_a_plain_string(self) -> None:
         # Only 'inactive' was observed in 2,200 records, but the value

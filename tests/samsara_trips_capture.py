@@ -55,12 +55,12 @@ TRIPS_RESPONSE_JSON: str = r"""
             "startLocation": "100 Example St, Example City, CA",
             "endLocation": "200 Example Ave, Example City, CA",
             "startCoordinates": {
-                "latitude": 34.0001,
-                "longitude": -118.0001
+                "latitude": 40.2001,
+                "longitude": -100.2001
             },
             "endCoordinates": {
-                "latitude": 34.0501,
-                "longitude": -118.0501
+                "latitude": 40.2051,
+                "longitude": -100.2051
             },
             "startAddress": {
                 "address": "100 Example St, Example City, CA",
@@ -87,12 +87,12 @@ TRIPS_RESPONSE_JSON: str = r"""
             "startLocation": "300 Example Blvd, Example City, CA",
             "endLocation": "400 Example Way, Example City, CA",
             "startCoordinates": {
-                "latitude": 34.1001,
-                "longitude": -118.1001
+                "latitude": 40.2101,
+                "longitude": -100.2101
             },
             "endCoordinates": {
-                "latitude": 34.1501,
-                "longitude": -118.1501
+                "latitude": 40.2151,
+                "longitude": -100.2151
             },
             "assetIds": [],
             "codriverIds": []

@@ -70,10 +70,10 @@ class TestUserValidation:
 
     def test_first_record_pins_the_wire_values(self) -> None:
         user = User.model_validate(USER_RECORDS[0])
-        assert user.id == 'bA01'
+        assert user.id == 'b5CE1'
         assert user.is_driver is True
         assert user.license_number == 'L0000001'
-        assert user.license_province == 'CA'
+        assert user.license_province == 'OH'
         assert user.view_drivers_own_data_only is True
         assert user.active_from == datetime(2020, 11, 20, 17, 5, 22, 587000, tzinfo=UTC)
         assert user.hos_rule_set == 'America8DayBig'
