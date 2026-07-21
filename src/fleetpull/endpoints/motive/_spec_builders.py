@@ -3,10 +3,14 @@
 
 The builder for Motive endpoints that take day-granular ``start_date`` /
 ``end_date`` query parameters with no per-vehicle fan-out
-(driving_periods, idle_events) — the promotion the vehicle_locations
-module anticipated once a real second user arrived. vehicle_locations
-keeps its own builder because it renders a per-vehicle path; this one
-serves the fleet-wide pair and any future sibling.
+(driving_periods, idle_events, and the utilization rollup pair
+vehicle_utilizations / driver_idle_rollups) — the promotion the
+vehicle_locations module anticipated once a real second user arrived.
+vehicle_locations keeps its own builder because it renders a
+per-vehicle path; this one serves the fleet-wide leaves and any future
+sibling. The rendered label pair is INCLUSIVE on both ends; how the
+provider interprets it (UTC vs company-local days) is a per-endpoint
+fact each leaf documents.
 
 ``window_pad_days`` exists for endpoints whose server-side window
 matching is not UTC: idle_events interprets its date range on

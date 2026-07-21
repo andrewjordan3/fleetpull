@@ -482,6 +482,8 @@ class TestExampleFile:
             'idle_events',
             'groups',
             'users',
+            'vehicle_utilizations',
+            'driver_idle_rollups',
         )
         samsara = config.providers.samsara
         assert samsara is not None
