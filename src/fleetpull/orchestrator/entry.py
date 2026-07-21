@@ -12,7 +12,9 @@ storage cell, or its record identity; every dispatch keys off
 it to driver resolution). The shape-to-driver dispatch itself lives on the
 shared seam (``shape_resolution.resolve_request_driver``, which ``fetch``
 also calls); what this entry owns is the roster half it feeds that seam: a
-``RosterFanOut`` resolves its ``RosterKey`` through the ``RosterRegistry``,
+roster-backed shape -- ``RosterFanOut``, or the ``BatchedRosterFanOut``
+that packs one into comma-joined batches -- resolves its ``RosterKey``
+through the ``RosterRegistry``,
 refreshes the membership via the coordinator -- which owns the entire
 staleness policy, including best-effort degradation and the loud cold-start
 failure; the entry never reasons about freshness -- then reads the members
@@ -21,8 +23,8 @@ from the store. An empty roster after the refresh raises
 listed nothing is a failure to surface, not an empty dataset to emit, and the
 short-circuit keeps the writer's write-called-at-least-once precondition
 intact (an ``allow_empty_roster`` escape joins ``RosterFanOut`` only when an
-endpoint genuinely needs one). Every other shape touches no roster machinery
-at all (unless the endpoint sources a roster -- below).
+endpoint genuinely needs one). Every non-roster-backed shape touches no
+roster machinery at all (unless the endpoint sources a roster -- below).
 
 The entry also owns the feeder tap (the other half of the coupling rule:
 every execution of a feeder endpoint updates its rosters and records a run;
@@ -191,9 +193,10 @@ def run_endpoint(
 
     The provider- and endpoint-agnostic entry: dispatch keys off the
     definition's declared ``request_shape`` (via the shared shape-resolution
-    seam) and the roster catalog only. A ``RosterFanOut`` shape is fed a
-    refreshed roster membership and fanned out over the provider's fetch
-    pool; every other shape resolves with no roster machinery touched. When
+    seam) and the roster catalog only. The roster-backed shapes
+    (``RosterFanOut`` and ``BatchedRosterFanOut``) are fed a refreshed
+    roster membership and fanned out over the provider's fetch pool;
+    every other shape resolves with no roster machinery touched. When
     the endpoint sources any roster (``sourced_by``), the run is observed
     and -- on ``Executed`` -- each sourced roster is reconciled from the run's
     collected members, so every feeder execution updates its rosters (the
