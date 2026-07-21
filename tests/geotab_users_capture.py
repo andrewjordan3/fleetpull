@@ -6,11 +6,14 @@ variants (both ``viewDriversOwnDataOnly`` values, the ``America8Day`` /
 three non-driver variants (the ``accessGroupFilter`` carrier, a
 service-style account, the ``hh:mm:ss tt`` date-format and ``Usd``
 variants) -- plus the ``GetCountOf`` envelope. Captured from live GeoTab
-and scrubbed per the Data Hygiene convention before commit (synthetic
-ids, names, logins, phone and license and carrier numbers, company
-identity, GUIDs; load-bearing properties preserved: the driver-only key
-block present on exactly the ``isDriver: true`` records, absent -- not
-null -- elsewhere; exactly one ``accessGroupFilter``; the
+and scrubbed per the Data Hygiene convention before commit (ids are
+pure inventions carrying no mapping to any real identifier -- ordering
+and distinctness are the preserved properties; names, logins, phone and
+license and carrier numbers, license-province categoricals, company
+identity, and GUIDs synthetic; load-bearing properties preserved: the
+driver-only key block present on exactly the ``isDriver: true``
+records, absent -- not null -- elsewhere; exactly one
+``accessGroupFilter``; the
 authority/company equality classes; the 2050 still-active sentinel; all
 timestamps, locale fields, and GeoTab vocabulary verbatim).
 
@@ -88,7 +91,7 @@ USERS_RESPONSE_JSON: str = r"""
             "maxPCDistancePerDay": 0,
             "authorityName": "Example Fleet Services",
             "authorityAddress": "100 Synthetic Blvd Synthetic City CA 00000",
-            "id": "bF7C1D",
+            "id": "b5CE1",
             "isEULAAccepted": true,
             "isNewsEnabled": true,
             "isLabsEnabled": true,
@@ -193,7 +196,7 @@ USERS_RESPONSE_JSON: str = r"""
             "maxPCDistancePerDay": 0,
             "authorityName": "Example Fleet Services",
             "authorityAddress": "100 Synthetic Blvd Synthetic City CA 00000",
-            "id": "bF7C28",
+            "id": "b5CE4",
             "isEULAAccepted": true,
             "isNewsEnabled": true,
             "isLabsEnabled": true,
@@ -298,7 +301,7 @@ USERS_RESPONSE_JSON: str = r"""
             "maxPCDistancePerDay": 0,
             "authorityName": "Example Fleet Services",
             "authorityAddress": "100 Synthetic Blvd Synthetic City CA 00000",
-            "id": "bF7C14",
+            "id": "b5CF2",
             "isEULAAccepted": true,
             "isNewsEnabled": true,
             "isLabsEnabled": true,
@@ -403,7 +406,7 @@ USERS_RESPONSE_JSON: str = r"""
             "maxPCDistancePerDay": 0,
             "authorityName": "Example Fleet Services",
             "authorityAddress": "100 Synthetic Blvd Synthetic City CA 00000",
-            "id": "bF7C10",
+            "id": "b5D07",
             "isEULAAccepted": true,
             "isNewsEnabled": true,
             "isLabsEnabled": true,
@@ -472,12 +475,12 @@ USERS_RESPONSE_JSON: str = r"""
             "acceptedEULA": 20,
             "wifiEULA": 0,
             "activeDashboardReports": [
-                "bF7C12",
-                "bF7C23",
-                "bF7C1B",
-                "bF7C20",
-                "bF7C27",
-                "bF7C16"
+                "b71E2",
+                "b71E5",
+                "b71E9",
+                "b71F0",
+                "b71F4",
+                "b71F8"
             ],
             "activeDefaultDashboards": [],
             "jobPriorities": [],
@@ -485,12 +488,12 @@ USERS_RESPONSE_JSON: str = r"""
             "activeFrom": "2025-10-09T21:01:36.030Z",
             "activeTo": "2050-01-01T00:00:00.000Z",
             "availableDashboardReports": [
-                "bF7C12",
-                "bF7C23",
-                "bF7C1B",
-                "bF7C20",
-                "bF7C27",
-                "bF7C16"
+                "b71E2",
+                "b71E5",
+                "b71E9",
+                "b71F0",
+                "b71F4",
+                "b71F8"
             ],
             "cannedResponseOptions": [],
             "changePassword": false,
@@ -527,7 +530,7 @@ USERS_RESPONSE_JSON: str = r"""
             "maxPCDistancePerDay": 0,
             "authorityName": "Example Fleet Services",
             "authorityAddress": "100 Synthetic Blvd Synthetic City CA 00000",
-            "id": "bF7C15",
+            "id": "b5D13",
             "isEULAAccepted": true,
             "isNewsEnabled": true,
             "isLabsEnabled": true,
@@ -573,7 +576,7 @@ USERS_RESPONSE_JSON: str = r"""
             "privateUserGroups": [],
             "reportGroups": [
                 {
-                    "id": "bF7C17"
+                    "id": "b6A17"
                 }
             ],
             "securityGroups": [
@@ -611,12 +614,12 @@ USERS_RESPONSE_JSON: str = r"""
             "acceptedEULA": 20,
             "wifiEULA": 0,
             "activeDashboardReports": [
-                "bF7C12",
-                "bF7C23",
-                "bF7C1B",
-                "bF7C20",
-                "bF7C27",
-                "bF7C16"
+                "b71E2",
+                "b71E5",
+                "b71E9",
+                "b71F0",
+                "b71F4",
+                "b71F8"
             ],
             "activeDefaultDashboards": [],
             "jobPriorities": [],
@@ -624,12 +627,12 @@ USERS_RESPONSE_JSON: str = r"""
             "activeFrom": "2026-03-17T15:50:22.363Z",
             "activeTo": "2050-01-01T00:00:00.000Z",
             "availableDashboardReports": [
-                "bF7C12",
-                "bF7C23",
-                "bF7C1B",
-                "bF7C20",
-                "bF7C27",
-                "bF7C16"
+                "b71E2",
+                "b71E5",
+                "b71E9",
+                "b71F0",
+                "b71F4",
+                "b71F8"
             ],
             "cannedResponseOptions": [],
             "changePassword": false,
@@ -663,7 +666,7 @@ USERS_RESPONSE_JSON: str = r"""
             "maxPCDistancePerDay": 0,
             "authorityName": "Example Fleet Services",
             "authorityAddress": "100 Synthetic Blvd Synthetic City CA 00000",
-            "id": "bF7C21",
+            "id": "b5D2A",
             "isEULAAccepted": true,
             "isNewsEnabled": true,
             "isLabsEnabled": true,
@@ -732,14 +735,14 @@ USERS_RESPONSE_JSON: str = r"""
             "acceptedEULA": 20,
             "wifiEULA": 0,
             "activeDashboardReports": [
-                "bF7C12",
-                "bF7C23",
-                "bF7C1B",
-                "bF7C20",
-                "bF7C27",
-                "bF7C16",
-                "bF7C00",
-                "bF7C01"
+                "b71E2",
+                "b71E5",
+                "b71E9",
+                "b71F0",
+                "b71F4",
+                "b71F8",
+                "bFFFFFFFFFFFF9C3D",
+                "bFFFFFFFFFFFF9C4A"
             ],
             "activeDefaultDashboards": [],
             "jobPriorities": [
@@ -765,14 +768,14 @@ USERS_RESPONSE_JSON: str = r"""
             "activeFrom": "2026-06-11T14:32:35.200Z",
             "activeTo": "2050-01-01T00:00:00.000Z",
             "availableDashboardReports": [
-                "bF7C12",
-                "bF7C23",
-                "bF7C1B",
-                "bF7C20",
-                "bF7C27",
-                "bF7C16",
-                "bF7C00",
-                "bF7C01"
+                "b71E2",
+                "b71E5",
+                "b71E9",
+                "b71F0",
+                "b71F4",
+                "b71F8",
+                "bFFFFFFFFFFFF9C3D",
+                "bFFFFFFFFFFFF9C4A"
             ],
             "cannedResponseOptions": [],
             "changePassword": false,
@@ -806,7 +809,7 @@ USERS_RESPONSE_JSON: str = r"""
             "maxPCDistancePerDay": 0,
             "authorityName": "Example Fleet Services",
             "authorityAddress": "100 Synthetic Blvd Synthetic City CA 00000",
-            "id": "bF7C11",
+            "id": "b5D3B",
             "isEULAAccepted": true,
             "isNewsEnabled": true,
             "isLabsEnabled": true,

@@ -488,12 +488,12 @@ class TestGeotabRun:
         snapshot = pl.read_parquet(tmp_path / 'data/geotab/devices/data.parquet')
         assert snapshot.height == 6
         assert set(snapshot['id'].to_list()) == {
-            'bF7C22',
-            'bF7C19',
-            'bF7C24',
-            'bF7C1C',
-            'bF7C25',
-            'bF7C18',
+            'b8E2',
+            'b8E7',
+            'b8F3',
+            'b8F4',
+            'b8F8',
+            'b91C',
         }
         statuses = {(row[0], row[2]) for row in _ledger_rows(tmp_path / 'data')}
         assert ('devices', 'succeeded') in statuses

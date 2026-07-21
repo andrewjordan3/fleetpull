@@ -2,11 +2,12 @@
 
 The offset-pagination page pair (ten complete records), the in-progress
 record, the terminal empty page, and the 30-day range-cap error envelope
--- all Captured from live Motive and scrubbed through the established
-mapping, per the Data Hygiene convention (VIN counters 07-22 continue the
-devices set; coordinates continue at 09; integer ids invented
-per id space, preserving order; driver/vehicle images are equality
-classes -- one raw identity, one image everywhere; the captured
+-- all Captured from live Motive and scrubbed per the Data Hygiene
+convention before commit (ids and VIN counters are pure inventions
+carrying no mapping -- and no order relationship -- to any real
+identifier; coordinates are invented grid values; driver/vehicle
+images are equality classes -- one entity, one invented image
+everywhere it appears, including its idle_events sibling; the captured
 unit-number-is-VIN-tail relation and the space-after-dash
 driver_company_id quirk are preserved; timestamps, durations, kilometers,
 and pagination echoes are VERBATIM -- they carry the arithmetic and
@@ -44,7 +45,7 @@ DRIVING_PERIODS_PAGE_1_RESPONSE_JSON: str = r"""
     "driving_periods": [
         {
             "driving_period": {
-                "id": 4000000010,
+                "id": 4611096104,
                 "start_time": "2026-07-14T23:59:55Z",
                 "end_time": "2026-07-15T00:00:27Z",
                 "status": "complete",
@@ -57,12 +58,12 @@ DRIVING_PERIODS_PAGE_1_RESPONSE_JSON: str = r"""
                 "source": null,
                 "driver": null,
                 "vehicle": {
-                    "id": 500008,
-                    "number": "000014",
+                    "id": 545160,
+                    "number": "000022",
                     "year": "2022",
                     "make": "Kenworth",
                     "model": "Box",
-                    "vin": "4SYNTHV1N00000014",
+                    "vin": "4SYNTHV1N00000022",
                     "metric_units": false
                 },
                 "origin": "101 Synthetic St, Exampleville, AZ 10001",
@@ -80,7 +81,7 @@ DRIVING_PERIODS_PAGE_1_RESPONSE_JSON: str = r"""
         },
         {
             "driving_period": {
-                "id": 4000000009,
+                "id": 4611090833,
                 "start_time": "2026-07-14T23:54:21Z",
                 "end_time": "2026-07-15T00:41:46Z",
                 "status": "complete",
@@ -92,7 +93,7 @@ DRIVING_PERIODS_PAGE_1_RESPONSE_JSON: str = r"""
                 "end_kilometers": 475051.29712,
                 "source": null,
                 "driver": {
-                    "id": 2000006,
+                    "id": 2009523,
                     "first_name": "Synthetic",
                     "last_name": "Driver006",
                     "username": null,
@@ -102,12 +103,12 @@ DRIVING_PERIODS_PAGE_1_RESPONSE_JSON: str = r"""
                     "role": "driver"
                 },
                 "vehicle": {
-                    "id": 500001,
-                    "number": "000007",
+                    "id": 537218,
+                    "number": "000011",
                     "year": "2014",
                     "make": "Kenworth",
                     "model": "Sleeper",
-                    "vin": "4SYNTHV1N00000007",
+                    "vin": "4SYNTHV1N00000011",
                     "metric_units": false
                 },
                 "origin": "103 Synthetic St, Exampleville, MO 10003",
@@ -125,7 +126,7 @@ DRIVING_PERIODS_PAGE_1_RESPONSE_JSON: str = r"""
         },
         {
             "driving_period": {
-                "id": 4000000008,
+                "id": 4611085742,
                 "start_time": "2026-07-14T23:50:06Z",
                 "end_time": "2026-07-14T23:51:34Z",
                 "status": "complete",
@@ -137,7 +138,7 @@ DRIVING_PERIODS_PAGE_1_RESPONSE_JSON: str = r"""
                 "end_kilometers": 288797.36451,
                 "source": null,
                 "driver": {
-                    "id": 2000008,
+                    "id": 2023764,
                     "first_name": "Synthetic",
                     "last_name": "Driver008",
                     "username": null,
@@ -147,12 +148,12 @@ DRIVING_PERIODS_PAGE_1_RESPONSE_JSON: str = r"""
                     "role": "driver"
                 },
                 "vehicle": {
-                    "id": 500004,
-                    "number": "000010",
+                    "id": 526075,
+                    "number": "000023",
                     "year": "2017",
                     "make": "Kenworth",
                     "model": "Box",
-                    "vin": "4SYNTHV1N00000010",
+                    "vin": "4SYNTHV1N00000023",
                     "metric_units": false
                 },
                 "origin": "105 Synthetic St, Exampleville, CA 10005",
@@ -170,7 +171,7 @@ DRIVING_PERIODS_PAGE_1_RESPONSE_JSON: str = r"""
         },
         {
             "driving_period": {
-                "id": 4000000007,
+                "id": 4611079561,
                 "start_time": "2026-07-14T23:49:06Z",
                 "end_time": "2026-07-14T23:56:37Z",
                 "status": "complete",
@@ -182,7 +183,7 @@ DRIVING_PERIODS_PAGE_1_RESPONSE_JSON: str = r"""
                 "end_kilometers": 107341.43219,
                 "source": null,
                 "driver": {
-                    "id": 2000005,
+                    "id": 2076158,
                     "first_name": "Synthetic",
                     "last_name": "Driver005",
                     "username": "synthetic.driver005",
@@ -192,12 +193,12 @@ DRIVING_PERIODS_PAGE_1_RESPONSE_JSON: str = r"""
                     "role": "driver"
                 },
                 "vehicle": {
-                    "id": 500016,
+                    "id": 523590,
                     "number": "R000001",
                     "year": "0",
                     "make": "",
                     "model": "",
-                    "vin": "4SYNTHV1N00000022",
+                    "vin": "4SYNTHV1N00000018",
                     "metric_units": false
                 },
                 "origin": "107 Synthetic St, Exampleville, UT 10007",
@@ -215,7 +216,7 @@ DRIVING_PERIODS_PAGE_1_RESPONSE_JSON: str = r"""
         },
         {
             "driving_period": {
-                "id": 4000000006,
+                "id": 4611074428,
                 "start_time": "2026-07-14T23:47:07Z",
                 "end_time": "2026-07-14T23:47:34Z",
                 "status": "complete",
@@ -228,12 +229,12 @@ DRIVING_PERIODS_PAGE_1_RESPONSE_JSON: str = r"""
                 "source": null,
                 "driver": null,
                 "vehicle": {
-                    "id": 500011,
-                    "number": "000017",
+                    "id": 531856,
+                    "number": "000005",
                     "year": "2024",
                     "make": "PETERBILT",
                     "model": "Box",
-                    "vin": "4SYNTHV1N00000017",
+                    "vin": "4SYNTHV1N00000005",
                     "metric_units": false
                 },
                 "origin": "109 Synthetic St, Exampleville, CA 10009",
@@ -269,7 +270,7 @@ DRIVING_PERIODS_PAGE_2_RESPONSE_JSON: str = r"""
     "driving_periods": [
         {
             "driving_period": {
-                "id": 4000000005,
+                "id": 4611068195,
                 "start_time": "2026-07-14T23:46:14Z",
                 "end_time": "2026-07-15T00:09:53Z",
                 "status": "complete",
@@ -281,7 +282,7 @@ DRIVING_PERIODS_PAGE_2_RESPONSE_JSON: str = r"""
                 "end_kilometers": 156818.15368,
                 "source": null,
                 "driver": {
-                    "id": 2000009,
+                    "id": 2085032,
                     "first_name": "Synthetic",
                     "last_name": "Driver009",
                     "username": null,
@@ -291,12 +292,12 @@ DRIVING_PERIODS_PAGE_2_RESPONSE_JSON: str = r"""
                     "role": "driver"
                 },
                 "vehicle": {
-                    "id": 500005,
-                    "number": "000011",
+                    "id": 561384,
+                    "number": "000006",
                     "year": "2019",
                     "make": "Kenworth",
                     "model": "Vac",
-                    "vin": "4SYNTHV1N00000011",
+                    "vin": "4SYNTHV1N00000006",
                     "metric_units": false
                 },
                 "origin": "111 Synthetic St, Exampleville, TN 10011",
@@ -314,7 +315,7 @@ DRIVING_PERIODS_PAGE_2_RESPONSE_JSON: str = r"""
         },
         {
             "driving_period": {
-                "id": 4000000004,
+                "id": 4611063027,
                 "start_time": "2026-07-14T23:44:49Z",
                 "end_time": "2026-07-14T23:46:02Z",
                 "status": "complete",
@@ -326,7 +327,7 @@ DRIVING_PERIODS_PAGE_2_RESPONSE_JSON: str = r"""
                 "end_kilometers": 359890.72739,
                 "source": null,
                 "driver": {
-                    "id": 2000003,
+                    "id": 2062840,
                     "first_name": "Synthetic",
                     "last_name": "Driver003",
                     "username": "synthetic.driver003",
@@ -336,12 +337,12 @@ DRIVING_PERIODS_PAGE_2_RESPONSE_JSON: str = r"""
                     "role": "driver"
                 },
                 "vehicle": {
-                    "id": 500007,
-                    "number": "000013",
+                    "id": 573941,
+                    "number": "000008",
                     "year": "2020",
                     "make": "Kenworth",
                     "model": "Vac",
-                    "vin": "4SYNTHV1N00000013",
+                    "vin": "4SYNTHV1N00000008",
                     "metric_units": false
                 },
                 "origin": "113 Synthetic St, Exampleville, TX 10013",
@@ -359,7 +360,7 @@ DRIVING_PERIODS_PAGE_2_RESPONSE_JSON: str = r"""
         },
         {
             "driving_period": {
-                "id": 4000000003,
+                "id": 4611057384,
                 "start_time": "2026-07-14T23:37:54Z",
                 "end_time": "2026-07-15T00:25:54Z",
                 "status": "complete",
@@ -371,7 +372,7 @@ DRIVING_PERIODS_PAGE_2_RESPONSE_JSON: str = r"""
                 "end_kilometers": 36975.99106,
                 "source": null,
                 "driver": {
-                    "id": 2000001,
+                    "id": 2047315,
                     "first_name": "Synthetic",
                     "last_name": "Driver001",
                     "username": "010006",
@@ -381,12 +382,12 @@ DRIVING_PERIODS_PAGE_2_RESPONSE_JSON: str = r"""
                     "role": "driver"
                 },
                 "vehicle": {
-                    "id": 500015,
-                    "number": "000021",
+                    "id": 576285,
+                    "number": "000007",
                     "year": "2026",
                     "make": "kenworth",
                     "model": "T880",
-                    "vin": "4SYNTHV1N00000021",
+                    "vin": "4SYNTHV1N00000007",
                     "metric_units": false
                 },
                 "origin": "115 Synthetic St, Exampleville, TN 10015",
@@ -404,7 +405,7 @@ DRIVING_PERIODS_PAGE_2_RESPONSE_JSON: str = r"""
         },
         {
             "driving_period": {
-                "id": 4000000002,
+                "id": 4611052916,
                 "start_time": "2026-07-14T23:34:47Z",
                 "end_time": "2026-07-15T00:20:39Z",
                 "status": "complete",
@@ -416,7 +417,7 @@ DRIVING_PERIODS_PAGE_2_RESPONSE_JSON: str = r"""
                 "end_kilometers": 61309.31122,
                 "source": null,
                 "driver": {
-                    "id": 2000011,
+                    "id": 2068417,
                     "first_name": "Synthetic",
                     "last_name": "Driver011",
                     "username": null,
@@ -426,12 +427,12 @@ DRIVING_PERIODS_PAGE_2_RESPONSE_JSON: str = r"""
                     "role": "driver"
                 },
                 "vehicle": {
-                    "id": 500013,
-                    "number": "000019",
+                    "id": 502647,
+                    "number": "000010",
                     "year": "2024",
                     "make": "MACK",
                     "model": "Box",
-                    "vin": "4SYNTHV1N00000019",
+                    "vin": "4SYNTHV1N00000010",
                     "metric_units": false
                 },
                 "origin": "117 Synthetic St, Exampleville, NV 10017",
@@ -449,7 +450,7 @@ DRIVING_PERIODS_PAGE_2_RESPONSE_JSON: str = r"""
         },
         {
             "driving_period": {
-                "id": 4000000001,
+                "id": 4611048273,
                 "start_time": "2026-07-14T23:34:46Z",
                 "end_time": "2026-07-14T23:52:43Z",
                 "status": "complete",
@@ -461,7 +462,7 @@ DRIVING_PERIODS_PAGE_2_RESPONSE_JSON: str = r"""
                 "end_kilometers": 180700.13719,
                 "source": null,
                 "driver": {
-                    "id": 2000010,
+                    "id": 2040609,
                     "first_name": "Synthetic",
                     "last_name": "Driver010",
                     "username": null,
@@ -471,12 +472,12 @@ DRIVING_PERIODS_PAGE_2_RESPONSE_JSON: str = r"""
                     "role": "driver"
                 },
                 "vehicle": {
-                    "id": 500014,
-                    "number": "000020",
+                    "id": 549373,
+                    "number": "000016",
                     "year": "2024",
                     "make": "KENWORTH",
                     "model": "Oil",
-                    "vin": "4SYNTHV1N00000020",
+                    "vin": "4SYNTHV1N00000016",
                     "metric_units": false
                 },
                 "origin": "119 Synthetic St, Exampleville, AZ 10019",
@@ -511,7 +512,7 @@ DRIVING_PERIODS_PAGE_2_RESPONSE: dict[str, JsonValue] = json.loads(
 # fractional running counter (not end - start).
 DRIVING_PERIOD_IN_PROGRESS_RECORD_JSON: str = r"""
 {
-    "id": 4000000011,
+    "id": 4611102977,
     "start_time": "2026-07-15T19:09:51Z",
     "end_time": null,
     "status": "in_progress",
@@ -523,7 +524,7 @@ DRIVING_PERIOD_IN_PROGRESS_RECORD_JSON: str = r"""
     "end_kilometers": null,
     "source": null,
     "driver": {
-        "id": 2000004,
+        "id": 2031497,
         "first_name": "Synthetic",
         "last_name": "Driver004",
         "username": "synthetic.driver004",
@@ -533,12 +534,12 @@ DRIVING_PERIOD_IN_PROGRESS_RECORD_JSON: str = r"""
         "role": "driver"
     },
     "vehicle": {
-        "id": 500012,
-        "number": "000018",
+        "id": 558019,
+        "number": "000024",
         "year": "2024",
         "make": "MACK",
         "model": "Box",
-        "vin": "4SYNTHV1N00000018",
+        "vin": "4SYNTHV1N00000024",
         "metric_units": false
     },
     "origin": "121 Synthetic St, Exampleville, OH 10021",

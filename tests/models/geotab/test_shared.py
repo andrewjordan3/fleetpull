@@ -110,10 +110,10 @@ class TestBareIdToReference:
     def test_bare_string_becomes_the_reference_id_verbatim(self) -> None:
         assert bare_id_to_reference('UnknownDriverId') == {'id': 'UnknownDriverId'}
         # Structural, sentinel-agnostic: any bare string lifts.
-        assert bare_id_to_reference('bF7C1A') == {'id': 'bF7C1A'}
+        assert bare_id_to_reference('b4B82') == {'id': 'b4B82'}
 
     def test_object_form_passes_through_untouched(self) -> None:
-        reference: JsonValue = {'id': 'bF7C1A', 'isDriver': True}
+        reference: JsonValue = {'id': 'b4B82', 'isDriver': True}
         assert bare_id_to_reference(reference) is reference
 
     def test_none_passes_through(self) -> None:

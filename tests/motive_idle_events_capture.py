@@ -2,8 +2,11 @@
 
 One full page (five records) and the single-record ``per_page: 1`` page
 carrying the ``rg_match: false`` shape -- all Captured from live Motive
-and scrubbed through the Data Hygiene convention, per the Data Hygiene convention
-(the same session and id spaces as ``motive_driving_periods_capture``;
+and scrubbed per the Data Hygiene convention before commit (ids and
+VIN counters are pure inventions carrying no mapping -- and no order
+relationship -- to any real identifier; entities shared with
+``motive_driving_periods_capture`` keep one invented image each, the
+cross-set equality class being the property under test;
 the ELD serial arm ``AABL36SYN0000N`` is new with this set; timestamps,
 fuel counters, reverse-geocode numerics, and pagination echoes are
 VERBATIM). The capture used ``per_page: 5`` (production 100).
@@ -38,7 +41,7 @@ IDLE_EVENTS_PAGE_1_RESPONSE_JSON: str = r"""
     "idle_events": [
         {
             "idle_event": {
-                "id": 5000000002,
+                "id": 5723110251,
                 "start_time": "2026-07-13T04:28:49Z",
                 "end_time": "2026-07-13T05:58:56Z",
                 "veh_fuel_start": 365757.53125,
@@ -52,7 +55,7 @@ IDLE_EVENTS_PAGE_1_RESPONSE_JSON: str = r"""
                 "rg_match": true,
                 "end_type": "engine_stop",
                 "driver": {
-                    "id": 2000002,
+                    "id": 2018276,
                     "first_name": "Synthetic",
                     "last_name": "Driver002",
                     "username": null,
@@ -62,16 +65,16 @@ IDLE_EVENTS_PAGE_1_RESPONSE_JSON: str = r"""
                     "role": "driver"
                 },
                 "vehicle": {
-                    "id": 500002,
-                    "number": "000008",
+                    "id": 514902,
+                    "number": "000019",
                     "year": "2012",
                     "make": "Kenworth",
                     "model": "Sleeper",
-                    "vin": "4SYNTHV1N00000008",
+                    "vin": "4SYNTHV1N00000019",
                     "metric_units": false
                 },
                 "eld_device": {
-                    "id": 900003,
+                    "id": 951273,
                     "identifier": "AABL36SYN00003",
                     "model": "lbb-3.6ca"
                 },
@@ -80,7 +83,7 @@ IDLE_EVENTS_PAGE_1_RESPONSE_JSON: str = r"""
         },
         {
             "idle_event": {
-                "id": 5000000003,
+                "id": 5723116839,
                 "start_time": "2026-07-13T07:01:07Z",
                 "end_time": "2026-07-13T07:05:53Z",
                 "veh_fuel_start": 365764.46875,
@@ -94,7 +97,7 @@ IDLE_EVENTS_PAGE_1_RESPONSE_JSON: str = r"""
                 "rg_match": true,
                 "end_type": "vehicle_moving",
                 "driver": {
-                    "id": 2000002,
+                    "id": 2018276,
                     "first_name": "Synthetic",
                     "last_name": "Driver002",
                     "username": null,
@@ -104,16 +107,16 @@ IDLE_EVENTS_PAGE_1_RESPONSE_JSON: str = r"""
                     "role": "driver"
                 },
                 "vehicle": {
-                    "id": 500002,
-                    "number": "000008",
+                    "id": 514902,
+                    "number": "000019",
                     "year": "2012",
                     "make": "Kenworth",
                     "model": "Sleeper",
-                    "vin": "4SYNTHV1N00000008",
+                    "vin": "4SYNTHV1N00000019",
                     "metric_units": false
                 },
                 "eld_device": {
-                    "id": 900003,
+                    "id": 951273,
                     "identifier": "AABL36SYN00003",
                     "model": "lbb-3.6ca"
                 },
@@ -122,7 +125,7 @@ IDLE_EVENTS_PAGE_1_RESPONSE_JSON: str = r"""
         },
         {
             "idle_event": {
-                "id": 5000000004,
+                "id": 5723121904,
                 "start_time": "2026-07-13T07:07:54Z",
                 "end_time": "2026-07-13T07:16:16Z",
                 "veh_fuel_start": 23494.359375,
@@ -137,16 +140,16 @@ IDLE_EVENTS_PAGE_1_RESPONSE_JSON: str = r"""
                 "end_type": "engine_stop",
                 "driver": null,
                 "vehicle": {
-                    "id": 500003,
-                    "number": "000009",
+                    "id": 552847,
+                    "number": "000004",
                     "year": "2014",
                     "make": "Kenworth",
                     "model": "Daycab",
-                    "vin": "4SYNTHV1N00000009",
+                    "vin": "4SYNTHV1N00000004",
                     "metric_units": false
                 },
                 "eld_device": {
-                    "id": 900004,
+                    "id": 908964,
                     "identifier": "AABL36SYN00004",
                     "model": "lbb-3.6ca"
                 },
@@ -155,7 +158,7 @@ IDLE_EVENTS_PAGE_1_RESPONSE_JSON: str = r"""
         },
         {
             "idle_event": {
-                "id": 5000000005,
+                "id": 5723128366,
                 "start_time": "2026-07-13T07:37:44Z",
                 "end_time": "2026-07-13T07:39:58Z",
                 "veh_fuel_start": 143072.703125,
@@ -170,16 +173,16 @@ IDLE_EVENTS_PAGE_1_RESPONSE_JSON: str = r"""
                 "end_type": "engine_stop",
                 "driver": null,
                 "vehicle": {
-                    "id": 500009,
-                    "number": "000015",
+                    "id": 519728,
+                    "number": "000003",
                     "year": "2018",
                     "make": "Kenworth",
                     "model": "Daycab",
-                    "vin": "4SYNTHV1N00000015",
+                    "vin": "4SYNTHV1N00000003",
                     "metric_units": false
                 },
                 "eld_device": {
-                    "id": 900001,
+                    "id": 934182,
                     "identifier": "AABL36SYN00001",
                     "model": "lbb-3.6ca"
                 },
@@ -188,7 +191,7 @@ IDLE_EVENTS_PAGE_1_RESPONSE_JSON: str = r"""
         },
         {
             "idle_event": {
-                "id": 5000000006,
+                "id": 5723134072,
                 "start_time": "2026-07-13T06:34:33Z",
                 "end_time": "2026-07-13T07:45:04Z",
                 "veh_fuel_start": 225542.4375,
@@ -202,7 +205,7 @@ IDLE_EVENTS_PAGE_1_RESPONSE_JSON: str = r"""
                 "rg_match": true,
                 "end_type": "vehicle_moving",
                 "driver": {
-                    "id": 2000007,
+                    "id": 2054981,
                     "first_name": "Synthetic",
                     "last_name": "Driver007",
                     "username": "synthetic.driver007",
@@ -212,16 +215,16 @@ IDLE_EVENTS_PAGE_1_RESPONSE_JSON: str = r"""
                     "role": "driver"
                 },
                 "vehicle": {
-                    "id": 500010,
-                    "number": "000016",
+                    "id": 567402,
+                    "number": "000012",
                     "year": "2019",
                     "make": "Peterbilt",
                     "model": "Daycab",
-                    "vin": "4SYNTHV1N00000016",
+                    "vin": "4SYNTHV1N00000012",
                     "metric_units": false
                 },
                 "eld_device": {
-                    "id": 900002,
+                    "id": 917506,
                     "identifier": "AABL36SYN00002",
                     "model": "lbb-3.6ca"
                 },
@@ -250,7 +253,7 @@ IDLE_EVENTS_SINGLE_PAGE_RESPONSE_JSON: str = r"""
     "idle_events": [
         {
             "idle_event": {
-                "id": 5000000001,
+                "id": 5723104468,
                 "start_time": "2026-06-01T05:14:05Z",
                 "end_time": "2026-06-01T05:17:54Z",
                 "veh_fuel_start": 2369.837890625,
@@ -265,16 +268,16 @@ IDLE_EVENTS_SINGLE_PAGE_RESPONSE_JSON: str = r"""
                 "end_type": "engine_stop",
                 "driver": null,
                 "vehicle": {
-                    "id": 500006,
-                    "number": "000012",
+                    "id": 508293,
+                    "number": "000015",
                     "year": "2015",
                     "make": "Kenworth",
                     "model": "Box",
-                    "vin": "4SYNTHV1N00000012",
+                    "vin": "4SYNTHV1N00000015",
                     "metric_units": false
                 },
                 "eld_device": {
-                    "id": 900005,
+                    "id": 942735,
                     "identifier": "AABL36SYN00005",
                     "model": "lbb-3.6ca"
                 },

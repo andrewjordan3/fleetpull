@@ -8,11 +8,12 @@ fully-loaded record, the ``staticAssignedDriver`` carrier, the
 continuation-page envelope and the captured TERMINAL pagination shape:
 ``hasNextPage: false`` beside an EMPTY-STRING ``endCursor`` (not
 absent, not null). Captured from live Samsara and scrubbed per the Data
-Hygiene convention before commit (synthetic ids with their prefixes and
-ascending order preserved, unit names, serials with the gateway's
-dashed 4-3-3 twin and the serial/externalIds equality classes intact,
-VINs on the established 4SYNTHV1N arm, plates, ESNs in both captured
-shapes, driver, tag ids/names with the shared-parent equality class and
+Hygiene convention before commit (ids are pure inventions -- their
+ascending order is the cursor-walk wire property under test, never a
+mapping to real ids -- unit names invented, serials invented with the
+gateway's dashed 4-3-3 twin and the serial/externalIds equality
+classes intact, VINs invented on the 4SYNTHV1N family with no mapping
+to any real VIN, plates, ESNs in both captured shapes, driver, tag ids/names with the shared-parent equality class and
 the double-space quirk; makes/models/years, timestamps, empty-string
 ``notes``, and the settings vocabulary VERBATIM).
 
@@ -63,7 +64,7 @@ VEHICLES_PAGE_RESPONSE_JSON: str = r"""
             "cameraSerial": "GCAM-AAA-001",
             "externalIds": {
                 "samsara.serial": "GSYNAAA001",
-                "samsara.vin": "4SYNTHV1N00000023"
+                "samsara.vin": "4SYNTHV1N00000014"
             },
             "gateway": {
                 "serial": "GSYN-AAA-001",
@@ -84,7 +85,7 @@ VEHICLES_PAGE_RESPONSE_JSON: str = r"""
                     "parentTagId": "3000000"
                 }
             ],
-            "vin": "4SYNTHV1N00000023",
+            "vin": "4SYNTHV1N00000014",
             "year": "2013",
             "vehicleRegulationMode": "unregulated",
             "createdAtTime": "2019-09-13T22:32:39Z",
@@ -94,7 +95,7 @@ VEHICLES_PAGE_RESPONSE_JSON: str = r"""
             "cameraSerial": "GCAM-AAA-002",
             "externalIds": {
                 "samsara.serial": "GSYNAAA002",
-                "samsara.vin": "4SYNTHV1N00000024"
+                "samsara.vin": "4SYNTHV1N00000001"
             },
             "gateway": {
                 "serial": "GSYN-AAA-002",
@@ -119,7 +120,7 @@ VEHICLES_PAGE_RESPONSE_JSON: str = r"""
                     "parentTagId": "2900000"
                 }
             ],
-            "vin": "4SYNTHV1N00000024",
+            "vin": "4SYNTHV1N00000001",
             "year": "2015",
             "vehicleRegulationMode": "regulated",
             "createdAtTime": "2021-07-10T20:11:13Z",
@@ -131,7 +132,7 @@ VEHICLES_PAGE_RESPONSE_JSON: str = r"""
             "cameraSerial": "GCAM-AAA-003",
             "externalIds": {
                 "samsara.serial": "GSYNAAA003",
-                "samsara.vin": "4SYNTHV1N00000025"
+                "samsara.vin": "4SYNTHV1N00000020"
             },
             "gateway": {
                 "serial": "GSYN-AAA-003",
@@ -152,7 +153,7 @@ VEHICLES_PAGE_RESPONSE_JSON: str = r"""
                     "parentTagId": "2900000"
                 }
             ],
-            "vin": "4SYNTHV1N00000025",
+            "vin": "4SYNTHV1N00000020",
             "year": "2019",
             "vehicleRegulationMode": "regulated",
             "createdAtTime": "2021-07-21T01:17:51Z",
@@ -179,7 +180,7 @@ VEHICLES_TERMINAL_RESPONSE_JSON: str = r"""
             "cameraSerial": "GCAM-AAA-003",
             "externalIds": {
                 "samsara.serial": "GSYNAAA003",
-                "samsara.vin": "4SYNTHV1N00000025"
+                "samsara.vin": "4SYNTHV1N00000020"
             },
             "gateway": {
                 "serial": "GSYN-AAA-003",
@@ -200,7 +201,7 @@ VEHICLES_TERMINAL_RESPONSE_JSON: str = r"""
                     "parentTagId": "2900000"
                 }
             ],
-            "vin": "4SYNTHV1N00000025",
+            "vin": "4SYNTHV1N00000020",
             "year": "2019",
             "vehicleRegulationMode": "regulated",
             "createdAtTime": "2021-07-21T01:17:51Z",

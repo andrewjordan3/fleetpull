@@ -54,7 +54,7 @@ def _vehicle_block(**overrides: str) -> dict[str, JsonValue]:
         'year': '2022',
         'make': 'Kenworth',
         'model': 'Box',
-        'vin': '4SYNTHV1N00000001',
+        'vin': '4SYNTHV1N00000017',
         'metric_units': False,
     }
     block.update(overrides)
@@ -65,7 +65,7 @@ class TestVehicleSummary:
     def test_validates_and_aliases_id(self) -> None:
         vehicle: VehicleSummary = VehicleSummary.model_validate(_vehicle_block())
         assert vehicle.vehicle_id == _VEHICLE_ID
-        assert vehicle.vin == '4SYNTHV1N00000001'
+        assert vehicle.vin == '4SYNTHV1N00000017'
 
     def test_quoted_year_coerces_to_int(self) -> None:
         vehicle = VehicleSummary.model_validate(_vehicle_block(year='2022'))
