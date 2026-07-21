@@ -122,12 +122,13 @@ providers:
       - gps_readings
       - odometer_readings
       - asset_locations
+      - driver_vehicle_assignments
 
     # base_url: https://api.samsara.com    # optional; Samsara's production host
 
     # Per-provider window knobs for watermark endpoints (Samsara trips,
-    # idling_events, the vehicle-stats triple, and asset_locations), in
-    # whole days.
+    # idling_events, the vehicle-stats triple, asset_locations, and
+    # driver_vehicle_assignments), in whole days.
     # Optional overrides: a key set here beats sync's package-wide
     # value, which beats this default.
     # lookback_days: 7
