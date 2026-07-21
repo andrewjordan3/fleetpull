@@ -15,6 +15,12 @@ from fleetpull.models.samsara.driver import (
     DriverStaticAssignedVehicleRef,
     DriverTagRef,
 )
+from fleetpull.models.samsara.engine_state import EngineState
+from fleetpull.models.samsara.gps_reading import (
+    GpsReading,
+    GpsReadingAddressRef,
+    GpsReadingReverseGeo,
+)
 from fleetpull.models.samsara.idling_event import (
     AssetRef,
     FuelCost,
@@ -22,6 +28,7 @@ from fleetpull.models.samsara.idling_event import (
     IdlingEvent,
     OperatorRef,
 )
+from fleetpull.models.samsara.odometer_reading import OdometerReading
 from fleetpull.models.samsara.trip import (
     Trip,
     TripAddress,
@@ -46,9 +53,14 @@ __all__: list[str] = [
     'DriverHosSetting',
     'DriverStaticAssignedVehicleRef',
     'DriverTagRef',
+    'EngineState',
     'FuelCost',
+    'GpsReading',
+    'GpsReadingAddressRef',
+    'GpsReadingReverseGeo',
     'IdlingAddress',
     'IdlingEvent',
+    'OdometerReading',
     'OperatorRef',
     'Trip',
     'TripAddress',
