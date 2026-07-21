@@ -1,6 +1,6 @@
 # fleetpull — Design Document
 
-**Status:** Design settled through the two-verb public API (§10) and config-driven sync. Shipped end-to-end: the `fetch` API; `Sync(config_path).run()`; the yaml-run CLI (`fleetpull sync <config>`) and the per-endpoint `metadata.json` projection (both 2026-07-17); work-unit planning with crash resume, the three-grain concurrency ladder, and the per-provider fan-out executor; and the full endpoint inventory ENDPOINTS.md tracks as the manifest of record — the Motive and Samsara legacy waves are COMPLETE (2026-07-21), and the GeoTab `Get` verticals ship beside the feed wave below. The GeoTab feed MACHINERY is built in full (2026-07-21: the append-log storage cell, the kind-guarded token commit, the per-page feed drive, the `GEOTAB_FEED` rate class, the shared `GetFeed` spec builder, and the `FeedEndpoint` catalog identity — §3/§4/§5/§14); feed wave one shipped 2026-07-21 (`log_records`, `status_data`, `fill_ups`, `fuel_and_energy_used`, `fuel_tax_details` — the first APPEND_LOG datasets); waves two and three queue in ENDPOINTS.md, and trips ships windowed until its feed vertical lands (§8). See §15 for run status and the build roadmap.
+**Status:** Design settled through the two-verb public API (§10) and config-driven sync. Shipped end-to-end: the `fetch` API; `Sync(config_path).run()`; the yaml-run CLI (`fleetpull sync <config>`) and the per-endpoint `metadata.json` projection (both 2026-07-17); work-unit planning with crash resume, the three-grain concurrency ladder, and the per-provider fan-out executor; and the full endpoint inventory ENDPOINTS.md tracks as the manifest of record — the Motive and Samsara legacy waves are COMPLETE (2026-07-21), and the GeoTab `Get` verticals ship beside the feed wave below. The GeoTab feed MACHINERY is built in full (2026-07-21: the append-log storage cell, the kind-guarded token commit, the per-page feed drive, the `GEOTAB_FEED` rate class, the shared `GetFeed` spec builder, and the `FeedEndpoint` catalog identity — §3/§4/§5/§14); feed wave one shipped 2026-07-21 (`log_records`, `status_data`, `fill_ups`, `fuel_and_energy_used`, `fuel_tax_details` — the first APPEND_LOG datasets); feed wave two shipped 2026-07-21 (`fault_data`, `duty_status_logs`, `driver_changes`, `dvir_logs` — the Tier 1 entities, again zero machinery changes); wave three queues in ENDPOINTS.md, and trips ships windowed until its feed vertical lands (§8). See §15 for run status and the build roadmap.
 **Name:** `fleetpull` — final. Describes exactly what the package does and nothing more (PyPI availability confirmed 2026-06-10).
 **Relationship to fleet-telemetry-hub:** New package, not a rewrite. fleet-telemetry-hub remains in production untouched while fleetpull is built.
 
@@ -2325,6 +2325,110 @@ shapes.
    `event_time_column='enter_time'` — the segment materializes where
    it begins; the other four anchor `date_time`.
 
+### GeoTab feed wave two probe-settled decisions (2026-07-21)
+
+Settled by the 2026-07-21 census session (30-day seeded `GetFeed` pulls
+— the captured rows below; presence counted over the walked
+population, nested blocks sampled at 200); the `fault_data` /
+`duty_status_logs` / `driver_changes` / `dvir_logs` verticals (the
+Tier 1 feed queue) implement them. ALL censuses here are TENANT-SCOPED
+observations (the port discipline's standing rule): they prove the
+probed account's shapes and surface behavior at capture time, never
+data semantics and never other tenants' shapes. Seeding via
+`search.fromDate` was wire-proven on all four types at census time.
+
+1. **Zero shared-machinery changes, again.** Each leaf is the wave-one
+   declaration set verbatim: `FeedMode` + `StorageKind.APPEND_LOG` +
+   `event_time_column='date_time'`, the shared
+   `GeotabGetFeedSpecBuilder` (per-leaf `typeName` and `resultsLimit`
+   only), the shared `GeotabFeedPageDecoder`, and
+   `QuotaScope.GEOTAB_FEED`. The one shared-MODEL addition is the
+   nested-location pair (decision 6) — a model shape, not machinery.
+2. **The wave-two conservative requiredness posture.** Unlike wave
+   one's whole-page-total censuses, these four surfaces carry
+   partial-presence keys (the rare quartet, the DVIR device trio,
+   `annotations`), so requiredness is STRUCTURAL only: `id`,
+   `dateTime` (the event-time identity), `version` where the type
+   carries it, and the primary entity ref — `device` on FaultData;
+   `driver` on DutyStatusLog, DriverChange, and DVIRLog (DVIRLog's
+   `device` is 205/500 and could not be it). Everything else is
+   optional EVEN where census-total: a tenant census cannot promise
+   another tenant's presence.
+3. **Every reference field rides `bare_id_to_reference` — including
+   census-object-only refs.** The StatusData census-scope lesson (the
+   wave one block) applied at build time: a tenant census cannot prove
+   the string arm absent, and the lift is structural and
+   sentinel-agnostic. The census PROVED the mixed arm on
+   FaultData.`failureMode`, DutyStatusLog.`device`/`driver`
+   (2,000/2,000 each, both arms observed), and DriverChange.`driver`
+   (1,114/1,114, the object arm carrying `isDriver`) — those get
+   both-arm test coverage; the object-only refs (controller,
+   diagnostic, the DVIR trio, and kin) get the defensive lift plus a
+   test of the lift.
+4. **The version split.** FaultData carries NO per-record `version` —
+   the LogRecord asymmetry: append-only-complete, reconciled by `id`
+   alone. DutyStatusLog (an EDITABLE log — `editDateTime` is the edit
+   trail), DriverChange (user-editable assignment events), and DVIRLog
+   (certified and edited after creation) all carry `version` and
+   reconcile `(id, max version)`.
+5. **The DutyStatusLog `annotations` id-list reduction.** Census
+   elements carried ONLY `{id}` (200/200 sampled; 126/2,000 presence).
+   The records layer supports list[scalar] only (list-of-model rejects
+   loudly), so `annotations` is `list[str]` via a STRICT per-element
+   lift: a bare string passes, an element that is EXACTLY
+   `{'id': <str>}` becomes its id, and ANYTHING else raises — a shape
+   change must fail, never silently drop sibling keys. The ids join
+   the `annotation_logs` vertical (feed wave three) for the full
+   annotation records. The lift lives in the model module (one
+   consumer today; it moves beside `bare_id_to_reference` only if
+   made generic).
+6. **The nested-location promotion.** The double-nested
+   `{location: {x, y}}` wire shape appeared IDENTICALLY on
+   DutyStatusLog (1,859/2,000) and DVIRLog (496/500) — two consumers
+   at birth, the second-consumer threshold — so the
+   `GeotabAddressedLocation` / `GeotabCoordinate` pair lives in
+   `models/geotab/shared.py`. GeoTab's `x` is LONGITUDE and `y` is
+   LATITUDE, recorded on the model.
+7. **The DVIRLog `defectList.children` documented exclusion — beside
+   the rare-quartet inclusion.** `defectList` is a wire-plural name
+   over ONE node `{children, id, name}`; `children` was an EMPTY list
+   on all 200 sampled `defectList` nodes (the nested-block sample
+   depth; `defectList` itself present 500/500), its element shape
+   unobservable at this tenant, and the records layer deliberately
+   supports only observable shapes — excluded from the model, absorbed
+   wire-side by
+   `extra='ignore'` (pinned: a record with populated children still
+   validates, never crashes). REVISIT when a tenant shows populated
+   children. By contrast, FaultData's rare quartet
+   (`diagnosticSeverity` str / `riskOfBreakdown` float / `severity`
+   str / `sourceAddress` int; 2/2,000 each) stays IN the model as
+   optional scalars — an observed shape is modeled however rare; only
+   the unobservable is excluded. `faultStates` likewise mirrors as a
+   nested model despite its plural wire name (one `{effectiveStatus}`
+   object on every one of the 200 sampled `faultStates` blocks; the
+   key itself present 2,000/2,000).
+8. **Cross-surface dtypes and verbatim mirrors.** Mixed int-or-float
+   wire numerics model `float`. DVIRLog `engineHours` was int-only on
+   its 205 carriers but models `float` anyway: its sibling surface
+   (DutyStatusLog) proved the same physical quantity mixed, and
+   cross-surface dtype consistency beats a thin single-surface census.
+   DVIR `duration` is an opaque duration STRING mirrored verbatim —
+   NOT parsed through `GeotabTimeSpan` despite `Trip.duration` doing
+   so: the census observed only the wire type (`str`), never the value
+   format, and the strict TimeSpan parser would crash every record on
+   an unobserved format that differs (contrast Trip's probe-confirmed
+   grammar). The conservative mirror holds until a probe settles the
+   format. Every vocabulary-ish key (`faultState`,
+   `effectiveStatus`, `deferralStatus`, `malfunction`, `origin`,
+   `state`, `status`, `type`, `logType`) is census-open — plain strs,
+   never enums.
+9. **All four declare the 50,000 protocol-maximum `resultsLimit`.**
+   The docs list no lower per-type cap for these types (verified
+   against the GetFeed reference 2026-07-21), and the census pulls
+   used small limits, which prove nothing about caps — the FillUp
+   dual-provenance lesson's other arm: absent a documented lower cap
+   and absent probe evidence either way, the protocol maximum stands.
+
 ### The exception hierarchy (implemented: `exceptions.py`)
 
 The operational errors consumers catch, mirroring the classification
@@ -2408,6 +2512,10 @@ budgets → `RetriesExhaustedError`, failed auth paths →
 | GeoTab | FillUp feed census (100/100 every key, no nulls): `confidence` a comma-joined detection-method token list as ONE str (e.g. `'FuelLevel, TripStop'`); `cost` 0.0 on ALL records and `fuelTransactions` an EMPTY list on ALL records (the estimates-only tenant — the list excluded as value-unobservable); `currencyCode` str; `dateTime` the event time; `derivedVolume` MIXED int\|float with an observed `-1.0` sentinel, mirrored verbatim; `device {id}`; `distance` int\|float; `driver` object-or-`"UnknownDriverId"` (87/100 the `{id, isDriver}` ref — the Trip string-or-object mechanism); `id`; `location {x, y}` floats; `odometer` int\|float; `productType` `'Unknown'` on all (census-open); `tankCapacity {source: str (EstimateFuelLevel/DiagnosticTankCapacity/Unknown — census-open), volume: int\|float}`; `tankLevelExtrema {maximaPoint/minimaPoint {source, dateTime, data}}`; `totalFuelUsed` float; `version` str; `volume` int\|float. `resultsLimit`: 10,000 is the DOCUMENTED cap; a 50,000 request was ACCEPTED at the tenant's whole 380-record population — the cap unprobeable, the documented figure declared (captured 2026-07-21). |
 | GeoTab | FuelAndEnergyUsed feed census (2,000/2,000 every key, no nulls): `confidence` str (`'None'` 1,994/2,000, `'FuelUsedInconsistent'` 6 — census-open), `dateTime` (the event time), `device {id}`, `id`, `totalFuelUsed` int\|float, `totalIdlingFuelUsedL` int\|float, `version` str. **`FuelUsed` observed IDENTICAL to this surface** — same ids, same values, week-wide — and provider-documented as its predecessor: `FuelUsed` is not ported (captured 2026-07-21). |
 | GeoTab | FuelTaxDetail feed census (every key on all sampled records, 100–300 per key, no nulls): `authority`/`jurisdiction` strs (census-open); `device {id}`; `driver` object-or-`"UnknownDriverId"`; enter/exit `GpsOdometer` floats, `Odometer` int\|float, `Latitude`/`Longitude` floats, `enterTime`/`exitTime` RFC3339 strs (`enterTime` the event time — the segment materializes where it begins); `hasHourlyData` bool beside five hourly arrays (`hourlyGpsOdometer`/`hourlyLatitude`/`hourlyLongitude` list[float], `hourlyIsOdometerInterpolated` list[bool], `hourlyOdometer` list[int\|float]) which may ALL be EMPTY lists — present, zero elements; four odometer/interp/negligible booleans; `id`; and `versions` — a LIST of 16-hex component version tokens, this type's version identity. `resultsLimit` 50,000 (captured 2026-07-21). |
+| GeoTab | FaultData feed census (2,000 walked, 30-day seeded pull; nested blocks sampled at 200): census-total `amberWarningLamp`/`malfunctionLamp`/`protectWarningLamp`/`redStopLamp` (bools), `controller`/`device`/`diagnostic` (`{id}` objects), `count` (int), `dateTime` (the event time), `failureMode` (MIXED `{id}`-object-or-string), `faultState` (str), `faultStates` (`{effectiveStatus: str}` — a plural wire name over ONE object), `id`; the rare quartet `diagnosticSeverity` (str) / `riskOfBreakdown` (float) / `severity` (str) / `sourceAddress` (int) on 2/2,000 each. NO per-record `version` — the second active no-version feed beside LogRecord (captured 2026-07-21). |
+| GeoTab | DutyStatusLog feed census (2,000 walked, 30-day seeded pull): census-total `dateTime` (the event time), `deferralMinutes` (int), `deferralStatus`, `device` (MIXED object-or-string), `driver` (MIXED object-or-string), `editDateTime`, `eventRecordStatus` (int), `id`, `isIgnored`/`isTransitioning` (bools), `malfunction`/`origin`/`state`/`status` (strs), `version`; partial-presence `annotations` 126/2,000 (elements EXACTLY `{id}`, 200/200 sampled), `distanceSinceValidCoordinates` 308 (int\|float), `engineHours` 1,844 (int\|float), `eventCode` 1,623 (int), `eventType` 1,753 (int), `location` 1,859 (`{location: {x, y}}`), `odometer` 1,863 (int\|float), `sequence` 1,753 (str), `verifyDateTime` 765 (captured 2026-07-21). |
+| GeoTab | DriverChange feed census (1,114 walked, 30-day seeded pull; six keys, all census-total): `dateTime` (the event time), `device` (`{id}` object), `driver` (MIXED `{id, isDriver: bool}`-object-or-string), `id`, `type` (census-open str), `version` (captured 2026-07-21). |
+| GeoTab | DVIRLog feed census (500 walked, 30-day seeded pull): census-total `authorityAddress`/`authorityName`/`certifyRemark`/`driverRemark` (strs), `dateTime` (the event time), `defectList` (`{children, id, name}` — `children` an EMPTY list on ALL 500), `driver` (`{id}`), `duration` (an opaque duration str), `id`, `isInspectedByDriver` (bool), `logType` (str), `version`; partial-presence `device` (`{id}`) / `engineHours` (int-only on carriers) / `odometer` (float) at 205/500 each, `location` 496/500 (`{location: {x, y}}`), `trailer` (`{id}`) 295/500 (captured 2026-07-21). |
 | Samsara | 429 with fractional `Retry-After` (e.g. `0.40235`); 401 body is `{"message": ...}`; 5xx bodies are plain strings, never JSON. |
 | Samsara | Success responses carry NO rate-limit headers (`Date`/`Content-Type`/`Content-Length`/`Connection`/`Request-Id`/`Strict-Transport-Security` only) — the Motive posture: the real budget is unobservable outside a 429, so the config's self-limiting default carries the load. `Request-Id` is the support correlation handle (captured 2026-07-17). |
 | Samsara | `/fleet/vehicles` cursor mechanics proven live: the `after` advance continued across a real page boundary with no overlap or loss (ids ascend numerically straight across it), a fresh `endCursor` per page, and the TERMINAL page carries `hasNextPage: false` beside an EMPTY-STRING `endCursor` — not absent, not null — the shape the decoder's promised-continuation guard is calibrated against. The documented 512 `limit` maximum was honored exactly (608-vehicle fleet: 512 + 96) (captured 2026-07-17). |
@@ -3978,6 +4086,14 @@ resolution (item 1, done).
    on the fuel three, the `FuelUsed` non-port, the FillUp 10,000
    documented-cap dual provenance, and ZERO shared-machinery changes —
    the machinery's first vertical wave landed on declarations alone.*
+   **GeoTab feed wave two shipped 2026-07-21** — the four Tier 1 feed
+   entities (`fault_data`, `duty_status_logs`, `driver_changes`,
+   `dvir_logs`) per their §8 decision block: the wave-two conservative
+   requiredness posture (structural identity required, everything else
+   optional even census-total), the strict DutyStatusLog annotations
+   id-list, the DVIRLog `defectList.children` documented exclusion,
+   the shared nested-location pair promoted into
+   `models/geotab/shared.py`, and again ZERO shared-machinery changes.
    The per-endpoint
    inventory and port queue are tracked in `ENDPOINTS.md` (added
    2026-07-17), updated in the same change as any endpoint addition.

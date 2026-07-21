@@ -2,12 +2,37 @@
 """GeoTab response models; the face re-exports each endpoint module's models."""
 
 from fleetpull.models.geotab.device import CustomFeatures, Device, DeviceFlags
+from fleetpull.models.geotab.driver_change import (
+    DriverChange,
+    DriverChangeDeviceRef,
+    DriverChangeDriverRef,
+)
+from fleetpull.models.geotab.duty_status_log import (
+    DutyStatusLog,
+    DutyStatusLogDeviceRef,
+    DutyStatusLogDriverRef,
+)
+from fleetpull.models.geotab.dvir_log import (
+    DvirLog,
+    DvirLogDefectList,
+    DvirLogDeviceRef,
+    DvirLogDriverRef,
+    DvirLogTrailerRef,
+)
 from fleetpull.models.geotab.exception_event import (
     ExceptionEvent,
     ExceptionEventDeviceRef,
     ExceptionEventDiagnosticRef,
     ExceptionEventDriverRef,
     ExceptionEventRuleRef,
+)
+from fleetpull.models.geotab.fault_data import (
+    FaultData,
+    FaultDataControllerRef,
+    FaultDataDeviceRef,
+    FaultDataDiagnosticRef,
+    FaultDataFailureModeRef,
+    FaultDataFaultStates,
 )
 from fleetpull.models.geotab.fill_up import (
     FillUp,
@@ -29,6 +54,8 @@ from fleetpull.models.geotab.fuel_tax_detail import (
 )
 from fleetpull.models.geotab.log_record import LogRecord, LogRecordDeviceRef
 from fleetpull.models.geotab.shared import (
+    GeotabAddressedLocation,
+    GeotabCoordinate,
     GeotabTimeSpan,
     bare_id_to_reference,
     parse_timespan,
@@ -50,11 +77,28 @@ __all__: list[str] = [
     'CustomFeatures',
     'Device',
     'DeviceFlags',
+    'DriverChange',
+    'DriverChangeDeviceRef',
+    'DriverChangeDriverRef',
+    'DutyStatusLog',
+    'DutyStatusLogDeviceRef',
+    'DutyStatusLogDriverRef',
+    'DvirLog',
+    'DvirLogDefectList',
+    'DvirLogDeviceRef',
+    'DvirLogDriverRef',
+    'DvirLogTrailerRef',
     'ExceptionEvent',
     'ExceptionEventDeviceRef',
     'ExceptionEventDiagnosticRef',
     'ExceptionEventDriverRef',
     'ExceptionEventRuleRef',
+    'FaultData',
+    'FaultDataControllerRef',
+    'FaultDataDeviceRef',
+    'FaultDataDiagnosticRef',
+    'FaultDataFailureModeRef',
+    'FaultDataFaultStates',
     'FillUp',
     'FillUpDeviceRef',
     'FillUpDriverRef',
@@ -67,6 +111,8 @@ __all__: list[str] = [
     'FuelTaxDetail',
     'FuelTaxDetailDeviceRef',
     'FuelTaxDetailDriverRef',
+    'GeotabAddressedLocation',
+    'GeotabCoordinate',
     'GeotabTimeSpan',
     'LogRecord',
     'LogRecordDeviceRef',

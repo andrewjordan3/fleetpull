@@ -1,9 +1,10 @@
 # tests/geotab_feed_pages.py
 """The one GetFeed-envelope narrowing helper the feed capture modules share.
 
-Five same-provider capture modules narrow the identical ``result.data``
-shape; the helper lives once here (the extract-duplicated-logic rule --
-same provider, so the cross-provider-boundary exception does not apply).
+The same-provider feed capture modules all narrow the identical
+``result.data`` shape; the helper lives once here (the
+extract-duplicated-logic rule -- same provider, so the
+cross-provider-boundary exception does not apply).
 """
 
 from fleetpull.vocabulary import JsonObject, JsonValue

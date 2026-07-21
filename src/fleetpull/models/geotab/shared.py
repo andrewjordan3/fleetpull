@@ -1,5 +1,6 @@
 # src/fleetpull/models/geotab/shared.py
-"""Shared GeoTab boundary-model machinery: TimeSpan parsing, reference coercion.
+"""Shared GeoTab boundary-model machinery: TimeSpan parsing, reference
+coercion, and the nested-location model pair.
 
 GeoTab serializes every duration as a .NET TimeSpan string
 (``[d.]hh:mm:ss[.f{1,7}]`` -- captured 2026-07-13: ``"00:05:01"``,
@@ -10,6 +11,13 @@ Both shapes are structural wire facts shared across GeoTab entities
 (``Trip``, ``ExceptionEvent``, and the feed wave's ``FillUp``/``FuelTaxDetail`` today),
 so their coercions live here beside each other, consumed through
 ``Annotated`` field aliases -- never as per-model parsing logic.
+
+The nested-location pair (``GeotabAddressedLocation`` wrapping
+``GeotabCoordinate``) is the third shared shape: the DOUBLE-NESTED
+``{location: {x, y}}`` wire block observed identically on
+``DutyStatusLog`` (1,859/2,000) and ``DVIRLog`` (496/500) in the
+2026-07-21 feed wave two census -- two consumers at birth, so the pair
+lives here (the second-consumer threshold) rather than per-model.
 
 ``GeotabTimeSpan`` deliberately bakes nullability into the alias
 (``Annotated[timedelta | None, ...]`` rather than
@@ -28,13 +36,45 @@ from typing import Annotated, Final
 
 from pydantic import BeforeValidator
 
+from fleetpull.model_contract import ResponseModel
 from fleetpull.vocabulary import JsonValue
 
 __all__: list[str] = [
+    'GeotabAddressedLocation',
+    'GeotabCoordinate',
     'GeotabTimeSpan',
     'bare_id_to_reference',
     'parse_timespan',
 ]
+
+
+class GeotabCoordinate(ResponseModel):
+    """The inner coordinate block of a nested GeoTab location.
+
+    GeoTab's ``x`` is LONGITUDE and ``y`` is LATITUDE (the provider's
+    map-plane convention, consistent with the shipped ``FillUp``
+    location); both arrive as floats (bare-int arms lift losslessly
+    under lax coercion). Required within the block: a coordinate block
+    without its coordinates is a shape change and must fail loudly.
+    """
+
+    x: float
+    y: float
+
+
+class GeotabAddressedLocation(ResponseModel):
+    """The double-nested ``{location: {x, y}}`` wire shape.
+
+    An addressed-location wrapper whose inner block carries the
+    coordinates — observed identically on ``DutyStatusLog`` and
+    ``DVIRLog`` (the module docstring's census). The wrapper's one
+    observed key is the inner block, required within the wrapper for
+    the same loud-failure reason as the coordinates themselves; the
+    consuming models carry the wrapper as an optional field.
+    """
+
+    location: GeotabCoordinate
+
 
 # The .NET TimeSpan grammar: optional day prefix, exactly-two-digit
 # fields, 1-7 fractional digits (100 ns ticks). Range checks (hh <= 23,
