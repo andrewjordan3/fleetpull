@@ -8,7 +8,7 @@ one the decoder advances from.
 """
 
 from fleetpull.config import GeotabAuthConfig, GeotabConfig
-from fleetpull.endpoints.geotab._get_requests import (
+from fleetpull.endpoints.geotab._requests import (
     GeotabGetSpecBuilder,
     GetCountOfCheck,
 )

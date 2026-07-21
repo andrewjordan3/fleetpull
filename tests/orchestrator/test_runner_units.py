@@ -85,6 +85,11 @@ class _RecordingRecorder:
     def start_snapshot_run(self, provider: Provider, endpoint: str) -> int:
         raise AssertionError('a windowed run must never open a snapshot run')
 
+    def start_feed_run(
+        self, provider: Provider, endpoint: str, *, from_version: str
+    ) -> int:
+        raise AssertionError('a windowed run must never open a feed run')
+
     def start_window_run(
         self, provider: Provider, endpoint: str, *, window: tuple[datetime, datetime]
     ) -> int:
@@ -92,7 +97,10 @@ class _RecordingRecorder:
             self.windows.append(window)
             return len(self.windows)
 
-    def complete_run(self, run_id: int, *, row_count: int) -> None:
+    def complete_run(
+        self, run_id: int, *, row_count: int, to_version: str | None = None
+    ) -> None:
+        assert to_version is None, 'a windowed run completion carries no to_version'
         with self._lock:
             self.completed.append((run_id, row_count))
 
@@ -133,6 +141,11 @@ class _FaithfulCursorAccess:
             self._cursor = DateWatermark(watermark=observed)
             self.applied_advances.append(observed)
             return True
+
+    def commit_feed_token(
+        self, provider: Provider, endpoint: str, to_version: str
+    ) -> None:
+        raise AssertionError('a windowed run must never commit a feed token')
 
 
 class _WindowRecordingDriver:
@@ -665,6 +678,11 @@ def test_concurrent_prefix_commits_cannot_regress_the_cursor(tmp_path: Path) -> 
             if observed == fresh_observation:
                 fresh_committed.set()
             return advanced
+
+        def commit_feed_token(
+            self, provider: Provider, endpoint: str, to_version: str
+        ) -> None:
+            raise AssertionError('a windowed run must never commit a feed token')
 
     runner = EndpointRunner(
         StubClientSource(),

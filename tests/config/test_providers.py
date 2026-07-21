@@ -159,8 +159,13 @@ class TestGeotabConfig:
         assert config.auth is None
         assert config.endpoints == ()
         # The Get method-class budget cites the captured 2026-07-09 header
-        # (~650/min, single datum); Authenticate is 10/min (June capture).
+        # (~650/min, single datum); GetFeed is its own class at ~60/min
+        # (the 2026-07-21 header-decrement probe); Authenticate is 10/min
+        # (June capture).
         assert config.rate_limit.requests_per_period == 650
+        assert config.feed_rate_limit.requests_per_period == 60
+        assert config.feed_rate_limit.period_seconds == 60.0
+        assert config.feed_rate_limit.max_concurrency == 2
         assert config.authenticate_rate_limit.requests_per_period == 10
         assert config.lookback_days == 7
         assert config.cutoff_days == 0

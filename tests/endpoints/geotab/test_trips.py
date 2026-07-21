@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from fleetpull.config import GeotabAuthConfig, GeotabConfig
-from fleetpull.endpoints.geotab._get_requests import GeotabWindowedGetSpecBuilder
+from fleetpull.endpoints.geotab._requests import GeotabWindowedGetSpecBuilder
 from fleetpull.endpoints.geotab.trips import build_endpoint
 from fleetpull.endpoints.shared import (
     EndpointDefinition,

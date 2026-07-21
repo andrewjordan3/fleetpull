@@ -6,7 +6,7 @@ The devices pattern verbatim, bound to ``User``: id-sort seek paging is
 supported for this type (proven live 2026-07-16 -- first page ascending,
 the offset advance continuing past the boundary with no overlap; never
 assumed from Device, since ExceptionEvent rejects id-sort outright), so
-the leaf composes the shared ``_get_requests`` machinery with a
+the leaf composes the shared ``_requests`` machinery with a
 ``GetCountOfCheck`` on ``User``. The captured population (157 accounts,
 count == sweep) sits far under the 5,000 silent cap, but the walk is
 cap-agnostic by construction: the seek advance terminates on the empty
@@ -21,7 +21,7 @@ convention); the host this module writes is a pre-auth placeholder.
 from typing import Final
 
 from fleetpull.config import GeotabConfig
-from fleetpull.endpoints.geotab._get_requests import (
+from fleetpull.endpoints.geotab._requests import (
     GeotabGetSpecBuilder,
     GetCountOfCheck,
     server_host,

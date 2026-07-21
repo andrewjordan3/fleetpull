@@ -11,10 +11,8 @@ import pytest
 from fleetpull.exceptions import ConfigurationError
 from fleetpull.incremental import DateWatermark, FeedToken
 from fleetpull.state.cursors import (
-    CursorKind,
     CursorStore,
     _deserialize_cursor,
-    _serialize_cursor,
 )
 from fleetpull.state.database import StateDatabase
 from fleetpull.state.migrations import migrate_to_head
@@ -75,32 +73,102 @@ class TestRoundTrip:
         assert cursor_store.get_cursor(Provider.MOTIVE, 'vehicles') is None
 
     def test_date_watermark_round_trips(self, cursor_store: CursorStore) -> None:
-        cursor = DateWatermark(watermark=WATERMARK_INSTANT)
-        cursor_store.set_cursor(Provider.MOTIVE, 'vehicles', cursor)
-        assert cursor_store.get_cursor(Provider.MOTIVE, 'vehicles') == cursor
+        cursor_store.advance_watermark_forward(
+            Provider.MOTIVE, 'vehicles', WATERMARK_INSTANT
+        )
+        assert cursor_store.get_cursor(Provider.MOTIVE, 'vehicles') == DateWatermark(
+            watermark=WATERMARK_INSTANT
+        )
 
     def test_feed_token_round_trips(self, cursor_store: CursorStore) -> None:
-        cursor = FeedToken(from_version='toVersion-000123abc')
-        cursor_store.set_cursor(Provider.GEOTAB, 'log_records', cursor)
-        assert cursor_store.get_cursor(Provider.GEOTAB, 'log_records') == cursor
+        cursor_store.commit_feed_token(
+            Provider.GEOTAB, 'log_records', 'toVersion-000123abc'
+        )
+        assert cursor_store.get_cursor(Provider.GEOTAB, 'log_records') == FeedToken(
+            from_version='toVersion-000123abc'
+        )
 
 
-class TestUpsert:
-    def test_second_watermark_overwrites_the_first(
+class TestKindGuardBothDirections:
+    """A cursor row can never silently change arm (§5's kind-guard doctrine).
+
+    Both writes are kind-guarded in-statement and no unguarded general
+    write exists (``set_cursor`` was deleted with the feed arm, 2026-07-21),
+    so an arm flip is impossible by construction -- each direction is a
+    loud ``ConfigurationError`` with the stored cursor untouched.
+    """
+
+    def test_feed_token_never_overwrites_a_watermark(
         self, cursor_store: CursorStore
     ) -> None:
-        first = DateWatermark(watermark=datetime(2026, 6, 1, 0, 0, 0, tzinfo=UTC))
-        second = DateWatermark(watermark=datetime(2026, 6, 2, 0, 0, 0, tzinfo=UTC))
-        cursor_store.set_cursor(Provider.MOTIVE, 'vehicles', first)
-        cursor_store.set_cursor(Provider.MOTIVE, 'vehicles', second)
-        assert cursor_store.get_cursor(Provider.MOTIVE, 'vehicles') == second
+        cursor_store.advance_watermark_forward(
+            Provider.GEOTAB, 'trips', WATERMARK_INSTANT
+        )
+        with pytest.raises(ConfigurationError, match='cross-mode'):
+            cursor_store.commit_feed_token(Provider.GEOTAB, 'trips', 'flip-attempt')
+        assert cursor_store.get_cursor(Provider.GEOTAB, 'trips') == DateWatermark(
+            watermark=WATERMARK_INSTANT
+        )
 
-    def test_arm_flip_replaces_kind_and_value(self, cursor_store: CursorStore) -> None:
-        watermark = DateWatermark(watermark=WATERMARK_INSTANT)
-        token = FeedToken(from_version='switched-to-feed')
-        cursor_store.set_cursor(Provider.GEOTAB, 'trips', watermark)
-        cursor_store.set_cursor(Provider.GEOTAB, 'trips', token)
-        assert cursor_store.get_cursor(Provider.GEOTAB, 'trips') == token
+    def test_watermark_never_overwrites_a_feed_token(
+        self, cursor_store: CursorStore
+    ) -> None:
+        cursor_store.commit_feed_token(Provider.GEOTAB, 'log_records', 'v7')
+        with pytest.raises(ConfigurationError, match='cross-mode'):
+            cursor_store.advance_watermark_forward(
+                Provider.GEOTAB, 'log_records', WATERMARK_INSTANT
+            )
+        assert cursor_store.get_cursor(Provider.GEOTAB, 'log_records') == FeedToken(
+            from_version='v7'
+        )
+
+
+class TestCommitFeedToken:
+    """The feed arm's kind-guarded last-write-wins commit (§5, 2026-07-21)."""
+
+    def test_inserts_when_no_cursor_exists(self, cursor_store: CursorStore) -> None:
+        cursor_store.commit_feed_token(Provider.GEOTAB, 'log_records', 'v1')
+        assert cursor_store.get_cursor(Provider.GEOTAB, 'log_records') == FeedToken(
+            from_version='v1'
+        )
+
+    def test_a_later_commit_overwrites_the_stored_token(
+        self, cursor_store: CursorStore
+    ) -> None:
+        cursor_store.commit_feed_token(Provider.GEOTAB, 'log_records', 'v1')
+        cursor_store.commit_feed_token(Provider.GEOTAB, 'log_records', 'v2')
+        assert cursor_store.get_cursor(Provider.GEOTAB, 'log_records') == FeedToken(
+            from_version='v2'
+        )
+
+    def test_recommitting_the_stored_token_is_a_valid_rewrite(
+        self, cursor_store: CursorStore
+    ) -> None:
+        # The at-head empty page re-emits its unchanged toVersion; the
+        # re-commit must succeed, not be refused as non-forward.
+        cursor_store.commit_feed_token(Provider.GEOTAB, 'log_records', 'v7')
+        cursor_store.commit_feed_token(Provider.GEOTAB, 'log_records', 'v7')
+        assert cursor_store.get_cursor(Provider.GEOTAB, 'log_records') == FeedToken(
+            from_version='v7'
+        )
+
+    def test_last_write_wins_is_the_documented_semantic(
+        self, cursor_store: CursorStore
+    ) -> None:
+        # PINNED: a lexically-backward token still overwrites. The store
+        # deliberately applies NO monotonicity ordering to the opaque token
+        # (the doctrine and the serial-caller reasoning live on
+        # commit_feed_token); any future in-store ordering guard must
+        # consciously break this test and re-derive the opacity stance.
+        cursor_store.commit_feed_token(
+            Provider.GEOTAB, 'log_records', 'ffffffffffffffff'
+        )
+        cursor_store.commit_feed_token(
+            Provider.GEOTAB, 'log_records', '0000000000000001'
+        )
+        assert cursor_store.get_cursor(Provider.GEOTAB, 'log_records') == FeedToken(
+            from_version='0000000000000001'
+        )
 
 
 class TestAdvanceWatermarkForwardGuardPlacement:
@@ -194,8 +262,8 @@ class TestAdvanceWatermarkForward:
         )
 
     def test_advances_when_strictly_forward(self, cursor_store: CursorStore) -> None:
-        cursor_store.set_cursor(
-            Provider.MOTIVE, 'locations', DateWatermark(watermark=WATERMARK_INSTANT)
+        cursor_store.advance_watermark_forward(
+            Provider.MOTIVE, 'locations', WATERMARK_INSTANT
         )
         forward = datetime(2026, 6, 2, 12, 0, 0, tzinfo=UTC)
         assert (
@@ -209,8 +277,8 @@ class TestAdvanceWatermarkForward:
         )
 
     def test_refuses_an_equal_observation(self, cursor_store: CursorStore) -> None:
-        cursor_store.set_cursor(
-            Provider.MOTIVE, 'locations', DateWatermark(watermark=WATERMARK_INSTANT)
+        cursor_store.advance_watermark_forward(
+            Provider.MOTIVE, 'locations', WATERMARK_INSTANT
         )
         assert (
             cursor_store.advance_watermark_forward(
@@ -223,8 +291,8 @@ class TestAdvanceWatermarkForward:
         )
 
     def test_refuses_a_backward_observation(self, cursor_store: CursorStore) -> None:
-        cursor_store.set_cursor(
-            Provider.MOTIVE, 'locations', DateWatermark(watermark=WATERMARK_INSTANT)
+        cursor_store.advance_watermark_forward(
+            Provider.MOTIVE, 'locations', WATERMARK_INSTANT
         )
         backward = datetime(2026, 5, 30, 12, 0, 0, tzinfo=UTC)
         assert (
@@ -240,9 +308,7 @@ class TestAdvanceWatermarkForward:
     def test_a_stored_feed_token_raises(self, cursor_store: CursorStore) -> None:
         # A cross-mode advance is a wiring bug upstream: refused loudly, and
         # the feed cursor is left untouched.
-        cursor_store.set_cursor(
-            Provider.GEOTAB, 'log_records', FeedToken(from_version='v7')
-        )
+        cursor_store.commit_feed_token(Provider.GEOTAB, 'log_records', 'v7')
         with pytest.raises(ConfigurationError, match='cross-mode'):
             cursor_store.advance_watermark_forward(
                 Provider.GEOTAB, 'log_records', WATERMARK_INSTANT
@@ -256,9 +322,12 @@ class TestKeyIsolation:
     def test_a_set_sibling_does_not_affect_an_unset_key(
         self, cursor_store: CursorStore
     ) -> None:
-        cursor = DateWatermark(watermark=WATERMARK_INSTANT)
-        cursor_store.set_cursor(Provider.MOTIVE, 'vehicles', cursor)
-        assert cursor_store.get_cursor(Provider.MOTIVE, 'vehicles') == cursor
+        cursor_store.advance_watermark_forward(
+            Provider.MOTIVE, 'vehicles', WATERMARK_INSTANT
+        )
+        assert cursor_store.get_cursor(Provider.MOTIVE, 'vehicles') == DateWatermark(
+            watermark=WATERMARK_INSTANT
+        )
         assert cursor_store.get_cursor(Provider.SAMSARA, 'trips') is None
 
 
@@ -266,9 +335,7 @@ class TestUpdatedAt:
     def test_updated_at_is_stamped_from_the_clock(
         self, cursor_store: CursorStore, database_path: Path
     ) -> None:
-        cursor_store.set_cursor(
-            Provider.MOTIVE, 'vehicles', FeedToken(from_version='v1')
-        )
+        cursor_store.commit_feed_token(Provider.MOTIVE, 'vehicles', 'v1')
         stored = _read_updated_at(database_path, Provider.MOTIVE, 'vehicles')
         assert stored == to_iso8601(FROZEN_INSTANT)
 
@@ -277,14 +344,15 @@ class TestDurability:
     def test_a_separate_store_reads_the_committed_cursor(
         self, cursor_store: CursorStore, database_path: Path
     ) -> None:
-        cursor = FeedToken(from_version='feed-version-7')
-        cursor_store.set_cursor(Provider.GEOTAB, 'log_records', cursor)
+        cursor_store.commit_feed_token(Provider.GEOTAB, 'log_records', 'feed-version-7')
 
         reopened_store = CursorStore(
             StateDatabase(database_path),
             FrozenClock(start_time_utc=FROZEN_INSTANT),
         )
-        assert reopened_store.get_cursor(Provider.GEOTAB, 'log_records') == cursor
+        assert reopened_store.get_cursor(Provider.GEOTAB, 'log_records') == FeedToken(
+            from_version='feed-version-7'
+        )
 
 
 class TestCorruptCursor:
@@ -304,17 +372,36 @@ class TestCorruptCursor:
             cursor_store.get_cursor(Provider.MOTIVE, 'vehicles')
 
 
-class TestSerializeCursor:
-    def test_serializes_a_date_watermark_to_iso_text(self) -> None:
-        cursor = DateWatermark(watermark=WATERMARK_INSTANT)
-        assert _serialize_cursor(cursor) == (CursorKind.DATE_WATERMARK, WATERMARK_ISO)
-
-    def test_serializes_a_feed_token_verbatim(self) -> None:
-        cursor = FeedToken(from_version='opaque-token-xyz')
-        assert _serialize_cursor(cursor) == (
-            CursorKind.FEED_TOKEN,
-            'opaque-token-xyz',
+class TestSerializedForms:
+    def test_watermark_is_stored_as_iso_text(
+        self, cursor_store: CursorStore, database_path: Path
+    ) -> None:
+        cursor_store.advance_watermark_forward(
+            Provider.MOTIVE, 'vehicles', WATERMARK_INSTANT
         )
+        connection = sqlite3.connect(database_path)
+        try:
+            row = connection.execute(
+                'SELECT kind, value FROM cursors WHERE provider = ? AND endpoint = ?',
+                ('motive', 'vehicles'),
+            ).fetchone()
+        finally:
+            connection.close()
+        assert row == ('date_watermark', WATERMARK_ISO)
+
+    def test_feed_token_is_stored_verbatim(
+        self, cursor_store: CursorStore, database_path: Path
+    ) -> None:
+        cursor_store.commit_feed_token(Provider.GEOTAB, 'trips', 'opaque-token-xyz')
+        connection = sqlite3.connect(database_path)
+        try:
+            row = connection.execute(
+                'SELECT kind, value FROM cursors WHERE provider = ? AND endpoint = ?',
+                ('geotab', 'trips'),
+            ).fetchone()
+        finally:
+            connection.close()
+        assert row == ('feed_token', 'opaque-token-xyz')
 
 
 class TestDeserializeCursor:

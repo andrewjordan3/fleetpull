@@ -9,6 +9,7 @@ the new, never a partial one (DESIGN §5 crash-safety). The temp is always clean
 up: on success (already renamed away) or on failure.
 """
 
+import os
 from pathlib import Path
 
 import polars as pl
@@ -20,7 +21,11 @@ __all__: list[str] = ['atomic_write_parquet']
 
 
 def atomic_write_parquet(
-    frame: pl.DataFrame, target: Path, compression: ParquetCompression = 'snappy'
+    frame: pl.DataFrame,
+    target: Path,
+    compression: ParquetCompression = 'snappy',
+    *,
+    durable: bool = False,
 ) -> None:
     """Write ``frame`` to ``target`` atomically via temp-then-rename.
 
@@ -33,17 +38,38 @@ def atomic_write_parquet(
         target: The final parquet path.
         compression: Parquet compression codec. ``'snappy'`` by default (fast,
             BigQuery-friendly); a later config surface parameterizes it.
+        durable: When True, fsync the temp file before the rename and the
+            parent directory after it -- the durable-rename recipe. The feed
+            append cell requires it: its token commit is fsynced (SQLite),
+            so a power loss must never persist a token whose page the page
+            cache still held. The self-healing writers (replace-partition
+            under lookback refetch, snapshot rewrite) stay non-durable --
+            a lost write there is refetched by design.
 
     Side Effects:
-        Creates ``target``'s parent directory; writes and renames files.
+        Creates ``target``'s parent directory; writes and renames files;
+        when ``durable``, fsyncs the file and its directory.
 
     Raises:
-        OSError: If the write or rename fails (the temp is cleaned up first).
+        OSError: If the write, rename, or fsync fails (the temp is cleaned
+            up first).
     """
     target.parent.mkdir(parents=True, exist_ok=True)
     temp: Path = temp_sibling_path(target)
     try:
         frame.write_parquet(temp, compression=compression)
+        if durable:
+            descriptor = os.open(temp, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
         temp.replace(target)
+        if durable:
+            directory = os.open(target.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     finally:
         temp.unlink(missing_ok=True)

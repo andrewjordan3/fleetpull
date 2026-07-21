@@ -134,6 +134,29 @@ class TestGeotabFeedPageDecoder:
         assert decoded.advance.next_spec is not None
         assert decoded.advance.durable_progress == '000000000014c3e3'
 
+    def test_a_full_page_without_version_advance_raises(self) -> None:
+        # The forward-progress guard: a wedged provider (or a replaying
+        # proxy) returning a full page whose toVersion equals the version
+        # it was asked from would otherwise loop forever, appending the
+        # identical page at the append cell. Never observed live (probed
+        # full pages always advanced); the guard bounds the pathology.
+        envelope = json.loads(GETFEED_ADVANCE_RESPONSE_JSON)
+        stalled_spec = build_feed_spec(results_limit=3)
+        assert stalled_spec.json_body is not None
+        sent_params = stalled_spec.json_body['params']
+        assert isinstance(sent_params, dict)
+        stalled_to_version = envelope['result']['toVersion']
+        assert isinstance(stalled_to_version, str)
+        params: dict[str, JsonValue] = {
+            **sent_params,
+            'fromVersion': stalled_to_version,
+        }
+        stalled_spec = stalled_spec.with_json_body(
+            {**stalled_spec.json_body, 'params': params}
+        )
+        with pytest.raises(ProviderResponseError, match='without advancing'):
+            GeotabFeedPageDecoder().decode_page(stalled_spec, envelope)
+
     def test_short_page_completes_with_durable_progress(self) -> None:
         decoded = GeotabFeedPageDecoder().decode_page(
             build_feed_spec(results_limit=2),

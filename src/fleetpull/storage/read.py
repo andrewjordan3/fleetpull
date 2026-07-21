@@ -4,10 +4,11 @@
 A writer that combines this run's records with what is already on disk reads the
 prior file through here; a first run -- no file yet -- comes back as ``None``
 rather than an error, so the writer's combine handles the empty case the same way
-every time. The built cells all replace rather than combine (the snapshot writer
-rewrites the single file; the partitioned watermark cell replaces its partitions),
-so no writer reads today; the combining cells -- the single-file watermark cell
-and the feed cells -- fill with GeoTab.
+every time. The built cells all replace or append rather than combine (the
+snapshot writer rewrites the single file; the partitioned watermark cell replaces
+its partitions; the append-log feed cell only ever adds new part files), so no
+writer reads today; the one combining cell -- the single-file watermark cell --
+remains unbuilt.
 """
 
 from pathlib import Path

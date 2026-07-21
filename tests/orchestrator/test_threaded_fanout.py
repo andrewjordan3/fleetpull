@@ -121,7 +121,14 @@ class _RecordingRecorder:
     ) -> int:
         return 1
 
-    def complete_run(self, run_id: int, *, row_count: int) -> None:
+    def start_feed_run(
+        self, provider: Provider, endpoint: str, *, from_version: str
+    ) -> int:
+        return 1
+
+    def complete_run(
+        self, run_id: int, *, row_count: int, to_version: str | None = None
+    ) -> None:
         self.completed.append((run_id, row_count))
 
     def fail_run(self, run_id: int, *, error_detail: str) -> None:
@@ -145,6 +152,11 @@ class _StubCursorAccess:
     ) -> bool:
         self.advance_calls.append(observed)
         return True
+
+    def commit_feed_token(
+        self, provider: Provider, endpoint: str, to_version: str
+    ) -> None:
+        raise AssertionError('these fan-out runs never commit a feed token')
 
 
 class _ClientSourceOf:

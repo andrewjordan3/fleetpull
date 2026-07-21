@@ -91,6 +91,21 @@ def _make_endpoint(
     )
 
 
+def _make_feed_endpoint(
+    *,
+    request_shape: RequestShape = _SINGLE_FETCH,
+    completeness_check: CompletenessCheck | None = None,
+) -> EndpointDefinition[_StubModel]:
+    """A validly-paired feed endpoint: FeedMode + APPEND_LOG + event time."""
+    return _make_endpoint(
+        FeedMode(),
+        storage_kind=StorageKind.APPEND_LOG,
+        event_time_column='occurred_at',
+        request_shape=request_shape,
+        completeness_check=completeness_check,
+    )
+
+
 class TestEndpointDefinition:
     def test_constructs_and_reads_back_fields(self) -> None:
         endpoint = _make_endpoint(
@@ -108,27 +123,28 @@ class TestEndpointDefinition:
         assert endpoint.event_time_column == 'occurred_at'
 
     def test_accepts_a_feed_mode(self) -> None:
-        endpoint = _make_endpoint(FeedMode())
+        endpoint = _make_feed_endpoint()
         assert endpoint.sync_mode == FeedMode()
+        assert endpoint.storage_kind == StorageKind.APPEND_LOG
 
     def test_accepts_a_snapshot_mode(self) -> None:
         endpoint = _make_endpoint(SnapshotMode())
         assert endpoint.sync_mode == SnapshotMode()
 
     def test_is_frozen(self) -> None:
-        endpoint = _make_endpoint(FeedMode())
+        endpoint = _make_feed_endpoint()
         with pytest.raises(dataclasses.FrozenInstanceError):
             endpoint.name = 'other'  # type: ignore[misc]
 
     def test_has_slots_no_dict(self) -> None:
-        assert not hasattr(_make_endpoint(FeedMode()), '__dict__')
+        assert not hasattr(_make_feed_endpoint(), '__dict__')
 
     def test_constructs_with_a_roster_fan_out(self) -> None:
         shape = RosterFanOut(
             roster=RosterKey(Provider.SAMSARA, 'vehicle_ids'),
             member_key='vehicle_id',
         )
-        endpoint = _make_endpoint(FeedMode(), request_shape=shape)
+        endpoint = _make_endpoint(SnapshotMode(), request_shape=shape)
         assert endpoint.request_shape == shape
 
     def test_request_shape_defaults_to_single_fetch(self) -> None:
@@ -205,6 +221,7 @@ class TestStorageKind:
     def test_member_values(self) -> None:
         assert StorageKind.SINGLE.value == 'single'
         assert StorageKind.DATE_PARTITIONED.value == 'date_partitioned'
+        assert StorageKind.APPEND_LOG.value == 'append_log'
 
 
 class TestEndpointDefinitionValidation:
@@ -224,7 +241,45 @@ class TestEndpointDefinitionValidation:
 
     def test_date_partitioned_without_event_time_column_raises(self) -> None:
         with pytest.raises(ValueError, match='requires an event_time_column'):
-            _make_endpoint(FeedMode(), storage_kind=StorageKind.DATE_PARTITIONED)
+            _make_endpoint(
+                WatermarkMode(lookback=timedelta(days=1), cutoff=timedelta(days=2)),
+                storage_kind=StorageKind.DATE_PARTITIONED,
+            )
+
+    def test_append_log_without_event_time_column_raises(self) -> None:
+        # The feed cell routes each record into its event date's partition,
+        # so a feed endpoint with no event-time column cannot write at all.
+        with pytest.raises(ValueError, match='requires an event_time_column'):
+            _make_endpoint(FeedMode(), storage_kind=StorageKind.APPEND_LOG)
+
+    def test_feed_with_single_storage_raises(self) -> None:
+        # FeedMode requires APPEND_LOG: any other layout would delete or
+        # replace what the stored-as-emitted contract must keep.
+        with pytest.raises(ValueError, match='FeedMode requires storage_kind'):
+            _make_endpoint(FeedMode(), event_time_column='occurred_at')
+
+    def test_feed_with_date_partitioned_storage_raises(self) -> None:
+        with pytest.raises(ValueError, match='FeedMode requires storage_kind'):
+            _make_endpoint(
+                FeedMode(),
+                storage_kind=StorageKind.DATE_PARTITIONED,
+                event_time_column='occurred_at',
+            )
+
+    def test_append_log_with_watermark_mode_raises(self) -> None:
+        # The reverse direction of the exclusive pairing: delete-by-window
+        # against an accumulate-only layout would never clear its window.
+        with pytest.raises(ValueError, match='APPEND_LOG requires FeedMode'):
+            _make_endpoint(
+                WatermarkMode(lookback=timedelta(days=1), cutoff=timedelta(days=2)),
+                storage_kind=StorageKind.APPEND_LOG,
+                event_time_column='occurred_at',
+            )
+
+    def test_append_log_with_snapshot_mode_raises(self) -> None:
+        # Snapshot's SINGLE requirement fires first -- either way, loud.
+        with pytest.raises(ValueError, match='SnapshotMode requires'):
+            _make_endpoint(SnapshotMode(), storage_kind=StorageKind.APPEND_LOG)
 
     def test_event_time_column_not_a_field_raises(self) -> None:
         with pytest.raises(ValueError, match='not a field'):
@@ -266,9 +321,9 @@ class TestEndpointDefinitionValidation:
         endpoint = _make_endpoint(SnapshotMode())
         assert endpoint.event_time_column is None
 
-    def test_feed_single_without_event_time_constructs(self) -> None:
-        endpoint = _make_endpoint(FeedMode())
-        assert endpoint.event_time_column is None
+    def test_feed_append_log_with_event_time_constructs(self) -> None:
+        endpoint = _make_feed_endpoint()
+        assert endpoint.event_time_column == 'occurred_at'
 
     def test_snapshot_single_fetch_with_completeness_check_constructs(self) -> None:
         check = _StubCompletenessCheck()
@@ -280,7 +335,7 @@ class TestEndpointDefinitionValidation:
 
     def test_non_snapshot_with_completeness_check_raises(self) -> None:
         with pytest.raises(ValueError, match='requires SnapshotMode'):
-            _make_endpoint(FeedMode(), completeness_check=_StubCompletenessCheck())
+            _make_feed_endpoint(completeness_check=_StubCompletenessCheck())
 
     def test_roster_fan_out_with_completeness_check_raises(self) -> None:
         # The wiring-error rejection: a fan-out run is per-member, never
@@ -321,9 +376,8 @@ class TestEndpointDefinitionValidation:
 
     def test_feed_param_sweep_raises(self) -> None:
         with pytest.raises(ValueError, match='ParamSweep requires SnapshotMode'):
-            _make_endpoint(
-                FeedMode(),
-                request_shape=ParamSweep(param='status', values=('active',)),
+            _make_feed_endpoint(
+                request_shape=ParamSweep(param='status', values=('active',))
             )
 
     def test_cross_provider_roster_fan_out_raises(self) -> None:
@@ -384,13 +438,12 @@ class TestEndpointDefinitionValidation:
         # The overflow signal halves a resume window; a feed resumes from a
         # token and carries no window to halve.
         with pytest.raises(ValueError, match='BisectedWindowFetch requires'):
-            _make_endpoint(
-                FeedMode(),
+            _make_feed_endpoint(
                 request_shape=BisectedWindowFetch(
                     results_limit=100,
                     floor=timedelta(minutes=1),
                     event_time_wire_key='at',
-                ),
+                )
             )
 
     def test_single_storage_bisected_window_fetch_raises(self) -> None:

@@ -211,6 +211,18 @@ _GEOTAB_DEFAULT_GET_RATE_LIMIT: RateLimitConfig = RateLimitConfig(
     requests_per_period=650, period_seconds=60.0, burst=100, max_concurrency=2
 )
 
+# The GetFeed method-class budget: ~60/min, from the 2026-07-21
+# header-decrement probe (x-rate-limit-limit '1m' with remaining counting
+# down call by call on GetFeed while the Get class sat at ~650/min --
+# GetFeed is its OWN method class, not a Get-class spender). Burst stays
+# conservative on the small budget, and max_concurrency 2 lets two feed
+# ENDPOINTS interleave pages within a sync (each feed walk is itself
+# strictly serial, one chain page after page) without letting a wider
+# fan-out ever form on this class.
+_GEOTAB_DEFAULT_FEED_RATE_LIMIT: RateLimitConfig = RateLimitConfig(
+    requests_per_period=60, period_seconds=60.0, burst=10, max_concurrency=2
+)
+
 # The Authenticate method-class budget: 10/min, from the June 2026
 # `OverLimitException` capture ("API calls quota exceeded. Maximum
 # admitted 10 per 1m.", paired `retry-after: 56`) and the provider docs
@@ -250,6 +262,10 @@ class GeotabConfig(ProviderConfig):
             and ``trips`` declare); default from the captured 2026-07-09
             headers -- see ``_GEOTAB_DEFAULT_GET_RATE_LIMIT`` for the
             single-datum caveat.
+        feed_rate_limit: The GetFeed method-class budget (the scope the
+            feed endpoints declare); default ~60/min from the 2026-07-21
+            header-decrement probe -- see
+            ``_GEOTAB_DEFAULT_FEED_RATE_LIMIT``.
         authenticate_rate_limit: The Authenticate method-class budget;
             default 10/min from the June 2026 capture -- see
             ``_GEOTAB_DEFAULT_AUTHENTICATE_RATE_LIMIT``.
@@ -259,6 +275,7 @@ class GeotabConfig(ProviderConfig):
 
     auth: GeotabAuthConfig | None = None
     rate_limit: RateLimitConfig = Field(default=_GEOTAB_DEFAULT_GET_RATE_LIMIT)
+    feed_rate_limit: RateLimitConfig = Field(default=_GEOTAB_DEFAULT_FEED_RATE_LIMIT)
     authenticate_rate_limit: RateLimitConfig = Field(
         default=_GEOTAB_DEFAULT_AUTHENTICATE_RATE_LIMIT
     )

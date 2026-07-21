@@ -17,6 +17,7 @@ from uuid import uuid4
 from fleetpull.paths import date_partition_segment
 
 __all__: list[str] = [
+    'append_part_file',
     'data_file',
     'partition_dir',
     'partition_part_file',
@@ -33,6 +34,12 @@ _PART_FILE_NAME: str = 'part.parquet'
 
 # The per-partition staging directory and shard suffix (DESIGN §3).
 _STAGING_DIR_NAME: str = 'staging'
+
+# The append-log layout's numbered part-file width (DESIGN §3): five digits
+# zero-padded, so directory listings sort chronologically at a glance. Purely
+# cosmetic — the append scan parses the number, never sorts the text — so a
+# partition beyond 99,999 parts widens naturally without breaking anything.
+_APPEND_PART_NUMBER_WIDTH: int = 5
 
 
 def data_file(endpoint_dir: Path) -> Path:
@@ -81,6 +88,33 @@ def partition_part_file(endpoint_dir: Path, partition_date: date) -> Path:
         None -- pure path arithmetic; no filesystem access.
     """
     return partition_dir(endpoint_dir, partition_date) / _PART_FILE_NAME
+
+
+def append_part_file(
+    endpoint_dir: Path, partition_date: date, part_number: int
+) -> Path:
+    """The append-log layout's numbered part file for one date partition.
+
+    The path half of the append-only feed cell (DESIGN §3/§4): each feed page
+    lands as the next-numbered ``part-NNNNN.parquet`` in the partitions its
+    records' event dates route to; the numbering scan lives with the append
+    writer (``storage/append.py``), keeping this module pure path arithmetic.
+
+    Args:
+        endpoint_dir: The endpoint directory (from ``endpoint_directory``).
+        partition_date: The partition's calendar date.
+        part_number: The part's ordinal (>= 1; the writer's scan supplies
+            max-existing + 1).
+
+    Returns:
+        ``{endpoint_dir}/date=YYYY-MM-DD/part-NNNNN.parquet``.
+
+    Side Effects:
+        None -- pure path arithmetic; no filesystem access.
+    """
+    return partition_dir(endpoint_dir, partition_date) / (
+        f'part-{part_number:0{_APPEND_PART_NUMBER_WIDTH}d}.parquet'
+    )
 
 
 def partition_staging_dir(endpoint_dir: Path, partition_date: date) -> Path:

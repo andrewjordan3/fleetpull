@@ -24,10 +24,11 @@ def rate_limits_from_configs(
     (``quota_scope``, a ``ClassVar``), so composition roots hand this their
     resolved configs and never invent rate-limit numbers. GeoTab meters per
     method class (DESIGN §8): its ``quota_scope`` ClassVar binds the
-    Get-class scope the generic emission covers, and its second budget --
-    the dedicated Authenticate class -- is emitted here under
-    ``QuotaScope.GEOTAB_AUTHENTICATE`` from the same config, so the
-    authenticator's scope is registered wherever a ``GeotabConfig`` is.
+    Get-class scope the generic emission covers, and its other two budgets
+    -- the GetFeed class (the feed endpoints' scope) and the dedicated
+    Authenticate class -- are emitted here under ``QuotaScope.GEOTAB_FEED``
+    and ``QuotaScope.GEOTAB_AUTHENTICATE`` from the same config, so every
+    GeoTab method-class scope is registered wherever a ``GeotabConfig`` is.
 
     Args:
         provider_configs: The resolved provider configs for this run -- the
@@ -40,6 +41,7 @@ def rate_limits_from_configs(
     rate_limits = {config.quota_scope.value: config.rate_limit for config in configs}
     for config in configs:
         if isinstance(config, GeotabConfig):
+            rate_limits[QuotaScope.GEOTAB_FEED.value] = config.feed_rate_limit
             rate_limits[QuotaScope.GEOTAB_AUTHENTICATE.value] = (
                 config.authenticate_rate_limit
             )

@@ -1,5 +1,5 @@
 # src/fleetpull/incremental/__init__.py
-"""Per-endpoint incremental resume state: the cursors, the resume window, and the pure functions that resolve it."""
+"""Per-endpoint incremental resume state: the cursors, the resume values (the watermark window and the feed seed), and the pure functions that resolve them."""
 
 from fleetpull.incremental.cursor import (
     DateWatermark,
@@ -11,11 +11,14 @@ from fleetpull.incremental.resolution import (
     resolve_trailing_edge,
     window_or_none,
 )
+from fleetpull.incremental.seed import FeedResume, FeedSeed
 from fleetpull.incremental.window import DateWindow
 
 __all__: list[str] = [
     'DateWatermark',
     'DateWindow',
+    'FeedResume',
+    'FeedSeed',
     'FeedToken',
     'IncrementalCursor',
     'resolve_resume_start',

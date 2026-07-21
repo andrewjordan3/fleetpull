@@ -17,11 +17,19 @@ completion, to the maximum observation across the contiguous done-prefix,
 through the cursor store's atomic forward-only write -- so units may
 complete in any order and every persisted watermark is still true at every
 instant; a crash resumes from the work-units ledger instead of refetching
-the window. After a successful run fully commits, either arm
-projects the run's facts into the endpoint's ``metadata.json`` (DESIGN
+the window. The feed arm (DESIGN sections 4/14, built 2026-07-21) drives
+the endpoint's version-token stream: resume is the stored ``FeedToken``,
+or a ``FeedSeed`` at the sync-wide cold-start anchor when none is stored
+(the seed rides ONLY the tokenless first run -- I4); each page then
+commits independently in the per-page crash order parquet BEFORE token
+(I1/I2) -- the append writer lands the page's rows durably, then the
+page's ``toVersion`` commits through the store's kind-guarded feed write
+-- so a crash between the two refetches exactly one page on the next run
+and its rows land again as new appended rows, harmless under the
+stored-as-emitted contract. After a successful run fully commits, every
+arm projects the run's facts into the endpoint's ``metadata.json`` (DESIGN
 section 3) -- post-commit and best-effort, never part of the transaction.
-The feed arm raises ``NotImplementedError`` until its
-prompt. The pure resume decisions live in ``orchestrator/resume.py``, the
+The pure resume decisions live in ``orchestrator/resume.py``, the
 per-batch transform in ``orchestrator/batch.py``, and the claim choreography
 in ``orchestrator/unit_loop.py``, so the runner only orchestrates -- read
 state, call pure functions, write state. Request cardinality and batch
@@ -36,8 +44,9 @@ observer exception fails the run like any other batch-processing failure.
 The runner depends on narrow Protocols rather than the concrete state and network
 classes: ``ClientSource`` (the registry's ``client_for``) and the three
 state-database surfaces bundled as ``RunStateAccess`` -- ``RunRecorder`` (the
-ledger's lifecycle methods), ``CursorAccess`` (the cursor store's read and
-guarded watermark advance), and ``UnitQueue`` (the work-unit claim queue). It
+ledger's lifecycle methods), ``CursorAccess`` (the cursor store's read and its
+two kind-guarded writes: the watermark advance and the feed-token commit), and
+``UnitQueue`` (the work-unit claim queue). It
 opens no clients and reads no credentials -- the already-open client source
 hands it the provider's client.
 """
@@ -63,6 +72,8 @@ from fleetpull.exceptions import ConfigurationError
 from fleetpull.incremental import (
     DateWatermark,
     DateWindow,
+    FeedResume,
+    FeedSeed,
     FeedToken,
     IncrementalCursor,
     resolve_resume_start,
@@ -70,16 +81,17 @@ from fleetpull.incremental import (
     window_or_none,
 )
 from fleetpull.model_contract import ResponseModel
-from fleetpull.network.client import TransportClient
+from fleetpull.network.client import FetchedPage, TransportClient
 from fleetpull.orchestrator.backfill import plan_backfill_units
 from fleetpull.orchestrator.batch import (
     ProcessedBatch,
     WindowContext,
     combine_latest_event_time,
+    process_batch,
 )
 from fleetpull.orchestrator.drivers import RequestDriver
 from fleetpull.orchestrator.outcome import CaughtUp, Executed, RunOutcome
-from fleetpull.orchestrator.resume import resolve_watermark_start
+from fleetpull.orchestrator.resume import resolve_feed_resume, resolve_watermark_start
 from fleetpull.orchestrator.streaming import stream_processed_batches
 from fleetpull.orchestrator.unit_loop import (
     UnitCrew,
@@ -186,8 +198,10 @@ class RunRecorder(Protocol):
         """Open a snapshot run and return its id."""
         ...
 
-    def complete_run(self, run_id: int, *, row_count: int) -> None:
-        """Close a run as succeeded with its row count."""
+    def complete_run(
+        self, run_id: int, *, row_count: int, to_version: str | None = None
+    ) -> None:
+        """Close a run as succeeded with its row count (and a feed run's token)."""
         ...
 
     def fail_run(self, run_id: int, *, error_detail: str) -> None:
@@ -200,13 +214,19 @@ class RunRecorder(Protocol):
         """Open a watermark run for a window and return its id."""
         ...
 
+    def start_feed_run(
+        self, provider: Provider, endpoint: str, *, from_version: str
+    ) -> int:
+        """Open a feed run resuming from a token (or seed label) and return its id."""
+        ...
+
     def coverage_frontier(self, provider: Provider, endpoint: str) -> datetime | None:
         """Return the furthest window end a succeeded run has covered, if any."""
         ...
 
 
 class CursorAccess(Protocol):
-    """The cursor surface the watermark arm needs (a subset of CursorStore)."""
+    """The cursor surface the incremental arms need (a subset of CursorStore)."""
 
     def get_cursor(self, provider: Provider, endpoint: str) -> IncrementalCursor | None:
         """Return the persisted cursor for a (provider, endpoint), or None."""
@@ -216,6 +236,12 @@ class CursorAccess(Protocol):
         self, provider: Provider, endpoint: str, observed: datetime
     ) -> bool:
         """Atomically advance the date watermark iff strictly forward."""
+        ...
+
+    def commit_feed_token(
+        self, provider: Provider, endpoint: str, to_version: str
+    ) -> None:
+        """Commit the feed cursor, kind-guarded last-write-wins."""
         ...
 
 
@@ -231,7 +257,7 @@ class RunStateAccess:
 
     Attributes:
         recorder: The run ledger's lifecycle surface.
-        cursors: The cursor store's read and guarded-advance surface.
+        cursors: The cursor store's read and kind-guarded-write surface.
         units: The work-unit claim queue.
     """
 
@@ -316,14 +342,64 @@ def _serialize_cursor(
             return (None, None)
 
 
+def _feed_resume_label(resume: FeedResume) -> str:
+    """The ledger's ``from_version`` text for a feed run's resume value.
+
+    A resumed run records the token verbatim; a seeded run records the
+    self-describing ``seed:<iso8601>`` marker (the ``runs`` table requires a
+    non-null ``from_version`` on a feed row, and the seed date IS what the
+    run resumed from -- the convention is recorded on
+    ``RunLedger.start_feed_run``).
+
+    Args:
+        resume: The run's resolved feed resume value.
+
+    Returns:
+        The token, or ``seed:<iso8601 start>`` for a seeded run.
+    """
+    match resume:
+        case FeedToken(from_version=from_version):
+            return from_version
+        case FeedSeed(start=start):
+            return f'seed:{to_iso8601(start)}'
+
+
+def _log_feed_resume(provider: Provider, endpoint: str, resume: FeedResume) -> None:
+    """Narrate a feed run's resume point at INFO: seeded or resumed.
+
+    Args:
+        provider: The endpoint's provider.
+        endpoint: The endpoint name.
+        resume: The run's resolved feed resume value.
+
+    Side Effects:
+        Emits one INFO line.
+    """
+    match resume:
+        case FeedToken(from_version=from_version):
+            logger.info(
+                'feed run resumed: provider=%s endpoint=%s from_version=%s',
+                provider.value,
+                endpoint,
+                from_version,
+            )
+        case FeedSeed(start=start):
+            logger.info(
+                'feed run seeded: provider=%s endpoint=%s from_date=%s',
+                provider.value,
+                endpoint,
+                to_iso8601(start),
+            )
+
+
 class EndpointRunner:
     """Runs one endpoint to completion, dispatching on its sync mode.
 
     Constructed once with its four collaborators (client source, the bundled
     state surfaces, clock, the root config); ``run`` takes the endpoint and
-    its request driver, so one instance runs every endpoint. The snapshot arm
-    and the watermark arm's plan-and-drive unit loop are built; the feed arm
-    raises ``NotImplementedError``.
+    its request driver, so one instance runs every endpoint. All three arms
+    are built: the snapshot arm, the watermark arm's plan-and-drive unit
+    loop, and the feed arm's per-page token drive.
     """
 
     def __init__(
@@ -381,8 +457,6 @@ class EndpointRunner:
             run had nothing to drive.
 
         Raises:
-            NotImplementedError: The endpoint's sync mode is feed (built in a
-                later prompt).
             FleetpullError: A fetch, validation, or write failure -- the run is
                 recorded failed and the error propagates.
         """
@@ -399,9 +473,7 @@ class EndpointRunner:
             case WatermarkMode() as mode:
                 outcome = self._run_watermark(definition, driver, mode, observer)
             case FeedMode():
-                raise NotImplementedError(
-                    f'{type(definition.sync_mode).__name__} is not yet executable'
-                )
+                outcome = self._run_feed(definition, driver, observer)
         if isinstance(outcome, Executed):
             self._log_endpoint_complete(definition, outcome, endpoint_started)
         return outcome
@@ -461,6 +533,170 @@ class EndpointRunner:
         outcome = Executed(records_fetched=records_fetched, write=write)
         self._write_metadata_snapshot(definition, outcome, window=None)
         return outcome
+
+    def _run_feed(
+        self,
+        definition: EndpointDefinition[ResponseModel],
+        driver: RequestDriver,
+        observer: BatchObserver | None,
+    ) -> RunOutcome:
+        """Run the feed arm: drive the version-token stream, page by page.
+
+        Resume is the stored ``FeedToken`` used directly, or a ``FeedSeed``
+        at the sync-wide cold-start anchor when no token is stored -- the
+        seed rides ONLY the tokenless first run (I4; ``resolve_feed_resume``
+        makes it structural). The client is resolved before the run is
+        opened, so an unconfigured provider opens no dangling run. Each page
+        then commits independently through ``_consume_feed_pages`` in the
+        per-page crash order (parquet before token -- I1/I2); the ledger row
+        closes with the run's total row count and final ``toVersion`` after
+        the stream drains. A crash mid-stream leaves the run ``running``
+        (diagnostic only, the §5 stance) with every completed page's parquet
+        and token already committed -- the next run resumes from the last
+        committed token and refetches exactly one page, whose rows append
+        again as duplicates the stored-as-emitted contract absorbs (§4).
+
+        Args:
+            definition: The feed endpoint to run.
+            driver: The request driver supplying the run's pages (a
+                ``SingleRequestDriver`` -- feeds are single-chain).
+            observer: The optional per-frame hook, handed each
+                post-validation frame as the run streams.
+
+        Returns:
+            ``Executed`` with the fetched-row count and the append report.
+
+        Raises:
+            ConfigurationError: A watermark cursor is stored for this feed
+                endpoint (cross-mode corruption, from ``resolve_feed_resume``
+                -- raised before any run is opened), or a page carried no
+                durable progress (a non-feed decoder wired to a feed
+                endpoint).
+            FleetpullError: A fetch, validation, write, or completion failure
+                -- the run is recorded failed and the original error
+                re-raised; pages committed before it stand.
+        """
+        provider = definition.provider
+        name = definition.name
+        client = self._client_source.client_for(provider)
+        resume = resolve_feed_resume(
+            self._state.cursors.get_cursor(provider, name),
+            self._sync_config.default_start_datetime,
+            provider,
+            name,
+        )
+        _log_feed_resume(provider, name, resume)
+        run_id = self._state.recorder.start_feed_run(
+            provider, name, from_version=_feed_resume_label(resume)
+        )
+        try:
+            writer = select_writer(
+                definition, self._dataset_root, drop_duplicates=self._drop_duplicates
+            )
+            pages = driver.record_batches(definition, client, resume)
+            records_fetched, page_count, last_token = self._consume_feed_pages(
+                definition, pages, writer, observer
+            )
+            write = writer.finalize()
+            self._state.recorder.complete_run(
+                run_id, row_count=records_fetched, to_version=last_token
+            )
+        except Exception as error:
+            self._fail_run_safely(run_id, error)
+            raise
+        logger.info(
+            'feed complete: provider=%s endpoint=%s pages=%d records=%d to_version=%s',
+            provider.value,
+            name,
+            page_count,
+            records_fetched,
+            last_token,
+        )
+        outcome = Executed(records_fetched=records_fetched, write=write)
+        self._write_metadata_snapshot(definition, outcome, window=None)
+        return outcome
+
+    def _consume_feed_pages(
+        self,
+        definition: EndpointDefinition[ResponseModel],
+        pages: Iterator[FetchedPage],
+        writer: DatasetWriter,
+        observer: BatchObserver | None,
+    ) -> tuple[int, int, str]:
+        """Consume the feed stream: per page, parquet BEFORE token (I1/I2).
+
+        The per-page transaction (DESIGN section 14): validate and frame the
+        page (``process_batch`` with no window context -- the feed has no
+        window, no future-event guard, no fold; whatever the stream emits is
+        stored), hand the frame to the observer where one rides, append it
+        durably (the feed writer's ``write`` is durable on return -- the
+        append-log cell's contract), and only THEN commit the page's
+        ``toVersion``. The token therefore never moves past unwritten data:
+        a crash between the two loses only the token, and the next run
+        refetches that one page. An empty page (the at-head terminal)
+        appends nothing and re-commits its unchanged token -- the feed
+        always has a cursor to write (section 5).
+
+        Args:
+            definition: The feed endpoint being run.
+            pages: The driver's fetched-page stream, ready to consume.
+            writer: The run's append writer, handed each frame in order.
+            observer: The optional per-frame hook.
+
+        Returns:
+            The fetched-row count, the page count, and the final committed
+            ``toVersion``.
+
+        Raises:
+            ConfigurationError: A page carried no ``durable_progress`` -- a
+                non-feed decoder is wired to a feed endpoint, a construction
+                bug surfaced before the page's rows are written.
+            RuntimeError: The stream yielded no pages, violating the
+                client's at-least-one-page contract.
+
+        Side Effects:
+            Appends part files and commits the feed cursor, page by page.
+        """
+        records_fetched = 0
+        page_count = 0
+        last_token: str | None = None
+        for page in pages:
+            token = page.durable_progress
+            if token is None:
+                raise ConfigurationError(
+                    'feed page carries no durable progress',
+                    provider=definition.provider.value,
+                    endpoint=definition.name,
+                    detail=(
+                        'the endpoint declares FeedMode but its page decoder '
+                        'yielded no resume token -- a non-feed decoder is wired '
+                        'to a feed endpoint'
+                    ),
+                )
+            processed = process_batch(page.records, definition, None)
+            if observer is not None:
+                observer(processed.frame)
+            writer.write(processed.frame)
+            self._state.cursors.commit_feed_token(
+                definition.provider, definition.name, token
+            )
+            records_fetched += processed.frame.height
+            page_count += 1
+            last_token = token
+            logger.debug(
+                'feed page appended: provider=%s endpoint=%s page=%d records=%d '
+                'to_version=%s',
+                definition.provider.value,
+                definition.name,
+                page_count,
+                processed.frame.height,
+                token,
+            )
+        if last_token is None:
+            raise RuntimeError(
+                'feed drive yielded no pages -- fetch_pages always drives at least one'
+            )
+        return records_fetched, page_count, last_token
 
     def _run_watermark(
         self,
@@ -851,7 +1087,18 @@ class EndpointRunner:
         # already committed (parquet, ledger, units, watermark), and the file is a
         # cosmetic projection the next successful run rewrites -- failing a
         # committed run over it would be worse than a stale file. A render
-        # failure is a bug and propagates.
+        # failure is a bug and propagates. An absent endpoint directory is
+        # a healthy no-data state (a seeded-at-head feed, an empty
+        # watermark cold run) -- there is nothing to project onto, so the
+        # write is skipped quietly rather than alarmed over.
+        if not directory.exists():
+            logger.debug(
+                'metadata.json skipped: provider=%s endpoint=%s '
+                '(no data has ever landed)',
+                definition.provider.value,
+                definition.name,
+            )
+            return
         text = render_metadata_json(snapshot)
         try:
             write_metadata_json(directory, text)

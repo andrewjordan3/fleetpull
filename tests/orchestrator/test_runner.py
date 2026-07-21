@@ -16,7 +16,6 @@ from fleetpull.config import (
 )
 from fleetpull.endpoints.shared import (
     EndpointDefinition,
-    FeedMode,
     SnapshotMode,
     StaticGetSpecBuilder,
     StorageKind,
@@ -75,7 +74,9 @@ class _RecordingRecorder:
     def __init__(self) -> None:
         self.started: list[tuple[Provider, str]] = []
         self.windows: list[tuple[datetime, datetime]] = []
+        self.feed_from_versions: list[str] = []
         self.completed: list[tuple[int, int]] = []
+        self.completed_to_versions: list[str | None] = []
         self.failed: list[tuple[int, str]] = []
         self.frontier: datetime | None = None
 
@@ -90,8 +91,18 @@ class _RecordingRecorder:
         self.windows.append(window)
         return len(self.started)
 
-    def complete_run(self, run_id: int, *, row_count: int) -> None:
+    def start_feed_run(
+        self, provider: Provider, endpoint: str, *, from_version: str
+    ) -> int:
+        self.started.append((provider, endpoint))
+        self.feed_from_versions.append(from_version)
+        return len(self.started)
+
+    def complete_run(
+        self, run_id: int, *, row_count: int, to_version: str | None = None
+    ) -> None:
         self.completed.append((run_id, row_count))
+        self.completed_to_versions.append(to_version)
 
     def fail_run(self, run_id: int, *, error_detail: str) -> None:
         self.failed.append((run_id, error_detail))
@@ -103,7 +114,9 @@ class _RecordingRecorder:
 class _CompleteFailingRecorder(_RecordingRecorder):
     """A RunRecorder whose complete_run raises (a completion-write failure)."""
 
-    def complete_run(self, run_id: int, *, row_count: int) -> None:
+    def complete_run(
+        self, run_id: int, *, row_count: int, to_version: str | None = None
+    ) -> None:
         raise RuntimeError('completion write failed')
 
 
@@ -120,6 +133,7 @@ class _StubCursorAccess:
     def __init__(self, cursor: IncrementalCursor | None = None) -> None:
         self._cursor = cursor
         self.advance_calls: list[tuple[Provider, str, datetime]] = []
+        self.committed_tokens: list[str] = []
 
     def get_cursor(self, provider: Provider, endpoint: str) -> IncrementalCursor | None:
         return self._cursor
@@ -129,6 +143,12 @@ class _StubCursorAccess:
     ) -> bool:
         self.advance_calls.append((provider, endpoint, observed))
         return True
+
+    def commit_feed_token(
+        self, provider: Provider, endpoint: str, to_version: str
+    ) -> None:
+        self.committed_tokens.append(to_version)
+        self._cursor = FeedToken(from_version=to_version)
 
 
 class _ApplyingCursorAccess(_StubCursorAccess):
@@ -176,19 +196,6 @@ def _watermark_definition() -> EndpointDefinition[_WatermarkModel]:
         storage_kind=StorageKind.DATE_PARTITIONED,
         sync_mode=WatermarkMode(lookback=timedelta(days=1), cutoff=timedelta(days=1)),
         event_time_column='occurred_at',
-    )
-
-
-def _feed_definition() -> EndpointDefinition[_SnapshotModel]:
-    return EndpointDefinition(
-        provider=Provider.MOTIVE,
-        name='feed',
-        spec_builder=StaticGetSpecBuilder(base_url='https://x.test', path='/v1/feed'),
-        page_decoder=StubPageDecoder(),
-        response_model=_SnapshotModel,
-        quota_scope=QuotaScope.MOTIVE,
-        storage_kind=StorageKind.SINGLE,
-        sync_mode=FeedMode(),
     )
 
 
@@ -303,13 +310,6 @@ def test_unresolvable_client_opens_no_run(tmp_path: Path) -> None:
     with pytest.raises(ConfigurationError):
         runner.run(_snapshot_definition(), CannedDriver([]))
     assert recorder.started == []
-
-
-def test_feed_mode_is_not_yet_executable(tmp_path: Path) -> None:
-    recorder = _RecordingRecorder()
-    runner = _make_runner(recorder, tmp_path)
-    with pytest.raises(NotImplementedError):
-        runner.run(_feed_definition(), CannedDriver([]))
 
 
 class TestBatchObserver:

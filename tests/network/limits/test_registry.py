@@ -79,10 +79,11 @@ class TestRateLimiterRegistry:
 
 
 class TestRateLimitsFromConfigs:
-    def test_geotab_config_emits_both_method_class_scopes(self) -> None:
+    def test_geotab_config_emits_all_three_method_class_scopes(self) -> None:
         geotab = GeotabConfig()
         rate_limits = rate_limits_from_configs([MotiveConfig(), geotab])
         assert rate_limits[QuotaScope.GEOTAB_GET.value] is geotab.rate_limit
+        assert rate_limits[QuotaScope.GEOTAB_FEED.value] is geotab.feed_rate_limit
         assert (
             rate_limits[QuotaScope.GEOTAB_AUTHENTICATE.value]
             is geotab.authenticate_rate_limit
@@ -90,7 +91,8 @@ class TestRateLimitsFromConfigs:
         # The generic provider emission is untouched.
         assert QuotaScope.MOTIVE.value in rate_limits
 
-    def test_no_geotab_config_emits_neither_geotab_scope(self) -> None:
+    def test_no_geotab_config_emits_no_geotab_scope(self) -> None:
         rate_limits = rate_limits_from_configs([MotiveConfig()])
         assert QuotaScope.GEOTAB_GET.value not in rate_limits
+        assert QuotaScope.GEOTAB_FEED.value not in rate_limits
         assert QuotaScope.GEOTAB_AUTHENTICATE.value not in rate_limits

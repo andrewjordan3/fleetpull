@@ -15,7 +15,7 @@ contract), and the small declaration types beside it: ``StorageKind``, the
 ``SyncMode`` union (``SnapshotMode`` / ``WatermarkMode`` / ``FeedMode``), and
 the ``ResumeValue`` alias; the ``RequestShape`` union it declares on
 ``request_shape`` lives in its own family module (``request_shape.py``). The
-``event_time_column`` the watermark and date-partitioning read
+``event_time_column`` the watermark and the partitioned layouts read
 (§3/§5) now ships here on the binding, validated at construction; the records
 ``schema_overrides`` hatch (§9) is the one contract piece still deferred.
 """
@@ -34,7 +34,7 @@ from fleetpull.endpoints.shared.request_shape import (
     RosterFanOut,
     SingleFetch,
 )
-from fleetpull.incremental import DateWindow, FeedToken
+from fleetpull.incremental import DateWindow, FeedSeed, FeedToken
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import TransportClient
 from fleetpull.network.contract import PageDecoder, RequestSpec
@@ -59,12 +59,18 @@ class StorageKind(StrEnum):
     partitions. Layout only — *where* the bytes live, not how they merge.
 
     ``SINGLE`` is one ``data.parquet``; ``DATE_PARTITIONED`` is hive
-    ``date=YYYY-MM-DD`` partitions. The caller dispatches on it to pick the storage
-    path — read-the-whole-file for ``SINGLE``, touch-only-overlapping-partitions
-    for ``DATE_PARTITIONED``. What that read-modify-write *does* to the data —
-    full-replace, delete-by-window-then-append, or append-plus-dedup — is the
-    ``SyncMode``'s concern, not the layout's; the two are orthogonal axes the
-    storage layer combines.
+    ``date=YYYY-MM-DD`` partitions; ``APPEND_LOG`` is hive ``date=`` partitions
+    holding numbered ``part-NNNNN.parquet`` files that only ever accumulate —
+    the feed arm's append-only layout, where nothing is ever deleted or
+    replaced. The caller dispatches on it to pick the storage path —
+    read-the-whole-file for ``SINGLE``, touch-only-overlapping-partitions for
+    ``DATE_PARTITIONED``, append-new-parts-only for ``APPEND_LOG``. What that
+    write *does* to the data — full-replace, delete-by-window-then-append, or
+    append — is the ``SyncMode``'s concern, not the layout's; the two are
+    orthogonal axes the storage layer combines (``APPEND_LOG`` pairs only with
+    ``FeedMode``, validated at construction: append-only is the feed stream's
+    write semantic, and every windowed or snapshot semantic would corrupt an
+    accumulate-only layout).
 
     It lives here on the binding, not in ``vocabulary/``: unlike ``QuotaScope``
     (which config validates against, so it must sit in a leaf config can import),
@@ -74,6 +80,7 @@ class StorageKind(StrEnum):
 
     SINGLE = 'single'
     DATE_PARTITIONED = 'date_partitioned'
+    APPEND_LOG = 'append_log'
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,28 +165,36 @@ class FeedMode:
     Feed sync declaration (config): a marker carrying no configuration.
 
     The feed arm needs no config — its resume value is the stored ``FeedToken``
-    used directly (no lookback, no window). Its write semantic is *append* — feed
-    is a forward-only version stream, so new pages are appended; the §6 global
-    exact-dedup (on by default) clears the chunk-seam and pagination duplicates
-    that append alone would otherwise accumulate. A marker member of ``SyncMode``,
-    distinct from the runtime ``FeedToken`` cursor state in ``incremental/``.
+    used directly (no lookback, no window), or a ``FeedSeed`` from the sync-wide
+    cold-start anchor on the tokenless first run. Its write semantic is
+    *append-only*: the feed is a forward-only version stream stored as emitted
+    — every run appends new numbered part files into the event-date partitions
+    its records belong to, and nothing is ever deleted or replaced (DESIGN §4).
+    Re-emitted versions and crash-window duplicates land as new rows; the
+    consumer reconciles calculated feeds by ``(id, max version)`` and active
+    feeds by ``id``. A ``FeedMode`` endpoint therefore requires the
+    ``APPEND_LOG`` layout and an ``event_time_column`` (the records' own event
+    dates route the partitions), both validated at construction. A marker
+    member of ``SyncMode``, distinct from the runtime ``FeedToken`` cursor
+    state in ``incremental/``.
     """
 
 
 # The endpoint's sync-mode declaration (config): the caller matches on it to drive
 # both resume and write semantics — SnapshotMode -> no resume + full replace,
 # WatermarkMode -> resume resolver + delete-by-window-then-append, FeedMode -> the
-# stored token + append. Storage layout (StorageKind) is the orthogonal axis.
+# stored token (or cold-start seed) + append-only. Storage layout (StorageKind) is
+# the orthogonal axis.
 type SyncMode = SnapshotMode | WatermarkMode | FeedMode
 
 
 # The resume value a spec-builder consumes: a DateWindow (watermark, from the
-# resume resolver), a FeedToken (feed, the stored token), or None — meaning no
-# committed cursor, which covers a snapshot every run plus the watermark/feed
-# first-fetch bootstrap. Named here with SpecBuilder because it is the
-# spec-builder's input contract; the resolver's own return stays the narrower
-# DateWindow | None (watermark arm).
-type ResumeValue = DateWindow | FeedToken | None
+# resume resolver), a FeedToken (feed, the stored token), a FeedSeed (feed, the
+# cold-start anchor on the tokenless first run), or None — meaning no resume at
+# all, i.e. a snapshot every run. Named here with SpecBuilder because it is the
+# spec-builder's input contract; the resolver returns stay narrower per arm
+# (DateWindow | None for the watermark resolver, FeedResume for the feed one).
+type ResumeValue = DateWindow | FeedToken | FeedSeed | None
 
 
 class SpecBuilder(Protocol):
@@ -201,8 +216,8 @@ class SpecBuilder(Protocol):
         Build the endpoint's first request.
 
         Args:
-            resume: The resume value to inject — a ``DateWindow`` (watermark), a
-                ``FeedToken`` (feed), or ``None`` (no committed cursor).
+            resume: The resume value to inject — a ``DateWindow`` (watermark),
+                a ``FeedToken`` or ``FeedSeed`` (feed), or ``None`` (snapshot).
             member_values: The per-chain member binding the request shape
                 supplies — an empty mapping for a single-chain run, one
                 ``{member_key: member}`` entry per fan-out or sweep chain. The
@@ -293,10 +308,12 @@ class EndpointDefinition[ModelT: ResponseModel]:
         sync_mode: The sync-mode declaration (``SnapshotMode`` / ``WatermarkMode``
             / ``FeedMode``) — drives resume and write semantics.
         event_time_column: The response model's UTC datetime field the watermark
-            and date-partitioning read (§3/§5) — e.g. ``'located_at'``. ``None``
-            for endpoints with no event-time dimension (every snapshot). Required
-            for ``WatermarkMode`` / ``DATE_PARTITIONED``, forbidden for snapshots;
-            validated against ``response_model`` at construction.
+            and the partitioned layouts read (§3/§5) — e.g. ``'located_at'``.
+            ``None`` for endpoints with no event-time dimension (every
+            snapshot). Required for ``WatermarkMode`` / ``DATE_PARTITIONED`` /
+            ``APPEND_LOG`` (the feed cell routes each record into its event
+            date's partition by it), forbidden for snapshots; validated against
+            ``response_model`` at construction.
         request_shape: The request-cardinality declaration — exactly one
             ``RequestShape`` member, so mutual exclusion between patterns is
             structural. Defaults to ``SingleFetch()`` (one chain), keeping
@@ -417,14 +434,22 @@ class EndpointDefinition[ModelT: ResponseModel]:
         self._validate_completeness_check()
 
     def _validate_storage_sync_pairing(self) -> None:
-        """Reject a snapshot endpoint laid out anything but ``SINGLE``.
+        """Reject an invalid storage-kind / sync-mode pairing.
 
         A snapshot has no event-time dimension to partition on, so
         ``DATE_PARTITIONED`` is structurally unexecutable for it -- there is no
-        column for ``split_by_date`` to split on (DESIGN §3).
+        column for ``split_by_date`` to split on (DESIGN §3). The feed pairing
+        is exclusive in BOTH directions: ``FeedMode`` requires ``APPEND_LOG``
+        (append-only is the feed stream's one write semantic — any other
+        layout would delete or replace what the stored-as-emitted contract
+        must keep), and ``APPEND_LOG`` requires ``FeedMode`` (a windowed or
+        snapshot semantic run against an accumulate-only layout would either
+        never clear its window or grow a snapshot without bound).
 
         Raises:
-            ValueError: The endpoint is a snapshot with a non-``SINGLE`` layout.
+            ValueError: The endpoint is a snapshot with a non-``SINGLE``
+                layout, a feed with a non-``APPEND_LOG`` layout, or an
+                ``APPEND_LOG`` layout on a non-feed mode.
 
         Side Effects:
             None.
@@ -437,16 +462,33 @@ class EndpointDefinition[ModelT: ResponseModel]:
                 f'{self.provider.value}.{self.name}: SnapshotMode requires '
                 f'storage_kind SINGLE, got {self.storage_kind}.'
             )
+        if (
+            isinstance(self.sync_mode, FeedMode)
+            and self.storage_kind is not StorageKind.APPEND_LOG
+        ):
+            raise ValueError(
+                f'{self.provider.value}.{self.name}: FeedMode requires '
+                f'storage_kind APPEND_LOG, got {self.storage_kind}.'
+            )
+        if self.storage_kind is StorageKind.APPEND_LOG and not isinstance(
+            self.sync_mode, FeedMode
+        ):
+            raise ValueError(
+                f'{self.provider.value}.{self.name}: APPEND_LOG requires '
+                f'FeedMode, got {type(self.sync_mode).__name__}.'
+            )
 
     def _validate_event_time_column(self) -> None:
         """Validate the event-time column against sync mode, layout, and model.
 
-        Snapshots forbid it (no event-time dimension); ``WatermarkMode`` and
-        ``DATE_PARTITIONED`` require it (the watermark and the partition key both
-        read it). When present it must name a date-like field on the response
-        model, caught here at construction rather than mid-persist, where
-        ``split_by_date`` or ``latest_event_time`` would otherwise fail on a
-        non-temporal column after the fetch is already spent (DESIGN §3/§5).
+        Snapshots forbid it (no event-time dimension); ``WatermarkMode``,
+        ``DATE_PARTITIONED``, and ``APPEND_LOG`` require it (the watermark
+        reads it, and both partitioned layouts route rows into ``date=``
+        partitions by it). When present it must name a date-like field on the
+        response model, caught here at construction rather than mid-persist,
+        where ``split_by_date`` or ``latest_event_time`` would otherwise fail
+        on a non-temporal column after the fetch is already spent (DESIGN
+        §3/§5).
 
         Raises:
             ValueError: The column is required-but-missing, forbidden-but-present,
@@ -457,9 +499,8 @@ class EndpointDefinition[ModelT: ResponseModel]:
             None.
         """
         is_snapshot = isinstance(self.sync_mode, SnapshotMode)
-        requires_event_time = (
-            isinstance(self.sync_mode, WatermarkMode)
-            or self.storage_kind is StorageKind.DATE_PARTITIONED
+        requires_event_time = isinstance(self.sync_mode, WatermarkMode) or (
+            self.storage_kind in (StorageKind.DATE_PARTITIONED, StorageKind.APPEND_LOG)
         )
         if is_snapshot and self.event_time_column is not None:
             raise ValueError(
@@ -468,8 +509,9 @@ class EndpointDefinition[ModelT: ResponseModel]:
             )
         if requires_event_time and self.event_time_column is None:
             raise ValueError(
-                f'{self.provider.value}.{self.name}: WatermarkMode or '
-                f'DATE_PARTITIONED requires an event_time_column.'
+                f'{self.provider.value}.{self.name}: WatermarkMode, '
+                f'DATE_PARTITIONED, or APPEND_LOG requires an '
+                f'event_time_column.'
             )
         if self.event_time_column is not None:
             self._require_date_like_field(self.event_time_column)

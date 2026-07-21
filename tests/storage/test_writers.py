@@ -19,6 +19,7 @@ from fleetpull.incremental import DateWindow
 from fleetpull.model_contract import ResponseModel
 from fleetpull.models.motive import Vehicle
 from fleetpull.network.decoders import MotiveWrappedListPageDecoder
+from fleetpull.storage.append import FeedAppendWriter
 from fleetpull.storage.writers import (
     SnapshotWriter,
     WatermarkPartitionedWriter,
@@ -49,9 +50,7 @@ def _vehicles_definition(sync_mode: SyncMode) -> EndpointDefinition[Vehicle]:
     """The real Motive vehicles single-file binding with the given sync mode.
 
     select_writer reads only provider / name / storage_kind / sync_mode; the
-    other fields are the real vehicles binding (snapshot + SINGLE). A FeedMode
-    variant exercises the unbuilt-cell routing (feed needs no event_time_column,
-    so it constructs).
+    other fields are the real vehicles binding (snapshot + SINGLE).
     """
     return EndpointDefinition(
         provider=Provider.MOTIVE,
@@ -66,6 +65,48 @@ def _vehicles_definition(sync_mode: SyncMode) -> EndpointDefinition[Vehicle]:
         quota_scope=QuotaScope.MOTIVE,
         storage_kind=StorageKind.SINGLE,
         sync_mode=sync_mode,
+    )
+
+
+def _single_watermark_definition() -> EndpointDefinition[_LocationStub]:
+    """A single-file watermark binding -- the one remaining unbuilt cell."""
+    return EndpointDefinition(
+        provider=Provider.MOTIVE,
+        name='vehicle_locations',
+        spec_builder=StaticGetSpecBuilder(
+            base_url='https://api.gomotive.com', path='/v3/vehicle_locations'
+        ),
+        page_decoder=MotiveWrappedListPageDecoder(
+            list_key='vehicle_locations',
+            item_key='vehicle_location',
+            per_page=100,
+        ),
+        response_model=_LocationStub,
+        quota_scope=QuotaScope.MOTIVE,
+        storage_kind=StorageKind.SINGLE,
+        sync_mode=WatermarkMode(lookback=timedelta(days=1), cutoff=timedelta(days=2)),
+        event_time_column='located_at',
+    )
+
+
+def _feed_definition() -> EndpointDefinition[_LocationStub]:
+    """An append-log feed binding (the feed cell's shape)."""
+    return EndpointDefinition(
+        provider=Provider.GEOTAB,
+        name='log_records',
+        spec_builder=StaticGetSpecBuilder(
+            base_url='https://example.test', path='/apiv1'
+        ),
+        page_decoder=MotiveWrappedListPageDecoder(
+            list_key='vehicle_locations',
+            item_key='vehicle_location',
+            per_page=100,
+        ),
+        response_model=_LocationStub,
+        quota_scope=QuotaScope.GEOTAB_FEED,
+        storage_kind=StorageKind.APPEND_LOG,
+        sync_mode=FeedMode(),
+        event_time_column='located_at',
     )
 
 
@@ -267,8 +308,23 @@ class TestSelectWriter:
             select_writer(_vehicles_definition(SnapshotMode()), tmp_path, window=window)
 
     def test_raises_for_an_unbuilt_cell(self, tmp_path: Path) -> None:
+        # The single-file watermark cell is the one unbuilt (StorageKind,
+        # SyncMode) combination.
         with pytest.raises(NotImplementedError):
-            select_writer(_vehicles_definition(FeedMode()), tmp_path)
+            select_writer(_single_watermark_definition(), tmp_path)
+
+    def test_returns_feed_append_writer(self, tmp_path: Path) -> None:
+        writer = select_writer(_feed_definition(), tmp_path)
+        assert isinstance(writer, FeedAppendWriter)
+
+    def test_rejects_a_window_for_feed(self, tmp_path: Path) -> None:
+        # A feed has no window: its resume is the token stream.
+        window = DateWindow(
+            start=datetime(2026, 6, 1, tzinfo=UTC),
+            end=datetime(2026, 6, 2, tzinfo=UTC),
+        )
+        with pytest.raises(ValueError, match='no resume window'):
+            select_writer(_feed_definition(), tmp_path, window=window)
 
     def test_returns_watermark_partitioned_writer(self, tmp_path: Path) -> None:
         window = DateWindow(
