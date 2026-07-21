@@ -36,8 +36,8 @@ import polars as pl
 from fleetpull.exceptions import ProviderResponseError
 from fleetpull.storage.atomic import atomic_write_parquet
 from fleetpull.storage.files import append_part_file, partition_dir
-from fleetpull.storage.partition import split_by_date
 from fleetpull.storage.result import WriteResult
+from fleetpull.storage.splitting import split_by_date
 
 __all__: list[str] = ['FeedAppendWriter']
 

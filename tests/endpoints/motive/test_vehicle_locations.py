@@ -27,7 +27,7 @@ from fleetpull.models.motive import VehicleLocation
 from fleetpull.network.contract import HttpMethod
 from fleetpull.network.decoders import MotiveWrappedSinglePageDecoder
 from fleetpull.roster import RosterKey
-from fleetpull.storage.partitioning import window_dates
+from fleetpull.storage.pruning import window_dates
 from fleetpull.vocabulary import Provider, QuotaScope
 
 

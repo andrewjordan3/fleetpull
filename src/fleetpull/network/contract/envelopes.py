@@ -11,16 +11,33 @@ name lie.
 
 from typing import cast
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from fleetpull.exceptions import ProviderResponseError
 from fleetpull.vocabulary import JsonObject, JsonValue
 
 __all__: list[str] = [
+    'StrictEnvelopeSlice',
+    'require_child_object',
     'require_record_list',
     'unwrap_record_objects',
     'validated_envelope_slice',
 ]
+
+
+class StrictEnvelopeSlice(BaseModel):
+    """The base every private envelope-slice model subclasses.
+
+    The one home of the slice-model policy, so its rationale is stated once:
+    ``strict=True`` refuses type drift on the values the consumer acts on
+    (providers elsewhere stringify numerics, and a boolean must never pass as
+    an integer); ``extra='ignore'`` tolerates the envelope fields a slice
+    does not name (a slice reads its few load-bearing keys, never the whole
+    envelope); ``frozen=True`` keeps a validated slice immutable, like every
+    internal carrier.
+    """
+
+    model_config = ConfigDict(frozen=True, extra='ignore', strict=True)
 
 
 def validated_envelope_slice[ModelT: BaseModel](
@@ -70,6 +87,36 @@ def _require_json_object(value: JsonValue) -> JsonObject:
     if not isinstance(value, dict):
         raise ProviderResponseError(detail='response envelope is not a JSON object')
     return value
+
+
+def require_child_object(envelope: JsonValue, key: str) -> JsonObject:
+    """Return the JSON object at a top-level envelope key.
+
+    The nested-container step for envelopes whose record list sits one
+    level down: validates, in order, that the envelope is a JSON object,
+    ``key`` is present, and its value is itself a JSON object.
+
+    Args:
+        envelope: The parsed response body.
+        key: The top-level key whose value is the container object.
+
+    Returns:
+        The JSON object at ``key``.
+
+    Raises:
+        ProviderResponseError: When the envelope is not an object, ``key``
+            is absent, or its value is not a JSON object — each with a
+            message naming the failure.
+    """
+    response = _require_json_object(envelope)
+    if key not in response:
+        raise ProviderResponseError(
+            detail=f'response envelope is missing the record key {key!r}'
+        )
+    child = response[key]
+    if not isinstance(child, dict):
+        raise ProviderResponseError(detail=f'record key {key!r} is not a JSON object')
+    return child
 
 
 def require_record_list(envelope: JsonValue, key: str) -> list[JsonObject]:

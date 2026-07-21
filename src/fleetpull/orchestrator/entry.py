@@ -61,20 +61,17 @@ from typing import Protocol
 
 import polars as pl
 
-from fleetpull.endpoints.shared import (
-    EndpointDefinition,
-    RosterFanOut,
-    SnapshotMode,
-)
+from fleetpull.endpoints.shared import EndpointDefinition
 from fleetpull.exceptions import ConfigurationError
 from fleetpull.model_contract import ResponseModel
 from fleetpull.orchestrator.drivers import RequestDriver
 from fleetpull.orchestrator.outcome import CaughtUp, Executed, RunOutcome
-from fleetpull.orchestrator.runner import BatchObserver
+from fleetpull.orchestrator.roster_harvest import require_snapshot_feeder
 from fleetpull.orchestrator.shape_resolution import (
     FetchPoolSource,
     resolve_request_driver,
 )
+from fleetpull.orchestrator.streaming import BatchObserver
 from fleetpull.records import extract_roster_members
 from fleetpull.roster import RosterDefinition, RosterKey, RosterRegistry
 
@@ -233,20 +230,11 @@ def run_endpoint(
         successful feeder run, the sourced rosters' reconciled deltas.
     """
     sourced = rosters.registry.sourced_by(definition.provider, definition.name)
-    if sourced and not isinstance(definition.sync_mode, SnapshotMode):
-        # The refresh coordinator guards its own harvest route with the same
-        # vocabulary; this guards the tap route, where a windowed run's
-        # partial listing would mass-count absences against every member
-        # outside the window. A wiring bug, not a degradable condition.
-        raise ConfigurationError(
-            'roster feeder is not a snapshot endpoint',
-            provider=definition.provider.value,
-            endpoint=definition.name,
-            detail=(
-                'a roster source must be a full-listing (snapshot) endpoint: '
-                'reconcile is only correct over a complete listing'
-            ),
-        )
+    if sourced:
+        # The shared guard covers both reconcile routes: here the tap route,
+        # and the refresh coordinator's harvest route. A wiring bug, not a
+        # degradable condition.
+        require_snapshot_feeder(definition, definition.name)
     driver = _resolve_driver(definition, rosters, fetch_pools)
     if not sourced:
         return runner.run(definition, driver)
@@ -308,9 +296,9 @@ def _resolve_driver(
 def _refreshed_roster_members(
     definition: EndpointDefinition[ResponseModel],
     rosters: RosterMachinery,
-    shape: RosterFanOut,
+    roster: RosterKey,
 ) -> Sequence[str]:
-    """Resolve a ``RosterFanOut``'s refreshed membership -- the seam's feed.
+    """Resolve a named roster's refreshed membership -- the seam's feed.
 
     The roster machinery whole: registry lookup, the coordinator's refresh
     (staleness policy included), the store read, and the empty-roster guard.
@@ -319,7 +307,7 @@ def _refreshed_roster_members(
         definition: The endpoint being run, for the error context.
         rosters: The roster catalog, policy coordinator, and stored-membership
             read, bundled.
-        shape: The declared roster fan-out shape naming the roster.
+        roster: The roster the declared shape names.
 
     Returns:
         The roster's members, ascending, never empty.
@@ -336,16 +324,16 @@ def _refreshed_roster_members(
         Whatever the refresh performs (a feeder listing and a store write
         when stale).
     """
-    roster_definition = rosters.registry.get(shape.roster)
+    roster_definition = rosters.registry.get(roster)
     rosters.refresher.refresh_if_stale(roster_definition)
-    members = rosters.members.read_members(shape.roster)
+    members = rosters.members.read_members(roster)
     if not members:
         raise ConfigurationError(
             'fan-out roster is empty',
             provider=definition.provider.value,
             endpoint=definition.name,
             detail=(
-                f'roster {shape.roster.name!r} holds no members after refresh; '
+                f'roster {roster.name!r} holds no members after refresh; '
                 f'a fan-out over nothing is a failure to surface, not an empty '
                 f'dataset to emit'
             ),
@@ -353,7 +341,7 @@ def _refreshed_roster_members(
     logger.debug(
         'fan-out resolved: endpoint=%s roster=%s members=%d',
         definition.name,
-        shape.roster.name,
+        roster.name,
         len(members),
     )
     return members

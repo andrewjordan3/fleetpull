@@ -1,4 +1,4 @@
-# src/fleetpull/storage/partition.py
+# src/fleetpull/storage/splitting.py
 """Date-partition splitting: group a records frame into per-UTC-date sub-frames.
 
 The write-unit decomposition the date-partitioned layout (the ``StorageKind``

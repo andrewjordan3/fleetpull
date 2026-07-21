@@ -1,6 +1,6 @@
 # src/fleetpull/storage/staging.py
 """Date-partition staging and compaction: the write half of the date-partitioned
-path (the prune in ``partitioning.py`` is the delete half).
+path (the prune in ``pruning.py`` is the delete half).
 
 A date-partitioned watermark endpoint fans out -- the writer receives this run's
 records one piece at a time. ``stage_shard`` lands each piece immediately as date-split shards under
@@ -8,7 +8,8 @@ records one piece at a time. ``stage_shard`` lands each piece immediately as dat
 ``compact_partition`` folds each date's shards into that date's single
 ``part.parquet``; ``clear_partition_staging`` removes staging the writer is done with
 -- at construction a crashed run's stale shards, at finalize the shards just folded.
-Three stateless functions, each one concern; the writer (``writers.py``) orchestrates
+Three stateless functions, each one concern; the partitioned writer family
+(``partitioned.py``) orchestrates
 them and decides per cell whether compaction folds in the existing partition and
 whether the run prunes (DESIGN §3).
 
@@ -38,8 +39,8 @@ from fleetpull.storage.files import (
     partition_staging_dir,
     partition_staging_shard,
 )
-from fleetpull.storage.frames import drop_exact_duplicates
-from fleetpull.storage.partition import split_by_date
+from fleetpull.storage.frames import dedup_counting
+from fleetpull.storage.splitting import split_by_date
 
 __all__: list[str] = [
     'CompactionResult',
@@ -134,11 +135,10 @@ def compact_partition(
     if existing is not None:
         shard_frames.append(existing)
     combined = pl.concat(shard_frames)
-    before = combined.height
-    written = drop_exact_duplicates(combined) if drop_duplicates else combined
+    written, duplicates_dropped = dedup_counting(combined, enabled=drop_duplicates)
     atomic_write_parquet(written, partition_part_file(endpoint_dir, partition_date))
     return CompactionResult(
-        rows_written=written.height, duplicates_dropped=before - written.height
+        rows_written=written.height, duplicates_dropped=duplicates_dropped
     )
 
 

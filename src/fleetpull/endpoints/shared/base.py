@@ -11,10 +11,10 @@ its spec-builder.
 
 This module ships the binding, the two Protocols it defines (``SpecBuilder``
 and ``CompletenessCheck``; the ``PageDecoder`` it composes is imported from the
-contract), and the small declaration types beside it: ``StorageKind``, the
-``SyncMode`` union (``SnapshotMode`` / ``WatermarkMode`` / ``FeedMode``), and
-the ``ResumeValue`` alias; the ``RequestShape`` union it declares on
-``request_shape`` lives in its own family module (``request_shape.py``). The
+contract), and the ``ResumeValue`` alias; the declaration families the binding
+composes live in their own modules -- the ``RequestShape`` union in
+``request_shape.py``, ``StorageKind`` and the ``SyncMode`` union
+(``SnapshotMode`` / ``WatermarkMode`` / ``FeedMode``) in ``sync_mode.py``. The
 ``event_time_column`` the watermark and the partitioned layouts read
 (§3/§5) now ships here on the binding, validated at construction; the records
 ``schema_overrides`` hatch (§9) is the one contract piece still deferred.
@@ -22,8 +22,7 @@ the ``ResumeValue`` alias; the ``RequestShape`` union it declares on
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
-from enum import StrEnum
+from datetime import date, datetime
 from typing import Any, Protocol, get_args
 
 from fleetpull.endpoints.shared.request_shape import (
@@ -34,158 +33,24 @@ from fleetpull.endpoints.shared.request_shape import (
     RosterFanOut,
     SingleFetch,
 )
+from fleetpull.endpoints.shared.sync_mode import (
+    FeedMode,
+    SnapshotMode,
+    StorageKind,
+    SyncMode,
+    WatermarkMode,
+)
 from fleetpull.incremental import DateWindow, FeedSeed, FeedToken
 from fleetpull.model_contract import ResponseModel
-from fleetpull.network.client import TransportClient
-from fleetpull.network.contract import PageDecoder, RequestSpec
+from fleetpull.network.contract import EnvelopeFetcher, PageDecoder, RequestSpec
 from fleetpull.vocabulary import Provider, QuotaScope
 
 __all__: list[str] = [
     'CompletenessCheck',
     'EndpointDefinition',
-    'FeedMode',
     'ResumeValue',
-    'SnapshotMode',
     'SpecBuilder',
-    'StorageKind',
-    'SyncMode',
-    'WatermarkMode',
 ]
-
-
-class StorageKind(StrEnum):
-    """
-    The §3 storage *layout* an endpoint declares: one parquet file vs hive
-    partitions. Layout only — *where* the bytes live, not how they merge.
-
-    ``SINGLE`` is one ``data.parquet``; ``DATE_PARTITIONED`` is hive
-    ``date=YYYY-MM-DD`` partitions; ``APPEND_LOG`` is hive ``date=`` partitions
-    holding numbered ``part-NNNNN.parquet`` files that only ever accumulate —
-    the feed arm's append-only layout, where nothing is ever deleted or
-    replaced. The caller dispatches on it to pick the storage path —
-    read-the-whole-file for ``SINGLE``, touch-only-overlapping-partitions for
-    ``DATE_PARTITIONED``, append-new-parts-only for ``APPEND_LOG``. What that
-    write *does* to the data — full-replace, delete-by-window-then-append, or
-    append — is the ``SyncMode``'s concern, not the layout's; the two are
-    orthogonal axes the storage layer combines (``APPEND_LOG`` pairs only with
-    ``FeedMode``, validated at construction: append-only is the feed stream's
-    write semantic, and every windowed or snapshot semantic would corrupt an
-    accumulate-only layout).
-
-    It lives here on the binding, not in ``vocabulary/``: unlike ``QuotaScope``
-    (which config validates against, so it must sit in a leaf config can import),
-    ``StorageKind`` has no low-layer consumer — it travels with the
-    ``EndpointDefinition`` it configures.
-    """
-
-    SINGLE = 'single'
-    DATE_PARTITIONED = 'date_partitioned'
-    APPEND_LOG = 'append_log'
-
-
-@dataclass(frozen=True, slots=True)
-class SnapshotMode:
-    """
-    Snapshot sync declaration (config): a marker carrying no configuration.
-
-    The endpoint re-fetches its full current-state dataset every run and has no
-    resume — its spec-builder always receives ``resume=None`` (no window, no
-    token). Its write semantic is *full replacement* of the endpoint's current-
-    state dataset. A marker member of ``SyncMode``. Snapshot has no event-time
-    dimension to partition on, so a snapshot endpoint must be laid out
-    ``SINGLE`` — ``EndpointDefinition`` enforces that pairing at construction,
-    since ``DATE_PARTITIONED`` would have no event-time column to split on.
-    """
-
-
-@dataclass(frozen=True, slots=True)
-class WatermarkMode:
-    """
-    Watermark sync declaration (config): the late-arrival lookback margin.
-
-    The endpoint's sync *declaration*, distinct from the runtime
-    ``IncrementalCursor`` *state* in ``incremental/``: this configures how a fetch
-    resumes; the cursor is what it resumes from. Its write semantic is
-    *delete-by-window, then append* — the refetched window is cleared and replaced,
-    so late arrivals and in-window corrections land cleanly. ``lookback`` is the
-    margin the resume resolver subtracts from the stored watermark (§4) so late-
-    arriving records inside it are re-fetched; the resolver then floors the
-    start to its UTC midnight, so a lookback of N days re-covers N whole days
-    before the watermark's day. ``cutoff`` is the complementary
-    trailing-edge holdback: the window's end is held back this far from the clock
-    so a still-arriving day is never frozen as a complete partition. Both express
-    one physical concern -- provider data latency -- from opposite ends, so both
-    are sourced from the provider config (``lookback_days`` / ``cutoff_days``),
-    not defaulted on the mode.
-
-    Attributes:
-        lookback: How far before the watermark each resume re-fetches, to recover
-            records that landed after their event-time day.
-        cutoff: How far the window's end is held back from the clock, so the most
-            recent written partition is always a complete day. Day-granular; zero
-            adds no holdback beyond the resolver's own date alignment.
-        fixed_unit_days: The endpoint's fixed work-unit width in whole days, or
-            ``None`` (the default) to tile at ``sync.backfill_chunk_days``. Set
-            only by endpoints whose rows are per-request-window rollups: the
-            provider aggregates over exactly the requested window, so the unit
-            width is part of the ROW'S MEANING and must never float with user
-            configuration — the Samsara fuel-energy probe proved day rollups are
-            NOT a lossless decomposition of wider windows (summing two adjacent
-            day windows reproduced the two-day rollup on only 178 of 267
-            vehicles; DESIGN §8, 2026-07-21). When set, the window planner tiles
-            this endpoint's resume window into units of exactly this many days,
-            ignoring ``sync.backfill_chunk_days``; the config knob remains the
-            default for every endpoint that leaves this ``None``. Validated
-            >= 1 at construction.
-    """
-
-    lookback: timedelta
-    cutoff: timedelta
-    fixed_unit_days: int | None = None
-
-    def __post_init__(self) -> None:
-        """Validate the fixed unit width when one is declared.
-
-        Raises:
-            ValueError: ``fixed_unit_days`` is set but not >= 1 — a
-                zero-or-negative unit width can tile nothing.
-
-        Side Effects:
-            None -- reads fields and may raise.
-        """
-        if self.fixed_unit_days is not None and self.fixed_unit_days < 1:
-            raise ValueError(
-                f'fixed_unit_days must be >= 1 when set, got {self.fixed_unit_days}.'
-            )
-
-
-@dataclass(frozen=True, slots=True)
-class FeedMode:
-    """
-    Feed sync declaration (config): a marker carrying no configuration.
-
-    The feed arm needs no config — its resume value is the stored ``FeedToken``
-    used directly (no lookback, no window), or a ``FeedSeed`` from the sync-wide
-    cold-start anchor on the tokenless first run. Its write semantic is
-    *append-only*: the feed is a forward-only version stream stored as emitted
-    — every run appends new numbered part files into the event-date partitions
-    its records belong to, and nothing is ever deleted or replaced (DESIGN §4).
-    Re-emitted versions and crash-window duplicates land as new rows; the
-    consumer reconciles calculated feeds by ``(id, max version)`` and active
-    feeds by ``id``. A ``FeedMode`` endpoint therefore requires the
-    ``APPEND_LOG`` layout and an ``event_time_column`` (the records' own event
-    dates route the partitions), both validated at construction. A marker
-    member of ``SyncMode``, distinct from the runtime ``FeedToken`` cursor
-    state in ``incremental/``.
-    """
-
-
-# The endpoint's sync-mode declaration (config): the caller matches on it to drive
-# both resume and write semantics — SnapshotMode -> no resume + full replace,
-# WatermarkMode -> resume resolver + delete-by-window-then-append, FeedMode -> the
-# stored token (or cold-start seed) + append-only. Storage layout (StorageKind) is
-# the orthogonal axis.
-type SyncMode = SnapshotMode | WatermarkMode | FeedMode
 
 
 # The resume value a spec-builder consumes: a DateWindow (watermark, from the
@@ -241,18 +106,22 @@ class CompletenessCheck(Protocol):
     ``GetCountOf`` beside the capped ``Get`` is the first case). An
     implementation fires its count request through the SAME open client
     the harvest used, so auth, the limiter (token-per-attempt on the
-    given scope), and the classifier all apply. A plain Protocol (not
+    given scope), and the classifier all apply -- typed against the
+    contract's one-method ``EnvelopeFetcher``, which ``TransportClient``
+    satisfies structurally, so this binding layer never imports the
+    client. A plain Protocol (not
     ``@runtime_checkable``): it is only declared on the stateless
     ``EndpointDefinition`` and called by the driver, never verified
     dynamically.
     """
 
-    def expected_count(self, client: TransportClient, quota_scope: str) -> int:
+    def expected_count(self, client: EnvelopeFetcher, quota_scope: str) -> int:
         """
         Return the provider-reported count of the harvested entity.
 
         Args:
-            client: The open transport client the harvest ran on.
+            client: The open transport client the harvest ran on (its
+                single-request ``fetch_envelope`` surface).
             quota_scope: The endpoint's rate-limit scope key -- the
                 count request spends from the same budget as the data
                 pages.
@@ -346,6 +215,31 @@ class EndpointDefinition[ModelT: ResponseModel]:
     request_shape: RequestShape = field(default_factory=SingleFetch)
     completeness_check: CompletenessCheck | None = None
 
+    @property
+    def required_event_time_column(self) -> str:
+        """The declared event-time column, narrowed for cells that require one.
+
+        Construction validation already guarantees a ``WatermarkMode``,
+        ``DATE_PARTITIONED``, or ``APPEND_LOG`` binding declares the column
+        (``_validate_event_time_column``), so a ``None`` here is impossible on
+        any constructed binding -- this property states that narrowing once
+        for every consumer instead of a per-call-site ``is None`` raise.
+
+        Returns:
+            The declared ``event_time_column``.
+
+        Raises:
+            RuntimeError: ``event_time_column`` is ``None`` -- construction
+                validation was bypassed, a wiring bug surfaced loudly.
+        """
+        if self.event_time_column is None:
+            raise RuntimeError(
+                f'{self.provider.value}.{self.name}: event_time_column is None '
+                f'on a cell that requires one -- construction validation '
+                f'should have rejected this binding'
+            )
+        return self.event_time_column
+
     def __post_init__(self) -> None:
         """Validate the binding's storage / sync / event-time / shape coherence.
 
@@ -363,6 +257,7 @@ class EndpointDefinition[ModelT: ResponseModel]:
         self._validate_storage_sync_pairing()
         self._validate_event_time_column()
         self._validate_request_shape()
+        self._validate_completeness_check()
 
     def _validate_request_shape(self) -> None:
         """Reject a request shape (or its check pairing) outside its semantics.
@@ -431,7 +326,6 @@ class EndpointDefinition[ModelT: ResponseModel]:
                 )
             case _:
                 pass
-        self._validate_completeness_check()
 
     def _validate_storage_sync_pairing(self) -> None:
         """Reject an invalid storage-kind / sync-mode pairing.

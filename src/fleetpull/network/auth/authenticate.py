@@ -26,14 +26,18 @@ from http import HTTPStatus
 from typing import Final, NoReturn
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
 from fleetpull.config import GeotabAuthConfig, HttpConfig
 from fleetpull.exceptions import AuthenticationError, ProviderResponseError
 from fleetpull.network.auth.models import AuthenticationResult
-from fleetpull.network.contract import body_snippet, validated_envelope_slice
+from fleetpull.network.contract import (
+    StrictEnvelopeSlice,
+    body_snippet,
+    validated_envelope_slice,
+)
 from fleetpull.network.limits import RateLimiterRegistry
-from fleetpull.network.posture import client_timeout, client_verify
+from fleetpull.network.posture import new_http_client
 from fleetpull.vocabulary import JsonValue
 
 __all__: list[str] = ['build_geotab_authenticator']
@@ -55,7 +59,7 @@ _THIS_SERVER_PATH: Final[str] = 'ThisServer'
 _INVALID_USER_TYPE: Final[str] = 'InvalidUserException'
 
 
-class _AuthenticateCredentials(BaseModel):
+class _AuthenticateCredentials(StrictEnvelopeSlice):
     """The credentials block of a successful Authenticate result.
 
     Only ``sessionId`` is consumed — ``database`` and ``userName`` are
@@ -63,41 +67,31 @@ class _AuthenticateCredentials(BaseModel):
     here.
     """
 
-    model_config = ConfigDict(frozen=True, extra='ignore', strict=True)
-
     session_id: str = Field(alias='sessionId')
 
 
-class _AuthenticateResult(BaseModel):
+class _AuthenticateResult(StrictEnvelopeSlice):
     """A successful Authenticate ``result``: credentials and the host path."""
-
-    model_config = ConfigDict(frozen=True, extra='ignore', strict=True)
 
     credentials: _AuthenticateCredentials
     path: str
 
 
-class _AuthenticateErrorData(BaseModel):
+class _AuthenticateErrorData(StrictEnvelopeSlice):
     """The ``error.data`` block; ``type`` is the authoritative discriminator."""
-
-    model_config = ConfigDict(frozen=True, extra='ignore', strict=True)
 
     type: str
 
 
-class _AuthenticateError(BaseModel):
+class _AuthenticateError(StrictEnvelopeSlice):
     """A failing Authenticate ``error`` envelope (inside HTTP 200)."""
-
-    model_config = ConfigDict(frozen=True, extra='ignore', strict=True)
 
     message: str | None = None
     data: _AuthenticateErrorData
 
 
-class _AuthenticateEnvelope(BaseModel):
+class _AuthenticateEnvelope(StrictEnvelopeSlice):
     """The JSON-RPC envelope slice: exactly one of error or result is meaningful."""
-
-    model_config = ConfigDict(frozen=True, extra='ignore', strict=True)
 
     error: _AuthenticateError | None = None
     result: _AuthenticateResult | None = None
@@ -269,10 +263,7 @@ def build_geotab_authenticator(
         # buys nothing worth a held resource.
         with (
             limiter.request_slot(),
-            httpx.Client(
-                verify=client_verify(http_config),
-                timeout=client_timeout(http_config),
-            ) as client,
+            new_http_client(http_config) as client,
         ):
             response = client.post(url, json=request_body)
         return _resolve_authenticate_outcome(response, config)

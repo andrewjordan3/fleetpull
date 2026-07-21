@@ -11,6 +11,7 @@ External callers import these names here."""
 from fleetpull.network.client.page import FetchedPage
 from fleetpull.network.client.profile import ProviderProfile
 from fleetpull.network.client.registry import ProviderClientRegistry
+from fleetpull.network.client.registry_base import ProviderResourceRegistry
 from fleetpull.network.client.runtime import ClientRuntime
 from fleetpull.network.client.transport import TransportClient
 
@@ -19,5 +20,6 @@ __all__: list[str] = [
     'FetchedPage',
     'ProviderClientRegistry',
     'ProviderProfile',
+    'ProviderResourceRegistry',
     'TransportClient',
 ]

@@ -12,7 +12,10 @@ from fleetpull.network.contract.classifier import (
     body_snippet,
     retry_after_seconds_from_headers,
 )
+from fleetpull.network.contract.envelope_fetcher import EnvelopeFetcher
 from fleetpull.network.contract.envelopes import (
+    StrictEnvelopeSlice,
+    require_child_object,
     require_record_list,
     unwrap_record_objects,
     validated_envelope_slice,
@@ -31,12 +34,15 @@ __all__: list[str] = [
     'AuthStrategy',
     'ClassifiedResponse',
     'DecodedPage',
+    'EnvelopeFetcher',
     'HttpMethod',
     'PageAdvance',
     'PageDecoder',
     'RequestSpec',
     'ResponseClassifier',
+    'StrictEnvelopeSlice',
     'body_snippet',
+    'require_child_object',
     'require_record_list',
     'retry_after_seconds_from_headers',
     'unwrap_record_objects',

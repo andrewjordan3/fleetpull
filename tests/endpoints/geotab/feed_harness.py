@@ -41,7 +41,8 @@ from fleetpull.network.client import TransportClient
 from fleetpull.network.contract import RequestSpec
 from fleetpull.orchestrator.drivers import SingleRequestDriver
 from fleetpull.orchestrator.outcome import RunOutcome
-from fleetpull.orchestrator.runner import EndpointRunner, RunStateAccess
+from fleetpull.orchestrator.runner import EndpointRunner
+from fleetpull.orchestrator.spine import RunStateAccess
 from fleetpull.state import (
     CursorStore,
     RunLedger,

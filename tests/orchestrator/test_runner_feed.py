@@ -47,7 +47,8 @@ from fleetpull.incremental import FeedSeed, FeedToken, IncrementalCursor
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import FetchedPage, TransportClient
 from fleetpull.orchestrator.outcome import Executed
-from fleetpull.orchestrator.runner import CursorAccess, EndpointRunner, RunStateAccess
+from fleetpull.orchestrator.runner import EndpointRunner
+from fleetpull.orchestrator.spine import CursorAccess, RunStateAccess
 from fleetpull.state import (
     CursorStore,
     RunLedger,

@@ -28,14 +28,20 @@ caller's serial per-page sequencing (the reasoning on the method).
 """
 
 import logging
+import sqlite3
 from datetime import datetime
 from enum import StrEnum
 from typing import Final
 
 from fleetpull.exceptions import ConfigurationError
 from fleetpull.incremental import DateWatermark, FeedToken, IncrementalCursor
-from fleetpull.state.database import SqliteScalar, StateDatabase
-from fleetpull.timing import Clock, from_iso8601, to_iso8601
+from fleetpull.state.database import (
+    SqliteScalar,
+    StateDatabase,
+    expect_text,
+    parse_stored_instant,
+)
+from fleetpull.timing import Clock, to_iso8601
 from fleetpull.vocabulary import Provider
 
 __all__: list[str] = ['CursorKind', 'CursorStore']
@@ -103,15 +109,12 @@ def _deserialize_cursor(
         ) from error
     match kind:
         case CursorKind.DATE_WATERMARK:
-            try:
-                watermark: datetime = from_iso8601(value_text)
-            except ValueError as error:
-                raise ConfigurationError(
-                    'state database holds an unparseable watermark cursor',
-                    provider=provider.value,
-                    endpoint=endpoint,
-                    detail=f'cursor value {value_text!r} is not ISO-8601 UTC',
-                ) from error
+            watermark: datetime = parse_stored_instant(
+                value_text,
+                provider=provider,
+                endpoint=endpoint,
+                column='watermark cursor value',
+            )
             return DateWatermark(watermark=watermark)
         case CursorKind.FEED_TOKEN:
             return FeedToken(from_version=value_text)
@@ -121,23 +124,9 @@ _SELECT_CURSOR_SQL: Final[str] = (
     'SELECT kind, value FROM cursors WHERE provider = ? AND endpoint = ?'
 )
 
-# The atomic forward-only advance (DESIGN section 5, 2026-07-20): the
-# monotonicity guard lives INSIDE the statement, so concurrent unit
-# completions racing their prefix commits can never interleave a stale
-# read into a backward write. Lexical > on ``to_iso8601``'s fixed-width
-# Z-form is chronological. The kind guard keeps a feed cursor untouched;
-# the caller distinguishes that case loudly (see advance_watermark_forward).
-_ADVANCE_WATERMARK_SQL: Final[str] = """
-INSERT INTO cursors (provider, endpoint, kind, value, updated_at)
-VALUES (?, ?, ?, ?, ?)
-ON CONFLICT (provider, endpoint) DO UPDATE SET
-    value = excluded.value,
-    updated_at = excluded.updated_at
-WHERE cursors.kind = excluded.kind AND excluded.value > cursors.value
-"""
-
 # The feed arm's kind-guarded last-write-wins commit (DESIGN section 5,
-# 2026-07-21): the in-statement kind guard keeps a stored watermark
+# 2026-07-21) — and the shared upsert skeleton both writes are stated on:
+# the in-statement kind guard keeps a stored watermark
 # untouched (the caller distinguishes that refusal loudly — see
 # commit_feed_token); the value is otherwise overwritten unconditionally.
 # Deliberately NO monotonicity guard, unlike the watermark's: the token is
@@ -156,6 +145,64 @@ ON CONFLICT (provider, endpoint) DO UPDATE SET
     updated_at = excluded.updated_at
 WHERE cursors.kind = excluded.kind
 """
+
+# The atomic forward-only advance (DESIGN section 5, 2026-07-20): the feed
+# write's kind-guarded upsert plus the monotonicity conjunct, derived so the
+# skeleton is stated once and only the conjunct distinguishes the arms. The
+# guard lives INSIDE the statement, so concurrent unit
+# completions racing their prefix commits can never interleave a stale
+# read into a backward write. Lexical > on ``to_iso8601``'s fixed-width
+# Z-form is chronological. The kind guard keeps a feed cursor untouched;
+# the caller distinguishes that case loudly (see advance_watermark_forward).
+_ADVANCE_WATERMARK_SQL: Final[str] = (
+    _COMMIT_FEED_TOKEN_SQL.rstrip('\n') + ' AND excluded.value > cursors.value\n'
+)
+
+
+def _stored_kind(
+    connection: sqlite3.Connection, provider: Provider, endpoint: str
+) -> SqliteScalar:
+    """Read the stored cursor row's ``kind`` for a refused write's diagnostic.
+
+    Runs on the refusing write's own connection, inside its still-open
+    transaction — the guarded upsert already refused and changed nothing,
+    so the read sees exactly the row the guard compared against.
+
+    Args:
+        connection: The refusing write's open connection.
+        provider: The provider whose row to read.
+        endpoint: The endpoint whose row to read.
+
+    Returns:
+        The stored ``kind`` scalar, or ``None`` when no row exists.
+    """
+    row: tuple[SqliteScalar, SqliteScalar] | None = connection.execute(
+        _SELECT_CURSOR_SQL, (provider.value, endpoint)
+    ).fetchone()
+    return None if row is None else row[0]
+
+
+def _guarded_upsert(
+    connection: sqlite3.Connection, sql: str, params: tuple[str, ...]
+) -> bool:
+    """Execute one guarded cursor upsert and report whether it wrote.
+
+    The Python half of the shared upsert skeleton: the guard semantics stay
+    entirely inside ``sql`` (the §5 guard-placement doctrine); this helper
+    only executes and detects whether the guarded statement changed a row.
+
+    Args:
+        connection: The write's open connection.
+        sql: The guarded upsert statement.
+        params: The statement's positional bindings.
+
+    Returns:
+        ``True`` when a row was inserted or updated; ``False`` when the
+        in-statement guard refused the write.
+    """
+    changes_before: int = connection.total_changes
+    connection.execute(sql, params)
+    return connection.total_changes > changes_before
 
 
 class CursorStore:
@@ -220,11 +267,12 @@ class CursorStore:
         kind_text, value_text = row
         # The columns are TEXT NOT NULL under STRICT, so non-text is a SQLite
         # contract violation, surfaced loudly (the database.py narrowing pattern).
-        if not isinstance(kind_text, str):
-            raise RuntimeError(f'cursors.kind was not text: {kind_text!r}')
-        if not isinstance(value_text, str):
-            raise RuntimeError(f'cursors.value was not text: {value_text!r}')
-        return _deserialize_cursor(provider, endpoint, kind_text, value_text)
+        return _deserialize_cursor(
+            provider,
+            endpoint,
+            expect_text(kind_text, 'cursors.kind'),
+            expect_text(value_text, 'cursors.value'),
+        )
 
     def commit_feed_token(
         self, provider: Provider, endpoint: str, to_version: str
@@ -263,9 +311,9 @@ class CursorStore:
             Opens a connection; inserts or overwrites at most one row; commits.
         """
         updated_at: str = to_iso8601(self._clock.now_utc())
-        with self._database.connect() as connection:
-            changes_before: int = connection.total_changes
-            connection.execute(
+        with self._database.transaction() as connection:
+            committed: bool = _guarded_upsert(
+                connection,
                 _COMMIT_FEED_TOKEN_SQL,
                 (
                     provider.value,
@@ -275,24 +323,17 @@ class CursorStore:
                     updated_at,
                 ),
             )
-            committed: bool = connection.total_changes > changes_before
             if not committed:
                 # Last-write-wins can only be refused by the kind guard, so a
                 # refusal is always the cross-mode bug; the diagnostic read
-                # names the stored kind (the advance_watermark_forward
-                # pattern, outside the write's atomicity — the write already
-                # refused, nothing raced).
-                row: tuple[SqliteScalar, SqliteScalar] | None = connection.execute(
-                    _SELECT_CURSOR_SQL, (provider.value, endpoint)
-                ).fetchone()
-                stored_kind = None if row is None else row[0]
+                # names the stored kind.
+                stored_kind = _stored_kind(connection, provider, endpoint)
                 raise ConfigurationError(
                     'cross-mode feed-token commit refused',
                     provider=provider.value,
                     endpoint=endpoint,
                     detail=f'stored cursor kind is {stored_kind!r}, not a feed token',
                 )
-            connection.commit()
         logger.debug(
             'feed token committed: provider=%s endpoint=%s to_version=%s',
             provider.value,
@@ -337,9 +378,9 @@ class CursorStore:
         """
         value: str = to_iso8601(observed)
         updated_at: str = to_iso8601(self._clock.now_utc())
-        with self._database.connect() as connection:
-            changes_before: int = connection.total_changes
-            connection.execute(
+        with self._database.transaction() as connection:
+            advanced: bool = _guarded_upsert(
+                connection,
                 _ADVANCE_WATERMARK_SQL,
                 (
                     provider.value,
@@ -349,22 +390,23 @@ class CursorStore:
                     updated_at,
                 ),
             )
-            advanced: bool = connection.total_changes > changes_before
             if not advanced:
                 # Not-forward is normal; a kind mismatch is a bug. One
-                # diagnostic read distinguishes them, outside the write's
-                # atomicity (the write already refused, nothing raced).
-                row: tuple[SqliteScalar, SqliteScalar] | None = connection.execute(
-                    _SELECT_CURSOR_SQL, (provider.value, endpoint)
-                ).fetchone()
-                if row is not None and row[0] != CursorKind.DATE_WATERMARK.value:
+                # diagnostic read distinguishes them.
+                stored_kind = _stored_kind(connection, provider, endpoint)
+                if (
+                    stored_kind is not None
+                    and stored_kind != CursorKind.DATE_WATERMARK.value
+                ):
                     raise ConfigurationError(
                         'cross-mode watermark advance refused',
                         provider=provider.value,
                         endpoint=endpoint,
-                        detail=f'stored cursor kind is {row[0]!r}, not a date watermark',
+                        detail=(
+                            f'stored cursor kind is {stored_kind!r}, not a '
+                            f'date watermark'
+                        ),
                     )
-            connection.commit()
         if advanced:
             logger.debug(
                 'watermark advanced: provider=%s endpoint=%s watermark=%s',

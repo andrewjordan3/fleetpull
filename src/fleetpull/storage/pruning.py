@@ -1,4 +1,4 @@
-# src/fleetpull/storage/partitioning.py
+# src/fleetpull/storage/pruning.py
 """Date-partition pruning: drop the partitions a refresh window covers but did
 not write.
 
@@ -54,11 +54,9 @@ def window_dates(window: DateWindow) -> list[date]:
     """The calendar dates a half-open ``[start, end)`` window covers.
 
     A partition ``date=d`` is covered iff some instant of that day lies in
-    ``[start, end)`` -- the dates ``start.date()`` through ``(end - 1µs).date()``
-    inclusive. The half-open ``end`` is the load-bearing edge: a window ending
-    exactly at UTC midnight does *not* cover that date (``end`` is excluded), while
-    a mid-day ``end`` does. The one-microsecond step back is exact because every
-    datetime in fleetpull is microsecond-precision UTC end to end (DESIGN §3/§4).
+    ``[start, end)`` -- the dates ``start.date()`` through the window's
+    ``last_covered_date`` inclusive (the half-open edge and its one-microsecond
+    derivation are stated once, on ``DateWindow``).
 
     Args:
         window: The half-open ``[start, end)`` resume window.
@@ -71,7 +69,7 @@ def window_dates(window: DateWindow) -> list[date]:
         None -- pure function.
     """
     first = window.start.date()
-    last = (window.end - timedelta(microseconds=1)).date()
+    last = window.last_covered_date
     span_days = (last - first).days + 1
     return [first + timedelta(days=offset) for offset in range(span_days)]
 

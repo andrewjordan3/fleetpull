@@ -2,38 +2,19 @@
 """The run executor: run one endpoint to completion, once per (endpoint, run).
 
 ``EndpointRunner`` owns one endpoint's run and dispatches on its ``sync_mode``.
-The snapshot arm fetches once and full-replaces. The watermark arm is the
-unified plan-and-drive loop (DESIGN sections 4/5): re-claim any incomplete
-work units and drive them (``backfill_unit_workers`` concurrently), then
-resolve the residual window exactly as before -- watermark less lookback
-(floored), else coverage frontier, else the cold-start anchor, against the
-cutoff trailing edge -- plan it into ``backfill_chunk_days`` units (or the
-endpoint's declared ``fixed_unit_days``, which wins over config), and
-drive those. Every unit is its own transaction: fetch the unit's window
-(the fan-out threads unchanged within it), write parquet, record the
-ledger row, and mark the unit done with its folded observation. The
-watermark advances on the PREFIX-ADVANCE rule (2026-07-20): after each
-completion, to the maximum observation across the contiguous done-prefix,
-through the cursor store's atomic forward-only write -- so units may
-complete in any order and every persisted watermark is still true at every
-instant; a crash resumes from the work-units ledger instead of refetching
-the window. The feed arm (DESIGN sections 4/14, built 2026-07-21) drives
-the endpoint's version-token stream: resume is the stored ``FeedToken``,
-or a ``FeedSeed`` at the sync-wide cold-start anchor when none is stored
-(the seed rides ONLY the tokenless first run -- I4); each page then
-commits independently in the per-page crash order parquet BEFORE token
-(I1/I2) -- the append writer lands the page's rows durably, then the
-page's ``toVersion`` commits through the store's kind-guarded feed write
--- so a crash between the two refetches exactly one page on the next run
-and its rows land again as new appended rows, harmless under the
-stored-as-emitted contract. After a successful run fully commits, every
-arm projects the run's facts into the endpoint's ``metadata.json`` (DESIGN
-section 3) -- post-commit and best-effort, never part of the transaction.
-The pure resume decisions live in ``orchestrator/resume.py``, the
-per-batch transform in ``orchestrator/batch.py``, and the claim choreography
-in ``orchestrator/unit_loop.py``, so the runner only orchestrates -- read
-state, call pure functions, write state. Request cardinality and batch
-granularity are the driver's; the runner is blind to both.
+The snapshot arm lives here: fetch once, full-replace, record the run. The
+watermark arm is the ``WatermarkDrive`` (``orchestrator/watermark_drive.py``:
+the plan-and-drive unit loop with the prefix-advance watermark rule) and the
+feed arm is the ``FeedDrive`` (``orchestrator/feed_drive.py``: the per-page
+parquet-before-token drive) -- both constructed in ``__init__`` from the same
+``RunnerSpine`` (``orchestrator/spine.py``): the four collaborators plus the
+runner-owned seams, the ONE writer-factory call site (``_writer_for``) and
+the post-commit ``metadata.json`` projection
+(``orchestrator/metadata_projection.py``). Every run-opening arm wraps its
+protected block in the shared ``recorded_run`` spine
+(``orchestrator/recording.py``), so a failure records the run failed without
+masking the original error. Request cardinality and batch granularity are
+the driver's; the runner is blind to both.
 
 ``run`` takes an optional ``BatchObserver``: a generic hook handed each
 post-validation frame as the run streams. The runner knows nothing about what
@@ -41,355 +22,46 @@ an observer does with the frames (the caller boundary uses it to tap feeder
 runs for roster reconciliation, but that knowledge lives entirely there) -- an
 observer exception fails the run like any other batch-processing failure.
 
-The runner depends on narrow Protocols rather than the concrete state and network
-classes: ``ClientSource`` (the registry's ``client_for``) and the three
-state-database surfaces bundled as ``RunStateAccess`` -- ``RunRecorder`` (the
-ledger's lifecycle methods), ``CursorAccess`` (the cursor store's read and its
-two kind-guarded writes: the watermark advance and the feed-token commit), and
-``UnitQueue`` (the work-unit claim queue). It
+The runner depends on narrow Protocols rather than the concrete state and
+network classes -- ``ClientSource``, ``RunRecorder``, ``CursorAccess``, and
+``UnitQueue``, bundled as ``RunStateAccess`` (all on the spine module). It
 opens no clients and reads no credentials -- the already-open client source
 hands it the provider's client.
 """
 
 import logging
-from collections.abc import Callable, Iterator, Sequence
-from dataclasses import dataclass
-from datetime import datetime, timedelta
-from functools import partial
-from typing import Protocol
-
-import polars as pl
 
 from fleetpull.config import FleetpullConfig
 from fleetpull.endpoints.shared import (
     EndpointDefinition,
     FeedMode,
     SnapshotMode,
-    SyncMode,
     WatermarkMode,
 )
-from fleetpull.exceptions import ConfigurationError
-from fleetpull.incremental import (
-    DateWatermark,
-    DateWindow,
-    FeedResume,
-    FeedSeed,
-    FeedToken,
-    IncrementalCursor,
-    resolve_resume_start,
-    resolve_trailing_edge,
-    window_or_none,
-)
+from fleetpull.incremental import DateWindow
 from fleetpull.model_contract import ResponseModel
-from fleetpull.network.client import FetchedPage, TransportClient
-from fleetpull.orchestrator.backfill import plan_backfill_units
-from fleetpull.orchestrator.batch import (
-    ProcessedBatch,
-    WindowContext,
-    combine_latest_event_time,
-    process_batch,
-)
 from fleetpull.orchestrator.drivers import RequestDriver
-from fleetpull.orchestrator.outcome import CaughtUp, Executed, RunOutcome
-from fleetpull.orchestrator.resume import resolve_feed_resume, resolve_watermark_start
-from fleetpull.orchestrator.streaming import stream_processed_batches
-from fleetpull.orchestrator.unit_loop import (
-    UnitCrew,
-    UnitQueue,
-    drive_claimable_units,
+from fleetpull.orchestrator.feed_drive import FeedDrive
+from fleetpull.orchestrator.metadata_projection import (
+    MetadataProjection,
+    sync_mode_label,
 )
-from fleetpull.paths import endpoint_directory
-from fleetpull.storage import (
-    DatasetWriter,
-    MetadataSnapshot,
-    WriteResult,
-    render_metadata_json,
-    select_writer,
-    write_metadata_json,
+from fleetpull.orchestrator.outcome import Executed, RunOutcome
+from fleetpull.orchestrator.recording import recorded_run
+from fleetpull.orchestrator.spine import ClientSource, RunnerSpine, RunStateAccess
+from fleetpull.orchestrator.streaming import (
+    BatchObserver,
+    drain_batches,
+    observe_batches,
+    stream_processed_batches,
 )
-from fleetpull.timing import Clock, to_iso8601
-from fleetpull.vocabulary import Provider
+from fleetpull.orchestrator.watermark_drive import WatermarkDrive
+from fleetpull.storage import DatasetWriter, select_writer
+from fleetpull.timing import Clock
 
-__all__: list[str] = [
-    'BatchObserver',
-    'ClientSource',
-    'CursorAccess',
-    'EndpointRunner',
-    'RunRecorder',
-    'RunStateAccess',
-]
+__all__: list[str] = ['EndpointRunner']
 
 logger = logging.getLogger(__name__)
-
-# The generic per-batch hook: called with each post-validation frame as the
-# run streams. The runner is blind to what an observer does; an observer
-# exception fails the run like any other batch-processing failure.
-type BatchObserver = Callable[[pl.DataFrame], None]
-
-
-def _observe_batches(
-    batches: Iterator[ProcessedBatch], observer: BatchObserver | None
-) -> Iterator[ProcessedBatch]:
-    """Pass batches through, handing each post-validation frame to the observer.
-
-    A transparent generator wrapper: with no observer the stream is yielded
-    unchanged; with one, each batch's frame is observed before the batch is
-    yielded onward, so memory stays bounded by one batch either way.
-
-    Args:
-        batches: The run's processed-batch stream.
-        observer: The per-batch hook, or ``None`` for a bare pass-through.
-
-    Yields:
-        The batches, unchanged and in order.
-    """
-    if observer is None:
-        yield from batches
-        return
-    for processed in batches:
-        observer(processed.frame)
-        yield processed
-
-
-def _drain_batches(
-    batches: Iterator[ProcessedBatch], writer: DatasetWriter
-) -> tuple[int, datetime | None]:
-    """Consume a processed-batch stream: write, count, and fold as it arrives.
-
-    The shared drain both runner arms run: each batch's frame is handed to
-    the writer as it yields (memory stays bounded by one batch) while the
-    fetched-row count sums and the in-window event-time maximum folds. On
-    the snapshot path every fold candidate is ``None`` (``process_batch``
-    with ``context=None``), so the fold component is ``None`` there and the
-    snapshot arm discards it.
-
-    Args:
-        batches: The run's processed-batch stream, ready to consume.
-        writer: The run's dataset writer, handed each frame in order.
-
-    Returns:
-        The fetched-row count and the folded in-window maximum event time
-        (``None`` on the snapshot path, or when no in-window event was
-        observed).
-    """
-    records_fetched = 0
-    latest_observed: datetime | None = None
-    for processed in batches:
-        writer.write(processed.frame)
-        records_fetched += processed.frame.height
-        latest_observed = combine_latest_event_time(
-            latest_observed, processed.latest_event_time
-        )
-    return records_fetched, latest_observed
-
-
-class ClientSource(Protocol):
-    """The client-lookup surface the executor needs (a subset of the registry)."""
-
-    def client_for(self, provider: Provider) -> TransportClient:
-        """Return the open transport client for a provider."""
-        ...
-
-
-class RunRecorder(Protocol):
-    """The run-recording surface the executor needs (a subset of RunLedger)."""
-
-    def start_snapshot_run(self, provider: Provider, endpoint: str) -> int:
-        """Open a snapshot run and return its id."""
-        ...
-
-    def complete_run(
-        self, run_id: int, *, row_count: int, to_version: str | None = None
-    ) -> None:
-        """Close a run as succeeded with its row count (and a feed run's token)."""
-        ...
-
-    def fail_run(self, run_id: int, *, error_detail: str) -> None:
-        """Close a run as failed with an error detail."""
-        ...
-
-    def start_window_run(
-        self, provider: Provider, endpoint: str, *, window: tuple[datetime, datetime]
-    ) -> int:
-        """Open a watermark run for a window and return its id."""
-        ...
-
-    def start_feed_run(
-        self, provider: Provider, endpoint: str, *, from_version: str
-    ) -> int:
-        """Open a feed run resuming from a token (or seed label) and return its id."""
-        ...
-
-    def coverage_frontier(self, provider: Provider, endpoint: str) -> datetime | None:
-        """Return the furthest window end a succeeded run has covered, if any."""
-        ...
-
-
-class CursorAccess(Protocol):
-    """The cursor surface the incremental arms need (a subset of CursorStore)."""
-
-    def get_cursor(self, provider: Provider, endpoint: str) -> IncrementalCursor | None:
-        """Return the persisted cursor for a (provider, endpoint), or None."""
-        ...
-
-    def advance_watermark_forward(
-        self, provider: Provider, endpoint: str, observed: datetime
-    ) -> bool:
-        """Atomically advance the date watermark iff strictly forward."""
-        ...
-
-    def commit_feed_token(
-        self, provider: Provider, endpoint: str, to_version: str
-    ) -> None:
-        """Commit the feed cursor, kind-guarded last-write-wins."""
-        ...
-
-
-@dataclass(frozen=True, slots=True)
-class RunStateAccess:
-    """The three state-database surfaces one endpoint run commits through.
-
-    They always travel together -- the composition root builds all three
-    over the one state database and the runner's per-unit crash order
-    sequences them (parquet -> ledger completion -> unit done-mark ->
-    watermark prefix commit) -- so they ride as one collaborator (the
-    bundle rule).
-
-    Attributes:
-        recorder: The run ledger's lifecycle surface.
-        cursors: The cursor store's read and kind-guarded-write surface.
-        units: The work-unit claim queue.
-    """
-
-    recorder: RunRecorder
-    cursors: CursorAccess
-    units: UnitQueue
-
-
-def _window_context(
-    definition: EndpointDefinition[ResponseModel], window: DateWindow, now: datetime
-) -> WindowContext:
-    """Build the per-batch transform context, asserting the event-time column.
-
-    A watermark endpoint always declares an ``event_time_column`` (the endpoint
-    definition forbids otherwise); this narrows it for the type checker and fails
-    loudly if that invariant is ever broken.
-
-    Args:
-        definition: The watermark endpoint being run.
-        window: The run's half-open window.
-        now: The run instant (the future-event guard's bound).
-
-    Returns:
-        The ``WindowContext`` for ``process_batch``.
-
-    Raises:
-        ConfigurationError: The endpoint declares no event-time column.
-    """
-    event_time_column = definition.event_time_column
-    if event_time_column is None:
-        raise ConfigurationError(
-            'watermark endpoint has no event_time_column',
-            provider=definition.provider.value,
-            endpoint=definition.name,
-        )
-    return WindowContext(window=window, now=now, event_time_column=event_time_column)
-
-
-def _sync_mode_label(sync_mode: SyncMode) -> str:
-    """The sync mode's human-readable label.
-
-    Shared by the ``metadata.json`` projection and the endpoint-start
-    narration line -- renaming a label changes both surfaces.
-
-    Args:
-        sync_mode: The endpoint's declared sync mode.
-
-    Returns:
-        ``'snapshot'``, ``'watermark'``, or ``'feed'``.
-    """
-    match sync_mode:
-        case SnapshotMode():
-            return 'snapshot'
-        case WatermarkMode():
-            return 'watermark'
-        case FeedMode():
-            return 'feed'
-
-
-def _serialize_cursor(
-    cursor: IncrementalCursor | None,
-) -> tuple[str | None, str | None]:
-    """Serialize a stored cursor to the metadata projection's plain pair.
-
-    The storage face never sees the cursor union (the §11 storage/state
-    boundary), so the runner flattens it here: the kind labels mirror the
-    cursor store's ``CursorKind`` discriminators.
-
-    Args:
-        cursor: The stored cursor, or ``None`` when none is persisted.
-
-    Returns:
-        ``(kind, value)`` -- ``('date_watermark', <iso8601>)``,
-        ``('feed_token', <token>)``, or ``(None, None)``.
-    """
-    match cursor:
-        case DateWatermark(watermark=watermark):
-            return ('date_watermark', to_iso8601(watermark))
-        case FeedToken(from_version=from_version):
-            return ('feed_token', from_version)
-        case None:
-            return (None, None)
-
-
-def _feed_resume_label(resume: FeedResume) -> str:
-    """The ledger's ``from_version`` text for a feed run's resume value.
-
-    A resumed run records the token verbatim; a seeded run records the
-    self-describing ``seed:<iso8601>`` marker (the ``runs`` table requires a
-    non-null ``from_version`` on a feed row, and the seed date IS what the
-    run resumed from -- the convention is recorded on
-    ``RunLedger.start_feed_run``).
-
-    Args:
-        resume: The run's resolved feed resume value.
-
-    Returns:
-        The token, or ``seed:<iso8601 start>`` for a seeded run.
-    """
-    match resume:
-        case FeedToken(from_version=from_version):
-            return from_version
-        case FeedSeed(start=start):
-            return f'seed:{to_iso8601(start)}'
-
-
-def _log_feed_resume(provider: Provider, endpoint: str, resume: FeedResume) -> None:
-    """Narrate a feed run's resume point at INFO: seeded or resumed.
-
-    Args:
-        provider: The endpoint's provider.
-        endpoint: The endpoint name.
-        resume: The run's resolved feed resume value.
-
-    Side Effects:
-        Emits one INFO line.
-    """
-    match resume:
-        case FeedToken(from_version=from_version):
-            logger.info(
-                'feed run resumed: provider=%s endpoint=%s from_version=%s',
-                provider.value,
-                endpoint,
-                from_version,
-            )
-        case FeedSeed(start=start):
-            logger.info(
-                'feed run seeded: provider=%s endpoint=%s from_date=%s',
-                provider.value,
-                endpoint,
-                to_iso8601(start),
-            )
 
 
 class EndpointRunner:
@@ -397,9 +69,9 @@ class EndpointRunner:
 
     Constructed once with its four collaborators (client source, the bundled
     state surfaces, clock, the root config); ``run`` takes the endpoint and
-    its request driver, so one instance runs every endpoint. All three arms
-    are built: the snapshot arm, the watermark arm's plan-and-drive unit
-    loop, and the feed arm's per-page token drive.
+    its request driver, so one instance runs every endpoint. The snapshot
+    arm lives on the class; the watermark and feed arms are the two drive
+    classes built in ``__init__`` from the shared spine.
     """
 
     def __init__(
@@ -416,21 +88,27 @@ class EndpointRunner:
                 store, and the work-unit queue.
             clock: Supplies the run instant (trailing edge, future-event guard).
             config: The root config -- the container its composition root
-                already holds. The runner reads exactly four values:
-                ``sync.default_start_datetime`` (the cold-start anchor),
-                ``sync.backfill_chunk_days`` (the unit width newly planned
-                windows tile into, unless the endpoint's ``WatermarkMode``
-                declares a ``fixed_unit_days`` override),
-                ``storage.dataset_root`` (where the
-                writers land), and ``storage.drop_exact_duplicates`` (the
-                writers' exact-dedup switch).
+                already holds. The runner reads the ``sync`` section (the
+                cold-start anchor, the unit width, and the unit worker
+                count, handed to the drives on the spine) plus two storage
+                values: ``storage.dataset_root`` (where the writers land)
+                and ``storage.drop_exact_duplicates`` (the writers'
+                exact-dedup switch).
         """
-        self._client_source = client_source
-        self._state = state
-        self._clock = clock
-        self._sync_config = config.sync
         self._dataset_root = config.storage.dataset_root
         self._drop_duplicates = config.storage.drop_exact_duplicates
+        self._spine = RunnerSpine(
+            clients=client_source,
+            state=state,
+            clock=clock,
+            sync=config.sync,
+            make_writer=self._writer_for,
+            projection=MetadataProjection(
+                state.cursors, clock, config.storage.dataset_root
+            ),
+        )
+        self._watermark_drive = WatermarkDrive(self._spine)
+        self._feed_drive = FeedDrive(self._spine)
 
     def run(
         self,
@@ -460,23 +138,49 @@ class EndpointRunner:
             FleetpullError: A fetch, validation, or write failure -- the run is
                 recorded failed and the error propagates.
         """
-        endpoint_started = self._clock.monotonic_seconds()
+        endpoint_started = self._spine.clock.monotonic_seconds()
         logger.info(
             'endpoint started: provider=%s endpoint=%s mode=%s',
             definition.provider.value,
             definition.name,
-            _sync_mode_label(definition.sync_mode),
+            sync_mode_label(definition.sync_mode),
         )
         match definition.sync_mode:
             case SnapshotMode():
                 outcome: RunOutcome = self._run_snapshot(definition, driver, observer)
             case WatermarkMode() as mode:
-                outcome = self._run_watermark(definition, driver, mode, observer)
+                outcome = self._watermark_drive.run(definition, driver, mode, observer)
             case FeedMode():
-                outcome = self._run_feed(definition, driver, observer)
+                outcome = self._feed_drive.run(definition, driver, observer)
         if isinstance(outcome, Executed):
             self._log_endpoint_complete(definition, outcome, endpoint_started)
         return outcome
+
+    def _writer_for(
+        self,
+        definition: EndpointDefinition[ResponseModel],
+        window: DateWindow | None = None,
+    ) -> DatasetWriter:
+        """Construct the endpoint's writer -- the ONE ``select_writer`` call site.
+
+        Every arm's writer routes through here (the drives receive it as the
+        spine's ``make_writer``), with the dataset root and the exact-dedup
+        switch bound once at construction.
+
+        Args:
+            definition: The endpoint being run.
+            window: The run's resolved resume window, for the incremental
+                cells; ``None`` for the snapshot and feed cells.
+
+        Returns:
+            The endpoint's ``DatasetWriter`` for this run.
+        """
+        return select_writer(
+            definition,
+            self._dataset_root,
+            window=window,
+            drop_duplicates=self._drop_duplicates,
+        )
 
     def _run_snapshot(
         self,
@@ -511,479 +215,22 @@ class EndpointRunner:
             FleetpullError: A fetch, validation, write, or completion failure -- the
                 run is recorded failed and the original error re-raised.
         """
-        client = self._client_source.client_for(definition.provider)
-        run_id = self._state.recorder.start_snapshot_run(
-            definition.provider, definition.name
-        )
-        try:
-            writer = select_writer(
-                definition, self._dataset_root, drop_duplicates=self._drop_duplicates
-            )
+        recorder = self._spine.state.recorder
+        client = self._spine.clients.client_for(definition.provider)
+        run_id = recorder.start_snapshot_run(definition.provider, definition.name)
+        with recorded_run(recorder, run_id):
+            writer = self._writer_for(definition)
             batches = stream_processed_batches(
                 definition, driver, client, resume=None, context=None
             )
-            records_fetched, _ = _drain_batches(
-                _observe_batches(batches, observer), writer
+            records_fetched, _ = drain_batches(
+                observe_batches(batches, observer), writer
             )
             write = writer.finalize()
-            self._state.recorder.complete_run(run_id, row_count=records_fetched)
-        except Exception as error:
-            self._fail_run_safely(run_id, error)
-            raise
+            recorder.complete_run(run_id, row_count=records_fetched)
         outcome = Executed(records_fetched=records_fetched, write=write)
-        self._write_metadata_snapshot(definition, outcome, window=None)
+        self._spine.projection.project(definition, outcome, window=None)
         return outcome
-
-    def _run_feed(
-        self,
-        definition: EndpointDefinition[ResponseModel],
-        driver: RequestDriver,
-        observer: BatchObserver | None,
-    ) -> RunOutcome:
-        """Run the feed arm: drive the version-token stream, page by page.
-
-        Resume is the stored ``FeedToken`` used directly, or a ``FeedSeed``
-        at the sync-wide cold-start anchor when no token is stored -- the
-        seed rides ONLY the tokenless first run (I4; ``resolve_feed_resume``
-        makes it structural). The client is resolved before the run is
-        opened, so an unconfigured provider opens no dangling run. Each page
-        then commits independently through ``_consume_feed_pages`` in the
-        per-page crash order (parquet before token -- I1/I2); the ledger row
-        closes with the run's total row count and final ``toVersion`` after
-        the stream drains. A crash mid-stream leaves the run ``running``
-        (diagnostic only, the §5 stance) with every completed page's parquet
-        and token already committed -- the next run resumes from the last
-        committed token and refetches exactly one page, whose rows append
-        again as duplicates the stored-as-emitted contract absorbs (§4).
-
-        Args:
-            definition: The feed endpoint to run.
-            driver: The request driver supplying the run's pages (a
-                ``SingleRequestDriver`` -- feeds are single-chain).
-            observer: The optional per-frame hook, handed each
-                post-validation frame as the run streams.
-
-        Returns:
-            ``Executed`` with the fetched-row count and the append report.
-
-        Raises:
-            ConfigurationError: A watermark cursor is stored for this feed
-                endpoint (cross-mode corruption, from ``resolve_feed_resume``
-                -- raised before any run is opened), or a page carried no
-                durable progress (a non-feed decoder wired to a feed
-                endpoint).
-            FleetpullError: A fetch, validation, write, or completion failure
-                -- the run is recorded failed and the original error
-                re-raised; pages committed before it stand.
-        """
-        provider = definition.provider
-        name = definition.name
-        client = self._client_source.client_for(provider)
-        resume = resolve_feed_resume(
-            self._state.cursors.get_cursor(provider, name),
-            self._sync_config.default_start_datetime,
-            provider,
-            name,
-        )
-        _log_feed_resume(provider, name, resume)
-        run_id = self._state.recorder.start_feed_run(
-            provider, name, from_version=_feed_resume_label(resume)
-        )
-        try:
-            writer = select_writer(
-                definition, self._dataset_root, drop_duplicates=self._drop_duplicates
-            )
-            pages = driver.record_batches(definition, client, resume)
-            records_fetched, page_count, last_token = self._consume_feed_pages(
-                definition, pages, writer, observer
-            )
-            write = writer.finalize()
-            self._state.recorder.complete_run(
-                run_id, row_count=records_fetched, to_version=last_token
-            )
-        except Exception as error:
-            self._fail_run_safely(run_id, error)
-            raise
-        logger.info(
-            'feed complete: provider=%s endpoint=%s pages=%d records=%d to_version=%s',
-            provider.value,
-            name,
-            page_count,
-            records_fetched,
-            last_token,
-        )
-        outcome = Executed(records_fetched=records_fetched, write=write)
-        self._write_metadata_snapshot(definition, outcome, window=None)
-        return outcome
-
-    def _consume_feed_pages(
-        self,
-        definition: EndpointDefinition[ResponseModel],
-        pages: Iterator[FetchedPage],
-        writer: DatasetWriter,
-        observer: BatchObserver | None,
-    ) -> tuple[int, int, str]:
-        """Consume the feed stream: per page, parquet BEFORE token (I1/I2).
-
-        The per-page transaction (DESIGN section 14): validate and frame the
-        page (``process_batch`` with no window context -- the feed has no
-        window, no future-event guard, no fold; whatever the stream emits is
-        stored), hand the frame to the observer where one rides, append it
-        durably (the feed writer's ``write`` is durable on return -- the
-        append-log cell's contract), and only THEN commit the page's
-        ``toVersion``. The token therefore never moves past unwritten data:
-        a crash between the two loses only the token, and the next run
-        refetches that one page. An empty page (the at-head terminal)
-        appends nothing and re-commits its unchanged token -- the feed
-        always has a cursor to write (section 5).
-
-        Args:
-            definition: The feed endpoint being run.
-            pages: The driver's fetched-page stream, ready to consume.
-            writer: The run's append writer, handed each frame in order.
-            observer: The optional per-frame hook.
-
-        Returns:
-            The fetched-row count, the page count, and the final committed
-            ``toVersion``.
-
-        Raises:
-            ConfigurationError: A page carried no ``durable_progress`` -- a
-                non-feed decoder is wired to a feed endpoint, a construction
-                bug surfaced before the page's rows are written.
-            RuntimeError: The stream yielded no pages, violating the
-                client's at-least-one-page contract.
-
-        Side Effects:
-            Appends part files and commits the feed cursor, page by page.
-        """
-        records_fetched = 0
-        page_count = 0
-        last_token: str | None = None
-        for page in pages:
-            token = page.durable_progress
-            if token is None:
-                raise ConfigurationError(
-                    'feed page carries no durable progress',
-                    provider=definition.provider.value,
-                    endpoint=definition.name,
-                    detail=(
-                        'the endpoint declares FeedMode but its page decoder '
-                        'yielded no resume token -- a non-feed decoder is wired '
-                        'to a feed endpoint'
-                    ),
-                )
-            processed = process_batch(page.records, definition, None)
-            if observer is not None:
-                observer(processed.frame)
-            writer.write(processed.frame)
-            self._state.cursors.commit_feed_token(
-                definition.provider, definition.name, token
-            )
-            records_fetched += processed.frame.height
-            page_count += 1
-            last_token = token
-            logger.debug(
-                'feed page appended: provider=%s endpoint=%s page=%d records=%d '
-                'to_version=%s',
-                definition.provider.value,
-                definition.name,
-                page_count,
-                processed.frame.height,
-                token,
-            )
-        if last_token is None:
-            raise RuntimeError(
-                'feed drive yielded no pages -- fetch_pages always drives at least one'
-            )
-        return records_fetched, page_count, last_token
-
-    def _run_watermark(
-        self,
-        definition: EndpointDefinition[ResponseModel],
-        driver: RequestDriver,
-        mode: WatermarkMode,
-        observer: BatchObserver | None,
-    ) -> RunOutcome:
-        """Run the watermark arm: the plan-and-drive unit loop.
-
-        Incomplete units outrank the watermark: orphaned ``claimed`` units are
-        reset (an in-progress unit found at run start is by definition
-        orphaned -- fleetpull assumes a single driver per state database) and
-        every claimable unit is re-claimed and driven,
-        ``backfill_unit_workers`` at a time. Then the residual window is
-        resolved exactly as before -- the stored watermark less lookback
-        (floored), else the coverage frontier, else the cold-start anchor,
-        against the cutoff trailing edge -- planned into
-        ``backfill_chunk_days`` units (a window smaller than one chunk is
-        one unit: the daily run; an endpoint declaring
-        ``fixed_unit_days`` on its ``WatermarkMode`` tiles at exactly
-        that width instead, because on a window-grain rollup surface the
-        unit width is part of the row's meaning), and driven the same
-        way. Each unit commits
-        independently; the watermark advances per completion across the
-        contiguous done-prefix (the prefix-advance rule, so out-of-order
-        completions never overstate it); a failing unit returns to a
-        claimable state and fails the endpoint after in-flight siblings
-        finish. An invocation that drove nothing is ``CaughtUp``
-        -- the resume point had reached the trailing edge, or every planned
-        unit was already complete. After the last unit commits, the merged
-        outcome projects into ``metadata.json`` (post-commit, best-effort);
-        a ``CaughtUp`` invocation writes nothing.
-
-        Args:
-            definition: The watermark endpoint to run.
-            driver: The request driver supplying each unit's batches.
-            mode: The endpoint's watermark mode (lookback and cutoff).
-            observer: The optional per-frame hook, applied within every unit.
-
-        Returns:
-            ``Executed`` aggregated over the driven units, or ``CaughtUp``
-            when nothing was driven.
-
-        Raises:
-            ConfigurationError: A stored watermark dated after ``now`` (Guard A), a
-                cross-mode feed cursor on this endpoint, or a missing event-time
-                column.
-            FleetpullError: A fetch, validation, write, guard, or completion failure
-                -- the failed unit's run is recorded failed, the unit returns to a
-                claimable state, and the error re-raises.
-        """
-        provider = definition.provider
-        name = definition.name
-        # The cursor guards (Guard A, cross-mode) fire before any unit
-        # drives; the residual resolution below re-derives this value after
-        # the leftover units have advanced the cursor.
-        resolve_watermark_start(
-            self._state.cursors.get_cursor(provider, name),
-            mode.lookback,
-            self._clock.now_utc(),
-            provider,
-            name,
-        )
-        self._state.units.reset_claimed_to_pending(provider, name)
-        commit_prefix = partial(self._commit_watermark_prefix, provider, name)
-        # Heal a crash that landed between a unit's done-mark and its prefix
-        # commit: the prefix read is cheap and the advance is atomic and
-        # forward-only, so an up-to-date cursor makes this a no-op.
-        commit_prefix()
-        crew = UnitCrew(
-            queue=self._state.units,
-            provider=provider,
-            endpoint=name,
-            drive_unit=partial(self._drive_unit, definition, driver, observer),
-            commit_prefix=commit_prefix,
-        )
-        workers = self._sync_config.backfill_unit_workers
-        outcomes = drive_claimable_units(crew, workers=workers)
-        residual = self._resolve_residual_window(definition, mode)
-        if residual is not None:
-            # The endpoint's declared fixed unit width wins over config: on a
-            # window-grain rollup surface the unit width is part of the row's
-            # meaning (the provider aggregates over exactly the requested
-            # window), so it must never float with sync.backfill_chunk_days;
-            # config remains the default for endpoints declaring None.
-            chunk_days = (
-                self._sync_config.backfill_chunk_days
-                if mode.fixed_unit_days is None
-                else mode.fixed_unit_days
-            )
-            chunk = timedelta(days=chunk_days)
-            claimable_units = self._state.units.enqueue(
-                plan_backfill_units(provider, name, residual, chunk)
-            )
-            # The plan narrates here: the one moment the resolved window and
-            # its claimable-unit count (the idempotent enqueue's newly
-            # inserted rows -- leftovers were driven above) are both in hand.
-            logger.info(
-                'window planned: provider=%s endpoint=%s window_start=%s '
-                'window_end=%s claimable_units=%d',
-                provider.value,
-                name,
-                to_iso8601(residual.start),
-                to_iso8601(residual.end),
-                claimable_units,
-            )
-            outcomes.extend(drive_claimable_units(crew, workers=workers))
-        if not outcomes:
-            logger.info('caught up: provider=%s endpoint=%s', provider.value, name)
-            return CaughtUp()
-        merged = _merge_executed(outcomes)
-        # The residual window is the run's resolved window; a run that only
-        # re-drove leftover units resolved none, and its projection carries a
-        # null window.
-        self._write_metadata_snapshot(definition, merged, window=residual)
-        return merged
-
-    def _commit_watermark_prefix(self, provider: Provider, name: str) -> None:
-        """Advance the watermark across the contiguous done-prefix.
-
-        The prefix-advance rule's commit (DESIGN section 5, 2026-07-20):
-        read the maximum observation over the endpoint's contiguous
-        done-prefix and advance the watermark to it through the store's
-        atomic forward-only write. Invoked after every unit completion (and
-        once at run start, healing a crash between a done-mark and its
-        commit); concurrent invocations are safe -- the guard lives inside
-        the store's statement, so a stale prefix read can never write the
-        cursor backward.
-
-        Args:
-            provider: The provider whose watermark to commit.
-            name: The endpoint whose watermark to commit.
-
-        Side Effects:
-            May advance the endpoint's cursor row.
-        """
-        observation = self._state.units.done_prefix_observation(provider, name)
-        if observation is not None:
-            self._state.cursors.advance_watermark_forward(provider, name, observation)
-
-    def _resolve_residual_window(
-        self,
-        definition: EndpointDefinition[ResponseModel],
-        mode: WatermarkMode,
-    ) -> DateWindow | None:
-        """Resolve the not-yet-planned residual window, exactly as the resume chain.
-
-        The same resolution the whole-window arm performed, run after the
-        leftover units have driven: the stored watermark less the lookback
-        margin (floored to its UTC midnight), else the coverage frontier,
-        else the cold-start anchor -- against the cutoff-held trailing edge.
-        Both bounds are midnight-aligned by construction, which is what makes
-        the result plannable into whole-day units.
-
-        Args:
-            definition: The watermark endpoint being run.
-            mode: The endpoint's watermark mode (lookback and cutoff).
-
-        Returns:
-            The residual ``DateWindow``, or ``None`` when the resume point
-            has reached the trailing edge (nothing new to plan).
-
-        Raises:
-            ConfigurationError: A stored watermark dated after ``now`` (Guard
-                A) or a cross-mode feed cursor (from
-                ``resolve_watermark_start``).
-        """
-        now = self._clock.now_utc()
-        end = resolve_trailing_edge(now, mode.cutoff)
-        stored = self._state.cursors.get_cursor(definition.provider, definition.name)
-        watermark_start = resolve_watermark_start(
-            stored, mode.lookback, now, definition.provider, definition.name
-        )
-        frontier = self._state.recorder.coverage_frontier(
-            definition.provider, definition.name
-        )
-        start = resolve_resume_start(
-            watermark_start, frontier, self._sync_config.default_start_datetime
-        )
-        return window_or_none(start, end)
-
-    def _drive_unit(
-        self,
-        definition: EndpointDefinition[ResponseModel],
-        driver: RequestDriver,
-        observer: BatchObserver | None,
-        window: DateWindow,
-    ) -> Executed:
-        """Drive one unit: fetch its window, write, record.
-
-        The per-unit transaction the claim loop invokes: build the unit's
-        batch stream (the fan-out threads the unit's (member x window) pieces
-        on the ``FetchPool``, unchanged) and run it through the commit spine.
-        The unit's folded observation rides the returned outcome; the
-        watermark advance is the unit loop's prefix commit, never this
-        drive's.
-
-        Args:
-            definition: The watermark endpoint being run.
-            driver: The request driver supplying the unit's batches.
-            observer: The optional per-frame hook.
-            window: The unit's half-open window.
-
-        Returns:
-            The unit's ``Executed`` outcome, its ``latest_observed`` carrying
-            the folded in-window maximum (or ``None`` for an empty unit).
-
-        Raises:
-            FleetpullError: A fetch, validation, write, or completion failure
-                -- the unit's run is recorded failed and the error re-raised.
-        """
-        client = self._client_source.client_for(definition.provider)
-        now = self._clock.now_utc()
-        context = _window_context(definition, window, now)
-        batches = _observe_batches(
-            stream_processed_batches(
-                definition, driver, client, resume=window, context=context
-            ),
-            observer,
-        )
-        return self._execute_window(definition, batches, context)
-
-    def _execute_window(
-        self,
-        definition: EndpointDefinition[ResponseModel],
-        batches: Iterator[ProcessedBatch],
-        context: WindowContext,
-    ) -> Executed:
-        """Run one window: open, consume/write/finalize, complete.
-
-        The per-unit commit spine. It consumes an already-built
-        processed-batch stream (the caller constructs it, wrapping in the
-        batch observer where one applies), so the spine is blind to fetch
-        mechanics. Opens a window run, writes each batch's in-window frame,
-        folds the observed maximum, finalizes, and completes the run. The
-        fold rides the returned outcome; the watermark advance belongs to
-        the unit loop's prefix commit. The per-unit crash order is parquet
-        -> ``complete_run`` (the ledger, here) -> ``mark_done`` (observed)
-        -> prefix commit (both one level up): a crash after completion but
-        before the done-mark leaves the unit claimable, so the next
-        invocation re-drives it whole before resolving any residual --
-        unit-gating plus the run-start prefix heal replace the retired
-        cursor-before-completion ordering (DESIGN section 14).
-
-        Args:
-            definition: The endpoint being run.
-            batches: The unit's processed-batch stream, ready to consume.
-            context: The window, run instant, and event-time column for the
-                per-batch transform.
-
-        Returns:
-            ``Executed`` with the fetched-row count, the write report, and
-            the folded in-window maximum.
-
-        Raises:
-            FleetpullError: A fetch, validation, write, or completion failure -- the
-                run is recorded failed and the original error re-raised.
-        """
-        window = context.window
-        run_id = self._state.recorder.start_window_run(
-            definition.provider, definition.name, window=(window.start, window.end)
-        )
-        try:
-            writer = select_writer(
-                definition,
-                self._dataset_root,
-                window=window,
-                drop_duplicates=self._drop_duplicates,
-            )
-            records_fetched, latest_observed = _drain_batches(batches, writer)
-            write = writer.finalize()
-            # The cursor deliberately does NOT advance here: the unit's
-            # observation rides the outcome to the unit loop, which records
-            # it at mark_done and advances the watermark across the
-            # contiguous done-prefix only (the prefix-advance rule, DESIGN
-            # section 5) -- a per-unit advance would overstate coverage the
-            # moment units complete out of order.
-            self._state.recorder.complete_run(run_id, row_count=records_fetched)
-            return Executed(
-                records_fetched=records_fetched,
-                write=write,
-                latest_observed=latest_observed,
-            )
-        except Exception as error:
-            self._fail_run_safely(run_id, error)
-            raise
 
     def _log_endpoint_complete(
         self,
@@ -1011,136 +258,5 @@ class EndpointRunner:
             outcome.write.duplicates_dropped,
             outcome.write.files_written,
             len(outcome.write.deleted_partitions),
-            self._clock.monotonic_seconds() - endpoint_started,
+            self._spine.clock.monotonic_seconds() - endpoint_started,
         )
-
-    def _fail_run_safely(self, run_id: int, error: Exception) -> None:
-        """Record the run failed without masking the original error.
-
-        ``fail_run`` touches SQLite, which can itself fail (a locked or unwritable
-        database); if it does, that secondary failure must not replace the error
-        that actually ended the run. Log it and let the original propagate.
-
-        Args:
-            run_id: The run to mark failed.
-            error: The error that ended the run, recorded as the failure detail.
-
-        Side Effects:
-            Records the run failed; on a recording failure, logs and swallows it.
-        """
-        try:
-            self._state.recorder.fail_run(run_id, error_detail=str(error))
-        except Exception:
-            logger.exception(
-                'failed to record run %s as failed after an earlier error', run_id
-            )
-
-    def _write_metadata_snapshot(
-        self,
-        definition: EndpointDefinition[ResponseModel],
-        outcome: Executed,
-        *,
-        window: DateWindow | None,
-    ) -> None:
-        """Project a committed run's facts into the endpoint's ``metadata.json``.
-
-        Runs only after a successful run has fully committed (parquet, the
-        ledger rows, the unit done-marks, the watermark prefix): the
-        outcome's counts, the run's resolved window,
-        and a cursor read-back from the store flatten into a
-        ``MetadataSnapshot`` the storage face renders and atomically writes
-        (DESIGN §3).
-
-        Args:
-            definition: The endpoint that just ran.
-            outcome: The run's merged ``Executed`` outcome.
-            window: The run's resolved window, or ``None`` when it had none
-                (a snapshot run, or a watermark run that only re-drove
-                leftover units).
-
-        Side Effects:
-            Writes ``metadata.json`` in the endpoint's output directory; on
-            an ``OSError``, logs at ERROR and continues.
-        """
-        cursor_kind, cursor_value = _serialize_cursor(
-            self._state.cursors.get_cursor(definition.provider, definition.name)
-        )
-        snapshot = MetadataSnapshot(
-            provider=definition.provider.value,
-            endpoint=definition.name,
-            sync_mode=_sync_mode_label(definition.sync_mode),
-            generated_at=self._clock.now_utc(),
-            records_fetched=outcome.records_fetched,
-            rows_written=outcome.write.rows_written,
-            duplicates_dropped=outcome.write.duplicates_dropped,
-            files_written=outcome.write.files_written,
-            deleted_partitions=tuple(outcome.write.deleted_partitions),
-            window_start=None if window is None else window.start,
-            window_end=None if window is None else window.end,
-            cursor_kind=cursor_kind,
-            cursor_value=cursor_value,
-        )
-        directory = endpoint_directory(
-            self._dataset_root, definition.provider.value, definition.name
-        )
-        # Only the file write is guarded, and only for OSError: the run is
-        # already committed (parquet, ledger, units, watermark), and the file is a
-        # cosmetic projection the next successful run rewrites -- failing a
-        # committed run over it would be worse than a stale file. A render
-        # failure is a bug and propagates. An absent endpoint directory is
-        # a healthy no-data state (a seeded-at-head feed, an empty
-        # watermark cold run) -- there is nothing to project onto, so the
-        # write is skipped quietly rather than alarmed over.
-        if not directory.exists():
-            logger.debug(
-                'metadata.json skipped: provider=%s endpoint=%s '
-                '(no data has ever landed)',
-                definition.provider.value,
-                definition.name,
-            )
-            return
-        text = render_metadata_json(snapshot)
-        try:
-            write_metadata_json(directory, text)
-        except OSError:
-            logger.exception(
-                'metadata.json write failed: provider=%s endpoint=%s',
-                definition.provider.value,
-                definition.name,
-            )
-
-
-def _merge_executed(outcomes: Sequence[Executed]) -> Executed:
-    """Fold the driven units' outcomes into the invocation's one ``Executed``.
-
-    Counts sum; the pruned partitions concatenate in drive order (a residual
-    unit re-covering a leftover unit's dates may repeat one -- the report is
-    informational, never consumed as a set).
-
-    Args:
-        outcomes: The per-unit outcomes, in drive order; at least one.
-
-    Returns:
-        The aggregated ``Executed``.
-    """
-    observations = [
-        outcome.latest_observed
-        for outcome in outcomes
-        if outcome.latest_observed is not None
-    ]
-    return Executed(
-        records_fetched=sum(outcome.records_fetched for outcome in outcomes),
-        write=WriteResult(
-            rows_written=sum(outcome.write.rows_written for outcome in outcomes),
-            duplicates_dropped=sum(
-                outcome.write.duplicates_dropped for outcome in outcomes
-            ),
-            files_written=sum(outcome.write.files_written for outcome in outcomes),
-            deleted_partitions=[
-                deleted_date
-                for outcome in outcomes
-                for deleted_date in outcome.write.deleted_partitions
-            ],
-        ),
-        latest_observed=max(observations) if observations else None,
-    )

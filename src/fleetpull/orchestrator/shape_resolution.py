@@ -35,6 +35,7 @@ from fleetpull.orchestrator.drivers import (
     SingleRequestDriver,
 )
 from fleetpull.orchestrator.fanout import FetchPool
+from fleetpull.roster import RosterKey
 from fleetpull.vocabulary import Provider
 
 __all__: list[str] = [
@@ -53,12 +54,12 @@ class FetchPoolSource(Protocol):
 
 
 # The caller's roster half of a roster-backed resolution: handed the
-# roster-naming shape, it returns the refreshed membership (or raises the
-# caller's own roster failure). A BatchedRosterFanOut resolves through the
-# same source by handing it the per-member fan-out its packing wraps -- one
-# roster machinery path, no second seam. None marks a stateless caller with
-# no roster state at all.
-type RosterMemberSource = Callable[[RosterFanOut], Sequence[str]]
+# roster's key, it returns the refreshed membership (or raises the caller's
+# own roster failure). Both roster-backed shapes name their roster with the
+# same ``RosterKey``, so one key-shaped source serves them both -- one
+# roster machinery path, no second seam, no synthetic shape. None marks a
+# stateless caller with no roster state at all.
+type RosterMemberSource = Callable[[RosterKey], Sequence[str]]
 
 
 def resolve_request_driver(
@@ -112,20 +113,20 @@ def resolve_request_driver(
             )
         case RosterFanOut() as fan_out:
             return FanOutRequestDriver(
-                members=_require_roster_members(definition, roster_members, fan_out),
+                members=_require_roster_members(
+                    definition, roster_members, fan_out.roster
+                ),
                 member_key=fan_out.member_key,
                 fetch_pool=fetch_pools.pool_for(definition.provider),
             )
         case BatchedRosterFanOut() as batched:
             # The batched shape is transport packing over the plain roster
             # fan-out, so membership resolves through the identical source
-            # call -- handed the per-member fan-out the packing wraps -- and
-            # only then chunks into comma-joined batch values. The driver
-            # stays member-agnostic: each batch is simply one member string.
+            # call -- the same roster key -- and only then chunks into
+            # comma-joined batch values. The driver stays member-agnostic:
+            # each batch is simply one member string.
             members = _require_roster_members(
-                definition,
-                roster_members,
-                RosterFanOut(roster=batched.roster, member_key=batched.member_key),
+                definition, roster_members, batched.roster
             )
             return FanOutRequestDriver(
                 members=_comma_joined_batches(members, batched.batch_size),
@@ -137,7 +138,7 @@ def resolve_request_driver(
 def _require_roster_members(
     definition: EndpointDefinition[ResponseModel],
     roster_members: RosterMemberSource | None,
-    fan_out: RosterFanOut,
+    roster: RosterKey,
 ) -> Sequence[str]:
     """Resolve a roster-backed shape's membership, refusing a stateless caller.
 
@@ -145,9 +146,8 @@ def _require_roster_members(
         definition: The endpoint being resolved, for the error context.
         roster_members: The caller's roster membership source, or ``None``
             for a stateless caller with no roster state.
-        fan_out: The per-member fan-out naming the roster -- a
-            ``RosterFanOut``'s own declaration, or the one a
-            ``BatchedRosterFanOut``'s packing wraps.
+        roster: The roster the shape names -- a ``RosterFanOut``'s or a
+            ``BatchedRosterFanOut``'s ``roster`` key alike.
 
     Returns:
         The refreshed membership, exactly as the source supplies it.
@@ -169,13 +169,13 @@ def _require_roster_members(
             provider=definition.provider.value,
             endpoint=definition.name,
             detail=(
-                f'the {fan_out.roster.name!r} roster fan-out needs '
+                f'the {roster.name!r} roster fan-out needs '
                 f'durable roster state, which this stateless '
                 f'composition (the in-memory fetch verb) deliberately '
                 f'lacks; run it through the config-driven sync path'
             ),
         )
-    return roster_members(fan_out)
+    return roster_members(roster)
 
 
 def _comma_joined_batches(members: Sequence[str], batch_size: int) -> tuple[str, ...]:

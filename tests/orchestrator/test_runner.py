@@ -24,18 +24,17 @@ from fleetpull.endpoints.shared import (
 from fleetpull.exceptions import ConfigurationError, ProviderResponseError
 from fleetpull.incremental import (
     DateWatermark,
+    DateWindow,
     FeedToken,
     IncrementalCursor,
 )
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import TransportClient
+from fleetpull.orchestrator.metadata_projection import MetadataProjection
 from fleetpull.orchestrator.outcome import CaughtUp, Executed
-from fleetpull.orchestrator.runner import (
-    ClientSource,
-    CursorAccess,
-    EndpointRunner,
-    RunStateAccess,
-)
+from fleetpull.orchestrator.runner import EndpointRunner
+from fleetpull.orchestrator.spine import ClientSource, CursorAccess, RunStateAccess
+from fleetpull.storage import WriteResult
 from fleetpull.timing import FrozenClock
 from fleetpull.vocabulary import JsonObject, Provider, QuotaScope
 from tests.orchestrator.doubles import (
@@ -73,7 +72,7 @@ class _RecordingRecorder:
 
     def __init__(self) -> None:
         self.started: list[tuple[Provider, str]] = []
-        self.windows: list[tuple[datetime, datetime]] = []
+        self.windows: list[DateWindow] = []
         self.feed_from_versions: list[str] = []
         self.completed: list[tuple[int, int]] = []
         self.completed_to_versions: list[str | None] = []
@@ -85,7 +84,7 @@ class _RecordingRecorder:
         return len(self.started)
 
     def start_window_run(
-        self, provider: Provider, endpoint: str, *, window: tuple[datetime, datetime]
+        self, provider: Provider, endpoint: str, *, window: DateWindow
     ) -> int:
         self.started.append((provider, endpoint))
         self.windows.append(window)
@@ -380,7 +379,9 @@ class TestWatermarkRun:
         outcome = runner.run(_watermark_definition(), CannedDriver([batch]))
         assert isinstance(outcome, Executed)
         assert outcome.records_fetched == 3
-        assert recorder.windows == [(datetime(2026, 6, 12, tzinfo=UTC), _TRAILING_EDGE)]
+        assert recorder.windows == [
+            DateWindow(start=datetime(2026, 6, 12, tzinfo=UTC), end=_TRAILING_EDGE)
+        ]
         # The single unit's completion commits the prefix: one advance, to
         # the unit's folded in-window maximum.
         assert cursor.advance_calls == [
@@ -418,7 +419,9 @@ class TestWatermarkRun:
             datetime(2026, 6, 14, 10, tzinfo=UTC),
         )
         runner.run(_watermark_definition(), CannedDriver([batch]))
-        assert recorder.windows == [(datetime(2026, 6, 12, tzinfo=UTC), _TRAILING_EDGE)]
+        assert recorder.windows == [
+            DateWindow(start=datetime(2026, 6, 12, tzinfo=UTC), end=_TRAILING_EDGE)
+        ]
         assert cursor.advance_calls == [
             (Provider.MOTIVE, 'locations', datetime(2026, 6, 14, 10, tzinfo=UTC))
         ]
@@ -444,7 +447,9 @@ class TestWatermarkRun:
         batch = _wm_batch(datetime(2026, 6, 14, 9, tzinfo=UTC))
         outcome = runner.run(_watermark_definition(), CannedDriver([batch]))
         assert isinstance(outcome, Executed)
-        assert recorder.windows == [(datetime(2026, 6, 13, tzinfo=UTC), _TRAILING_EDGE)]
+        assert recorder.windows == [
+            DateWindow(start=datetime(2026, 6, 13, tzinfo=UTC), end=_TRAILING_EDGE)
+        ]
         assert cursor.advance_calls == [
             (Provider.MOTIVE, 'locations', datetime(2026, 6, 14, 9, tzinfo=UTC))
         ]
@@ -473,7 +478,9 @@ class TestWatermarkRun:
         )
         outcome = runner.run(_watermark_definition(), CannedDriver([batch]))
         assert isinstance(outcome, Executed)
-        assert recorder.windows == [(datetime(2026, 6, 13, tzinfo=UTC), _TRAILING_EDGE)]
+        assert recorder.windows == [
+            DateWindow(start=datetime(2026, 6, 13, tzinfo=UTC), end=_TRAILING_EDGE)
+        ]
         assert outcome.records_fetched == 3
         part = pl.read_parquet(
             tmp_path / 'motive' / 'locations' / 'date=2026-06-13' / 'part.parquet'
@@ -508,7 +515,7 @@ class TestWatermarkRun:
         refetched = _wm_batch(datetime(2026, 6, 13, 8, tzinfo=UTC))
         outcome = runner.run(_watermark_definition(), CannedDriver([refetched]))
         assert isinstance(outcome, Executed)
-        assert outcome.write.deleted_partitions == []
+        assert outcome.write.deleted_partitions == ()
         assert (prior_partition / 'part.parquet').exists()
         assert pl.read_parquet(prior_partition / 'part.parquet').height == 1
 
@@ -825,6 +832,37 @@ class TestMetadataProjection:
         assert isinstance(outcome, CaughtUp)
         assert not (tmp_path / 'motive' / 'locations' / 'metadata.json').exists()
 
+    def test_an_absent_endpoint_directory_is_a_quiet_debug_skip(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # The healthy no-data state (a seeded-at-head feed, an empty
+        # watermark cold run): no directory has ever been created, so the
+        # projection skips at DEBUG -- never the ERROR-with-traceback the
+        # OSError catch would produce if the write were attempted
+        # (write_metadata_json deliberately performs no mkdir).
+        projection = MetadataProjection(
+            cursors=_StubCursorAccess(),
+            clock=FrozenClock(start_time_utc=_CLOCK_NOW),
+            dataset_root=tmp_path,
+        )
+        outcome = Executed(
+            records_fetched=0,
+            write=WriteResult(rows_written=0, duplicates_dropped=0, files_written=0),
+        )
+        with caplog.at_level(
+            logging.DEBUG, logger='fleetpull.orchestrator.metadata_projection'
+        ):
+            projection.project(_snapshot_definition(), outcome, window=None)
+        assert not (tmp_path / 'motive' / 'vehicles').exists()
+        assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+        skip_lines = [
+            record
+            for record in caplog.records
+            if record.levelno == logging.DEBUG
+            and 'metadata.json skipped' in record.getMessage()
+        ]
+        assert len(skip_lines) == 1
+
     def test_write_oserror_leaves_the_run_executed_and_logs_at_error(
         self,
         tmp_path: Path,
@@ -835,12 +873,15 @@ class TestMetadataProjection:
             raise OSError('disk full')
 
         monkeypatch.setattr(
-            'fleetpull.orchestrator.runner.write_metadata_json', failing_write
+            'fleetpull.orchestrator.metadata_projection.write_metadata_json',
+            failing_write,
         )
         recorder = _RecordingRecorder()
         runner = _make_runner(recorder, tmp_path)
         records: list[JsonObject] = [{'id': 1, 'name': 'a'}]
-        with caplog.at_level(logging.ERROR, logger='fleetpull.orchestrator.runner'):
+        with caplog.at_level(
+            logging.ERROR, logger='fleetpull.orchestrator.metadata_projection'
+        ):
             outcome = runner.run(_snapshot_definition(), CannedDriver([records]))
         assert isinstance(outcome, Executed)
         assert recorder.completed == [(1, 1)]

@@ -1,4 +1,5 @@
-"""Tests for fleetpull.storage.partitioning."""
+# tests/storage/test_pruning.py
+"""Tests for fleetpull.storage.pruning."""
 
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -6,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from fleetpull.incremental import DateWindow
-from fleetpull.storage.partitioning import (
+from fleetpull.storage.pruning import (
     delete_partition,
     existing_partition_dates,
     prune_window_partitions,

@@ -1,4 +1,7 @@
-"""Tests for fleetpull.storage.writers."""
+"""Tests for the dataset-writer surface: ``storage.writers`` routing plus the
+``storage.single_file`` and ``storage.partitioned`` families it constructs
+(one file because the three share every fixture -- the definitions and the
+frames -- and always exercise together through ``select_writer``)."""
 
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -20,11 +23,9 @@ from fleetpull.model_contract import ResponseModel
 from fleetpull.models.motive import Vehicle
 from fleetpull.network.decoders import MotiveWrappedListPageDecoder
 from fleetpull.storage.append import FeedAppendWriter
-from fleetpull.storage.writers import (
-    SnapshotWriter,
-    WatermarkPartitionedWriter,
-    select_writer,
-)
+from fleetpull.storage.partitioned import WatermarkPartitionedWriter
+from fleetpull.storage.single_file import SnapshotWriter
+from fleetpull.storage.writers import select_writer
 from fleetpull.vocabulary import Provider, QuotaScope
 
 
@@ -232,7 +233,7 @@ class TestWatermarkPartitionedWriter:
         writer.write(_located_frame([(datetime(2026, 6, 2, 8, tzinfo=UTC), 2)]))
         result = writer.finalize()
         assert not stale_dir.exists()
-        assert result.deleted_partitions == [date(2026, 6, 1)]
+        assert result.deleted_partitions == (date(2026, 6, 1),)
         assert (tmp_path / 'date=2026-06-02' / 'part.parquet').exists()
 
     def test_clears_stale_staging_shards_at_construction(self, tmp_path: Path) -> None:

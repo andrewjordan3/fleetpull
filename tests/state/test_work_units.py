@@ -194,17 +194,11 @@ class TestEnqueue:
 
 
 class TestClaimNext:
-    def test_rejects_max_attempts_below_one(
-        self, work_unit_store: WorkUnitStore
-    ) -> None:
-        with pytest.raises(ValueError, match='max_attempts must be at least 1'):
-            work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=0)
-
     def test_returns_the_unit_and_flips_the_row(
         self, work_unit_store: WorkUnitStore, database_path: Path
     ) -> None:
         work_unit_store.enqueue([_spec(partition_key='V1')])
-        claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
+        claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
         assert claimed is not None
         assert claimed.attempt_count == 1
         assert claimed.spec == _spec(partition_key='V1')
@@ -216,7 +210,7 @@ class TestClaimNext:
     def test_returns_none_when_nothing_claimable(
         self, work_unit_store: WorkUnitStore
     ) -> None:
-        claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
+        claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
         assert claimed is None
 
     def test_serves_units_in_unit_id_order(
@@ -229,32 +223,38 @@ class TestClaimNext:
                 _spec(chunk_start=_day(3), chunk_end=_day(4)),
             ]
         )
-        first = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
-        second = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
+        first = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
+        second = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
         assert first is not None
         assert second is not None
         assert first.unit_id < second.unit_id
 
-    def test_skips_units_at_or_over_max_attempts(
+    def test_a_failed_unit_stays_claimable_on_every_pass(
         self, work_unit_store: WorkUnitStore
     ) -> None:
+        # There is no attempt cap (DESIGN section 5): a persistently failing
+        # unit is re-served on every pass -- a poison unit fails the endpoint
+        # loudly rather than being silently skipped behind an advancing
+        # watermark -- while attempt_count keeps counting for the record.
+        # The loop runs far past any plausible bounded-retry cap (a
+        # reintroduced 'attempt_count < 3' survived a 3-attempt version of
+        # this test), so a cap of ANY classic size turns a claim into None
+        # here and dies loudly.
         work_unit_store.enqueue([_spec()])
-        first = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=1)
-        assert first is not None
-        assert first.attempt_count == 1
-        work_unit_store.mark_failed(first.unit_id, error_detail='nope')
-        # attempt_count (1) is no longer < max_attempts (1), so it is skipped.
-        skipped = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=1)
-        assert skipped is None
+        for expected_attempt in range(1, 13):
+            claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
+            assert claimed is not None
+            assert claimed.attempt_count == expected_attempt
+            work_unit_store.mark_failed(claimed.unit_id, error_detail='nope')
 
-    def test_reserves_failed_units_under_the_cap(
+    def test_reserves_failed_units_on_a_later_pass(
         self, work_unit_store: WorkUnitStore
     ) -> None:
         work_unit_store.enqueue([_spec()])
-        first = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
+        first = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
         assert first is not None
         work_unit_store.mark_failed(first.unit_id, error_detail='retry me')
-        second = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
+        second = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
         assert second is not None
         assert second.unit_id == first.unit_id
         assert second.attempt_count == 2
@@ -263,14 +263,14 @@ class TestClaimNext:
         self, work_unit_store: WorkUnitStore, database_path: Path
     ) -> None:
         work_unit_store.enqueue([_spec()])
-        first = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
+        first = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
         assert first is not None
         work_unit_store.mark_failed(first.unit_id, error_detail='boom')
         failed_row = _read_unit(database_path, first.unit_id)
         assert failed_row['last_error'] == 'boom'
         assert failed_row['finished_at'] is not None
 
-        second = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
+        second = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
         assert second is not None
         assert second.unit_id == first.unit_id
         reclaimed_row = _read_unit(database_path, first.unit_id)
@@ -286,7 +286,7 @@ class TestMarkDone:
         database_path: Path,
     ) -> None:
         work_unit_store.enqueue([_spec()])
-        claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
+        claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
         assert claimed is not None
         frozen_clock.advance(timedelta(minutes=10))
         work_unit_store.mark_done(claimed.unit_id, observed_max=None)
@@ -300,7 +300,7 @@ class TestMarkDone:
         # The prefix-advance rule's datum: mark_done records the unit's
         # folded in-window maximum in to_iso8601 form.
         work_unit_store.enqueue([_spec()])
-        claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
+        claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
         assert claimed is not None
         observed = datetime(2026, 6, 1, 18, 45, 0, tzinfo=UTC)
         work_unit_store.mark_done(claimed.unit_id, observed_max=observed)
@@ -311,7 +311,7 @@ class TestMarkDone:
         self, work_unit_store: WorkUnitStore, database_path: Path
     ) -> None:
         work_unit_store.enqueue([_spec()])
-        claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
+        claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
         assert claimed is not None
         work_unit_store.mark_done(claimed.unit_id, observed_max=None)
         row = _read_unit(database_path, claimed.unit_id)
@@ -323,7 +323,7 @@ class TestMarkDone:
 
     def test_rejects_a_non_claimed_unit(self, work_unit_store: WorkUnitStore) -> None:
         work_unit_store.enqueue([_spec()])
-        claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
+        claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
         assert claimed is not None
         work_unit_store.mark_done(claimed.unit_id, observed_max=None)
         with pytest.raises(ValueError, match='no claimed work unit'):
@@ -350,7 +350,7 @@ class TestDonePrefixObservation:
         )
         unit_ids: list[int] = []
         for _ in range(count):
-            claimed = store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
+            claimed = store.claim_next(Provider.SAMSARA, 'trips')
             assert claimed is not None
             unit_ids.append(claimed.unit_id)
         return unit_ids
@@ -438,8 +438,8 @@ class TestDonePrefixObservation:
                 _spec(chunk_start=_day(3), chunk_end=_day(4)),
             ]
         )
-        first = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
-        second = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
+        first = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
+        second = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
         assert first is not None
         assert second is not None
         work_unit_store.mark_done(first.unit_id, observed_max=_observation(1))
@@ -454,7 +454,7 @@ class TestMarkFailed:
         self, work_unit_store: WorkUnitStore, database_path: Path
     ) -> None:
         work_unit_store.enqueue([_spec()])
-        claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
+        claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
         assert claimed is not None
         work_unit_store.mark_failed(claimed.unit_id, error_detail='kaboom')
         row = _read_unit(database_path, claimed.unit_id)
@@ -467,7 +467,7 @@ class TestMarkFailed:
 
     def test_rejects_a_non_claimed_unit(self, work_unit_store: WorkUnitStore) -> None:
         work_unit_store.enqueue([_spec()])
-        claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
+        claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
         assert claimed is not None
         work_unit_store.mark_done(claimed.unit_id, observed_max=None)
         with pytest.raises(ValueError, match='no claimed work unit'):
@@ -479,7 +479,7 @@ class TestResetClaimedToPending:
         self, work_unit_store: WorkUnitStore, database_path: Path
     ) -> None:
         work_unit_store.enqueue([_spec()])
-        claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
+        claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
         assert claimed is not None
         assert claimed.attempt_count == 1
         assert work_unit_store.reset_claimed_to_pending(Provider.SAMSARA, 'trips') == 1
@@ -498,20 +498,17 @@ class TestResetClaimedToPending:
                 _spec(chunk_start=_day(4), chunk_end=_day(5)),
             ]
         )
-        done_unit = work_unit_store.claim_next(
-            Provider.SAMSARA, 'trips', max_attempts=1
-        )
+        done_unit = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
         assert done_unit is not None
         work_unit_store.mark_done(done_unit.unit_id, observed_max=None)
-        failed_unit = work_unit_store.claim_next(
-            Provider.SAMSARA, 'trips', max_attempts=1
-        )
+        # The next claim stays claimed, so the third claim serves the unit
+        # after it -- a capless claim would otherwise re-serve a failed unit
+        # immediately (FIFO by unit_id over pending and failed alike).
+        claimed_unit = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
+        assert claimed_unit is not None
+        failed_unit = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
         assert failed_unit is not None
         work_unit_store.mark_failed(failed_unit.unit_id, error_detail='x')
-        claimed_unit = work_unit_store.claim_next(
-            Provider.SAMSARA, 'trips', max_attempts=1
-        )
-        assert claimed_unit is not None
 
         assert work_unit_store.reset_claimed_to_pending(Provider.SAMSARA, 'trips') == 1
 
@@ -535,7 +532,7 @@ class TestProgress:
                 _spec(chunk_start=_day(2), chunk_end=_day(3)),
             ]
         )
-        claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
+        claimed = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
         assert claimed is not None
         assert work_unit_store.progress(Provider.SAMSARA, 'trips') == WorkUnitProgress(
             pending=1, claimed=1, done=0, failed=0
@@ -547,11 +544,11 @@ class TestLifecycle:
         self, work_unit_store: WorkUnitStore, database_path: Path
     ) -> None:
         work_unit_store.enqueue([_spec()])
-        first = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
+        first = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
         assert first is not None
         assert first.attempt_count == 1
         work_unit_store.mark_failed(first.unit_id, error_detail='transient')
-        second = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
+        second = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
         assert second is not None
         assert second.unit_id == first.unit_id
         assert second.attempt_count == 2
@@ -566,14 +563,14 @@ class TestCrashRecovery:
         self, work_unit_store: WorkUnitStore, database_path: Path
     ) -> None:
         work_unit_store.enqueue([_spec()])
-        first = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
+        first = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
         assert first is not None
         assert first.attempt_count == 1
         assert work_unit_store.reset_claimed_to_pending(Provider.SAMSARA, 'trips') == 1
         row = _read_unit(database_path, first.unit_id)
         assert row['status'] == WorkUnitStatus.PENDING
         assert row['attempt_count'] == 1  # preserved across the reset
-        second = work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
+        second = work_unit_store.claim_next(Provider.SAMSARA, 'trips')
         assert second is not None
         assert second.unit_id == first.unit_id
         assert second.attempt_count == 2  # the crashed attempt counted
@@ -631,7 +628,7 @@ class TestClaimCorruption:
             'zzz-bad',
         )
         with pytest.raises(ConfigurationError, match='unparseable work-unit chunk'):
-            work_unit_store.claim_next(Provider.SAMSARA, 'trips', max_attempts=3)
+            work_unit_store.claim_next(Provider.SAMSARA, 'trips')
 
 
 class TestConcurrency:
@@ -656,7 +653,7 @@ class TestConcurrency:
 
         def claim_until_empty() -> None:
             while True:
-                unit = store.claim_next(Provider.SAMSARA, 'trips', max_attempts=1)
+                unit = store.claim_next(Provider.SAMSARA, 'trips')
                 if unit is None:
                     return
                 with guard:
