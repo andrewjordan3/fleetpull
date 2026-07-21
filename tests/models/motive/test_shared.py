@@ -1,7 +1,14 @@
 """Tests for fleetpull.models.motive.shared."""
 
+from datetime import UTC, datetime
+
+import pytest
+from pydantic import ValidationError
+
+from fleetpull.model_contract import ResponseModel
 from fleetpull.models.motive.shared import (
     EldDeviceInfo,
+    MotiveWindowStamp,
     UserSummary,
     VehicleSummary,
 )
@@ -102,3 +109,70 @@ class TestVehicleSummary:
         vehicle = VehicleSummary.model_validate(_vehicle_block())
         assert vehicle.make == 'Kenworth'
         assert vehicle.model == 'Box'
+
+    def test_null_vin_lands_none(self) -> None:
+        # The union-lax widening for the vehicle-utilization surface
+        # (captured 2026-07-21): vin carries values on the event
+        # surfaces but is null on some utilization rows, so the shared
+        # shape accepts the null.
+        block: dict[str, JsonValue] = {**_vehicle_block(), 'vin': None}
+        vehicle = VehicleSummary.model_validate(block)
+        assert vehicle.vin is None
+
+
+class _StampProbe(ResponseModel):
+    """A minimal carrier for exercising ``MotiveWindowStamp`` directly."""
+
+    stamp: MotiveWindowStamp
+
+
+class TestMotiveWindowStamp:
+    def test_a_date_label_lifts_to_its_utc_midnight_instant(self) -> None:
+        # The label's calendar day is preserved exactly; UTC midnight is
+        # its canonical instant representation for partition routing --
+        # never a timezone conversion of the data (the company-local
+        # caveat rides the consuming models' docstrings).
+        probe = _StampProbe.model_validate({'stamp': '2026-01-05'})
+        assert probe.stamp == datetime(2026, 1, 5, tzinfo=UTC)
+        assert probe.stamp.date().isoformat() == '2026-01-05'
+
+    def test_a_datetime_passes_through_on_revalidation(self) -> None:
+        recovered = datetime(2026, 1, 5, tzinfo=UTC)
+        probe = _StampProbe.model_validate({'stamp': recovered})
+        assert probe.stamp == recovered
+
+    @pytest.mark.parametrize(
+        'value',
+        [
+            # An RFC3339 instant is NOT a date label: the builder only
+            # ever renders labels, so anything else is wiring drift that
+            # must fail loudly, not pass mangled.
+            '2026-01-05T00:00:00Z',
+            'not-a-date',
+            '',
+            None,
+            20260105,
+        ],
+    )
+    def test_a_non_label_value_rejects(self, value: JsonValue) -> None:
+        with pytest.raises(ValidationError):
+            _StampProbe.model_validate({'stamp': value})
+
+
+class TestWindowStampStrictness:
+    """The lift's two rejection arms, pinned against validator laxity."""
+
+    @pytest.mark.parametrize('label', ['20260105', '2026-W02-1'])
+    def test_non_dashed_label_forms_reject(self, label: str) -> None:
+        # date.fromisoformat alone would accept both of these; the
+        # fullmatch pattern keeps every non-dashed form failing as the
+        # wiring drift it would be.
+        with pytest.raises(ValidationError):
+            _StampProbe.model_validate({'stamp': label})
+
+    def test_a_naive_datetime_stamp_rejects(self) -> None:
+        # An unzoned event time is never assumed -- the passthrough arm
+        # rejects at validation, not at persist time.
+        naive = datetime(2026, 1, 5)  # noqa: DTZ001 -- naive on purpose
+        with pytest.raises(ValidationError):
+            _StampProbe.model_validate({'stamp': naive})

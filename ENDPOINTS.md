@@ -29,6 +29,8 @@ REST over `https://api.gomotive.com`, static `X-API-Key` header
 | `idle_events` | `GET /v1/idle_events` | windowed watermark | `start_time` | Fleet-wide, offset-paginated (page size 100). Window matching OVERLAP-anchored on **company-local** days — the wire window pads one day each side and the true UTC window trims post-fetch. No range cap observed; chunking stays 30-day-bounded anyway. |
 | `groups` | `GET /v1/groups` | snapshot | — | The vehicles template verbatim: page-numbered wrapped-list pagination at the configured page size (50 and 100 both honored live). Whole-population census (152 records, every key on all 152) made every `Group` field required; `parent_id` is null on root groups (the groups form a tree). The owner ref's `username`/`driver_company_id` excluded as never-populated (value-unobservable — DESIGN §8). No roster. |
 | `users` | `GET /v1/users` | snapshot | — | The vehicles template verbatim; the unfiltered listing is the whole population (2,665-record census, deactivated accounts included — no sweep). ONE dataset despite the perfectly role-partitioned shape: driver records (2,359) carry a driver-only key block absent — not null — on admin (32) / fleet_user (274) records, and the `role` column carries the split (DESIGN §8). Six never-populated keys excluded as value-unobservable; census-open `role`/`status` vocabularies stay plain strs. No roster. |
+| `vehicle_utilizations` | `GET /v2/vehicle_utilization` | windowed watermark | `window_start` | The legacy hub's `vehicle_utilization` — the Samsara fuel-energy species on Motive wire (DESIGN §8): rows carry NO time identity, so `fixed_unit_days=1` pins the unit width (the §5 machinery's second consumer) and the `MotiveWindowReportPageDecoder` stamps each row with the sent INCLUSIVE `start_date`/`end_date` label pair — interpreted in COMPANY-LOCAL days (the account zone at UTC−5), documented on the mirror, never converted. Whole fleet every window (1,466 regardless of width; inactive vehicles zeroed with a free-text `message`); the vehicle ref is the shared `VehicleSummary` (third surface, `vin` nullable here). No roster. |
+| `driver_idle_rollups` | `GET /v2/driver_utilization` | windowed watermark | `window_start` | The legacy hub's `driver_utilization`, shipped under the WIRE'S OWN envelope vocabulary (`driver_idle_rollups`/`driver_idle_rollup` — not the path's). The vehicle arm's binding with the population swapped: rows are the drivers with activity in the window (per-driver-per-window grain), each attributed to the shared 8-key `UserSummary` (fourth surface) — or NULL on the unattributed rollup bucket row. Bare-INT durations (floats on the vehicle arm — per-arm dtypes). Same fixed 1-day unit, decoder stamps, and company-local caveat (DESIGN §8). No roster. |
 
 ### GeoTab
 
@@ -92,14 +94,16 @@ probe-then-build vertical:
 | `vehicle_fuel_energy` | `/fleet/reports/vehicles/fuel-energy` | **shipped 2026-07-21 as `vehicle_fuel_energy_reports`** (renamed per the name=snake-plural-of-model invariant, model `VehicleFuelEnergyReport`; the first fixed-unit-width endpoint — DESIGN §8) |
 | `driver_fuel_energy` | `/fleet/reports/drivers/fuel-energy` | **shipped 2026-07-21 as `driver_fuel_energy_reports`** (renamed per the name=snake-plural-of-model invariant, model `DriverFuelEnergyReport`) |
 
-### 2. Motive deferred legacy endpoints
+### 2. Motive deferred legacy endpoints (COMPLETE 2026-07-21)
+
+Every legacy-hub Motive endpoint is shipped:
 
 | Endpoint | Legacy wire surface | Status |
 |---|---|---|
 | `groups` | `/v1/groups` | **shipped 2026-07-21** |
 | `users` | `/v1/users` | **shipped 2026-07-21** (one dataset; the role-partitioned shape rides the `role` column — DESIGN §8) |
-| `vehicle_utilization` | `/v2/vehicle_utilization` | deferred — documented company-local rollup timestamps: a documentation obligation on the mirror (verbatim timestamps, the timezone caveat in the model docstring) plus a window-matching probe question |
-| `driver_utilization` | `/v2/driver_utilization` | deferred — same rollup-timezone obligation |
+| `vehicle_utilization` | `/v2/vehicle_utilization` | **shipped 2026-07-21 as `vehicle_utilizations`** (the wire's plural envelope vocabulary, model `VehicleUtilization`; the company-local rollup obligation discharged as a docstring caveat beside the decoder's window stamp, `fixed_unit_days=1` — DESIGN §8) |
+| `driver_utilization` | `/v2/driver_utilization` | **shipped 2026-07-21 as `driver_idle_rollups`** (the wire's OWN envelope vocabulary — not the path's; model `DriverIdleRollup` — DESIGN §8) |
 
 ### 3. GeoTab growth
 

@@ -1380,7 +1380,9 @@ port build prompt implements them.
    timestamps, the timezone caveat in the model docstring) plus a
    window-matching probe question, not an exclusion. Same reframe for
    the legacy `groups` and `users` endpoints. All queue behind the
-   Samsara wave (§15 item 7).*
+   Samsara wave (§15 item 7).* *Amended 2026-07-21: the rollup pair
+   shipped as `vehicle_utilizations` / `driver_idle_rollups` — the
+   obligation discharged per their §8 decision block.*
 
 ### Samsara `drivers` probe-settled decisions (2026-07-20)
 
@@ -1965,6 +1967,109 @@ one session for the pair); the port build implements them.
    `eld_mode`, `cycle`, and `violation_alerts` (the UserSummary
    posture).
 
+### Motive `vehicle_utilizations` / `driver_idle_rollups` probe-settled decisions (2026-07-21)
+
+Settled by the 2026-07-21 live probe session (the captured rows below —
+one session for the pair); the port build implements them. This pair
+completes the Motive legacy queue.
+
+1. **THE ROLLUP GRAIN IS THE REQUEST WINDOW — the Samsara fuel-energy
+   species on Motive wire.** Rows carry NO date or time identity of any
+   kind; the `start_date`/`end_date` params take DATE-ONLY labels
+   (`'2026-07-19'`), and the label pair is INCLUSIVE on both ends:
+   `start_date=end_date` returned exactly that one day's rollup, and a
+   six-label span returned a six-day rollup — one row per entity per
+   window either way. Both bindings therefore declare
+   `fixed_unit_days=1` on their `WatermarkMode` — the SECOND consumer
+   of the fixed-unit-width machinery, riding exactly the seam the
+   fuel-energy record (§5) pre-built for this pair. Additivity was NOT
+   probed on this family; the do-not-sum posture is carried on both
+   model docstrings as PRECEDENT from the provider family's only probed
+   rollup surfaces (Samsara fuel-energy: 89/267 mismatched), explicitly
+   marked precedent-based rather than probed.
+2. **The company-local obligation is discharged — as documentation,
+   never a conversion.** The account's `/v1/companies` capture carries
+   a company-local zone at a UTC−5 offset (the idle_events row above),
+   and the date labels are interpreted in COMPANY-LOCAL days — so a
+   unit's rows are the provider's company-local-day rollups, mirrored
+   verbatim. The caveat rides both model module docstrings and this
+   block; nothing pads, trims, or converts (there is no row event time
+   to trim against — the window IS the label pair). This closes the
+   deferral's documented obligation (the 2026-07-17 amendment to the
+   driving_periods/idle_events block).
+3. **Machinery: `MotiveWindowReportPageDecoder`, the Motive
+   window-stamping report decoder — the one sanctioned addition.** The
+   Samsara `SamsaraWindowReportPageDecoder` design mirrored onto the
+   Motive envelope: the standard wrapped-list extraction and
+   page-numbered offset verdict, shared with
+   `MotiveWrappedListPageDecoder` via the same-file
+   `_unwrap_wrapped_list`/`_offset_page_advance` extraction (the
+   `_cursor_page_advance` precedent; the existing decoders'
+   behavior byte-equivalent, their tests unchanged), plus the stamp:
+   every unwrapped record gains `windowStartDate`/`windowEndDate`
+   copied VERBATIM from the sent spec's `start_date`/`end_date` params,
+   the stamp winning any (census-impossible) collision, a missing param
+   raising `ProviderResponseError` loudly. The stamping helper itself
+   PROMOTED into the decoders-package module
+   `decoders/_window_stamp.py` (two providers at birth — the promotion
+   rule): the synthesized keys are our own deliberately
+   provider-uniform vocabulary, not envelope logic, so sharing it is a
+   narrow, principled exception to the decoders'
+   blast-radius-over-DRY rule; only the param NAMES vary per provider
+   and each caller passes its own. The Samsara decoder now calls the
+   shared helper — behavior and message shape unchanged.
+4. **The window mapping reuses the shared
+   `MotiveFleetDateRangeSpecBuilder` — no new builder.** The prescribed
+   mapping (unit `[start, end)` → `start_date = start`'s date,
+   `end_date` = the last covered date) is exactly what the shared
+   fleet-date-range builder already renders for its event-pair
+   consumers, so both leaves bind it at pad 0 rather than duplicating
+   it; with the fixed 1-day unit both labels are the unit's day. The
+   stamps parse on the models through `MotiveWindowStamp`
+   (`models/motive/shared.py`): the date label lifted to its
+   UTC-midnight instant — the label's calendar day preserved exactly
+   (the partition key IS the company-local day label), a representation
+   for routing, never a timezone conversion. `event_time_column='window_start'`
+   routes each unit's rows to exactly their `date=` partition.
+5. **The two populations are asymmetric — mirrored, not normalized.**
+   The vehicle arm returns the WHOLE fleet regardless of window (1-day
+   total = 6-day total = 1,466): inactive vehicles ride with zeroed
+   metrics and a populated free-text `message` status string (plain
+   `str`, no vocabulary claim), so the metric core has no absence arm
+   and is REQUIRED (the fuel-energy whole-walk reasoning). The driver
+   arm returns only DRIVERS WITH ACTIVITY in the window (13 on a quiet
+   Sunday, 653 across six days). Metric dtypes mirror each arm's own
+   wire: floats on the vehicle arm, bare-INT durations on the driver
+   arm. `last_located_at` (vehicle arm, str-or-None) mirrors VERBATIM
+   as a string — its value format is unprobed and the provider's rollup
+   timestamps are documented company-local, so parsing would presume
+   what no capture has shown.
+6. **Shared shapes: `UserSummary`'s fourth surface, `VehicleSummary`'s
+   third — and the NULL-driver bucket.** The driver arm's `driver` ref
+   is EXACTLY the shared 8-key `UserSummary` (fourth carrying surface)
+   and NULLABLE: 99/100 sampled rows populated, 1 NULL — an
+   unattributed rollup bucket the provider emits beside the per-driver
+   rows, mirrored as a null ref. The vehicle arm's ref is EXACTLY the
+   shared `VehicleSummary` key set, its third surface; `vin` is null on
+   some utilization rows, so the shared shape widened `vin` to nullable
+   under the union-lax posture (the UserSummary precedent — each
+   consumer's docstring pins its own surface's census).
+7. **The naming decision: the wire's own vocabulary; the legacy mapping
+   recorded.** The driver surface's envelope vocabulary is
+   `driver_idle_rollups`/`driver_idle_rollup` — NOT its
+   `/v2/driver_utilization` path — and the endpoint mirrors the wire:
+   `driver_idle_rollups` (model `DriverIdleRollup`). The vehicle arm's
+   envelope is `vehicle_utilizations`/`vehicle_utilization`, shipped as
+   `vehicle_utilizations` (model `VehicleUtilization`). The legacy hub
+   called these `vehicle_utilization` / `driver_utilization`; the
+   mapping is recorded in `ENDPOINTS.md`.
+8. **No completeness check** (windowed, deliberately partial — the
+   standing snapshot-only rule); no roster sourced or consumed (both
+   surfaces are fleet-wide with per-record attribution); offset
+   pagination at the configured `records_per_page` (50 and 100 both
+   honored live); no range cap was probed (the fixed 1-day unit sits
+   far inside any plausible cap anyway).
+
 ### The exception hierarchy (implemented: `exceptions.py`)
 
 The operational errors consumers catch, mirroring the classification
@@ -2095,6 +2200,9 @@ budgets → `RetriesExhaustedError`, failed auth paths →
 | Motive | Event-record mechanics, both endpoints: completed `driving_periods` reproduce `duration = end_time − start_time` exactly (float seconds); the in-progress shape carries `status: "in_progress"`, null `end_time`/`end_kilometers`/`distance`, an EMPTY-STRING `destination` beside null destination coordinates, and a fractional running `duration` counter. `start_time` was never observed null. Sort orders differ per endpoint (driving: start desc; idle: end asc); a past-the-end page returns 200 with an empty list and intact pagination echo (`total` = records); success responses carry NO rate-limit headers (the real budget is unobservable outside a 429); wide windows run 12–18 s with one observed 30 s client timeout (captured 2026-07-15). |
 | Motive | `/v1/groups` verified live: the standard wrapped-list envelope (`{"groups": [{"group": {...}}]}` + `pagination {per_page, page_no, total}`), `per_page` 50 and 100 both honored. WHOLE POPULATION walked: 152 records, 4 pages at 50, every key present on all 152 — `parent_id` int-or-null (the groups form a tree), the `user` owner ref's `username` and `driver_company_id` null on ALL 152 (value-unobservable; excluded from the model) (captured 2026-07-21). |
 | Motive | `/v1/users` verified live: wrapper `users`/`user`, same envelope and pagination, `per_page` 50 and 100 both honored. WHOLE POPULATION walked: 2,665 records, 27 pages at 100. The shape is PERFECTLY role-partitioned — `role='driver'` (2,359) carries a driver-only key block on top of the shared block; `admin` (32) and `fleet_user` (274) carry exactly the shared block; zero partial-presence keys within any role. `status` census: `active` 1,020 / `deactivated` 1,645 — the complete listing includes deactivated accounts, no sweep needed. The always-present partition: 22 keys on every record, +3 on `admin`/`fleet_user`, +39 on drivers; six keys never populated across their carrying shapes (`external_ids`/`phone_ext` everywhere, `expires_at`/`phone2`/`phone_country_code2` on non-drivers, `associated_dispatcher_id` on drivers). `joined_at` is DATE-ONLY (`YYYY-MM-DD`), 34/2,359 populated; `cycle2` 37 populated with HOS tokens like `70_8_2020`; `duty_status` {on_duty, off_duty, driving}, `eld_mode` {logs, none, exempt}, `violation_alerts` {never, 1_hour, 45/30/15_minutes} (captured 2026-07-21). |
+| Motive | `/v2/vehicle_utilization` and `/v2/driver_utilization` verified live: both GET under `X-Api-Key`, the standard wrapped-list envelope + `pagination {per_page, page_no, total}` offset walk, `per_page` 50 and 100 both honored. **THE ROLLUP GRAIN IS THE REQUEST WINDOW:** rows carry NO date or time identity of any kind; `start_date`/`end_date` take DATE-ONLY labels (`'2026-07-19'`; full RFC3339 datetimes were ALSO accepted, and NO params at all returned 200 with a default window — never relied on), and the label pair is INCLUSIVE on both ends (`start_date=end_date` returned that one day's rollup; a six-label span a six-day rollup). The labels are interpreted in COMPANY-LOCAL days (the account's `/v1/companies` zone at a UTC−5 offset — the idle_events linkage), so each row is the provider's company-local-day rollup, mirrored verbatim (captured 2026-07-21). |
+| Motive | `/v2/vehicle_utilization` wrapper `vehicle_utilizations`/`vehicle_utilization`. The population is the WHOLE vehicle fleet regardless of window (1-day total = 6-day total = 1,466): inactive vehicles ride with zeroed metrics and a free-text `message` status string. Census (120 sampled, structurally uniform — every key on every sampled record): `driving_fuel`/`driving_time`/`idle_fuel`/`idle_time`/`total_distance`/`total_fuel`/`utilization_percentage` floats, `last_located_at` str-or-None (value format unprobed — mirrored verbatim as str), `message` str, `vehicle {id int, make str, metric_units bool, model str, number str, vin str-or-None, year str}` — exactly the shared `VehicleSummary` key set, `vin`'s null arm new to this surface (captured 2026-07-21). |
+| Motive | `/v2/driver_utilization` wrapper `driver_idle_rollups`/`driver_idle_rollup` — a DIFFERENT envelope vocabulary from its path, mirrored by the endpoint name. Rows are the drivers WITH ACTIVITY in the window (13 on a quiet Sunday; 653 across six days — per-driver-per-window grain, unlike the vehicle arm's whole-fleet population). Census (100 sampled, uniform): `utilization` float, `idle_time`/`driving_time` bare INTs (floats on the vehicle arm — per-arm dtypes, mirrored each), `idle_fuel`/`driving_fuel` floats, `driver` object-or-NULL — 99/100 populated with EXACTLY the shared `UserSummary` 8-key shape `{id, first_name, last_name, username, email, driver_company_id, status, role}`, 1 NULL (an unattributed rollup bucket, mirrored as a null ref) (captured 2026-07-21). |
 
 The `updated_after` finding generalizes into a standing rule: **encode probed
 provider behavior, never documented behavior alone.** Motive silently
@@ -3474,7 +3582,21 @@ resolution (item 1, done).
    snapshots on the vehicles template; one users dataset with the
    `role` column carrying the role-partitioned shape; zero
    shared-machinery changes), leaving the utilization rollup pair as
-   the only deferred Motive legacy endpoints.* The per-endpoint
+   the only deferred Motive legacy endpoints. The Motive utilization
+   rollup pair shipped 2026-07-21 — `vehicle_utilizations` and
+   `driver_idle_rollups`, the legacy hub's
+   `vehicle_utilization`/`driver_utilization` under the wire's own
+   envelope vocabulary — the Samsara fuel-energy species on Motive
+   wire per their §8 decision block: window-grain rollups with no row
+   time identity, `fixed_unit_days=1` riding the §5 machinery as its
+   second consumer (the seam built for exactly this pair), the
+   company-local-day documentation obligation discharged, and ONE
+   machinery addition — `MotiveWindowReportPageDecoder` (the
+   window-stamping mirror of the Samsara report decoder on the Motive
+   envelope, its stamping helper promoted into the shared
+   `decoders/_window_stamp.py` with two providers at birth). **The
+   Motive legacy queue is COMPLETE 2026-07-21** — every legacy-hub
+   Motive endpoint is shipped.* The per-endpoint
    inventory and port queue are tracked in `ENDPOINTS.md` (added
    2026-07-17), updated in the same change as any endpoint addition.
 8. **Polish phase, gated on a stable public surface:** full-tree ceremony
