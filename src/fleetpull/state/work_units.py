@@ -11,7 +11,13 @@ knowing nothing about HTTP, parquet, chunking, or what a ``partition_key`` means
 
 Enqueue is idempotent (``INSERT OR IGNORE`` on the natural key, with partial unique
 indexes so a NULL ``partition_key`` still dedups), so re-running a backfill plan
-never duplicates units. ``claim_next`` is a single atomic ``UPDATE ... WHERE
+never duplicates units. Idempotency's flip side: a kept ``done`` row silently
+absorbs a re-planned unit with the same bounds, so a planner deliberately
+RE-covering committed ground (the lookback margin — day-aligned units re-tile
+onto identical keys every run) must first call ``release_done_units`` over the
+window it is about to re-plan; the release-then-enqueue pairing at the single
+planning site is what keeps re-covered days fetchable (DESIGN §5, corrected
+2026-07-21). ``claim_next`` is a single atomic ``UPDATE ... WHERE
 unit_id = (SELECT ... LIMIT 1) RETURNING ...`` — safe under concurrency because WAL
 serializes writers, no app-level lock — that takes the lowest claimable ``unit_id``
 (FIFO), increments ``attempt_count``, and clears the prior attempt's outcome.
@@ -39,6 +45,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Final
 
+from fleetpull.incremental import DateWindow
 from fleetpull.state.database import (
     SqliteScalar,
     StateDatabase,
@@ -151,6 +158,16 @@ _RESET_CLAIMED_SQL: Final[str] = """
 UPDATE work_units
 SET status = ?
 WHERE provider = ? AND endpoint = ? AND status = ?
+"""
+
+# Lexical >= / <= on ``to_iso8601``'s fixed-width Z-form is chronological
+# (the cursor store's recorded reasoning); only rows FULLY inside the
+# window release -- a straddler stays done, and the re-plan's fresh tiles
+# overlap it harmlessly (delete-by-window refetch is idempotent).
+_RELEASE_DONE_SQL: Final[str] = """
+DELETE FROM work_units
+WHERE provider = ? AND endpoint = ? AND status = ?
+    AND chunk_start >= ? AND chunk_end <= ?
 """
 
 _CLAIM_NEXT_SQL: Final[str] = """
@@ -321,6 +338,56 @@ class WorkUnitStore:
         logger.debug('enqueued %s work units (%s new)', len(rows), inserted)
         return inserted
 
+    def release_done_units(
+        self, provider: Provider, endpoint: str, *, window: DateWindow
+    ) -> int:
+        """Delete ``done`` units lying fully inside a window about to be re-planned.
+
+        The planner's half of the release-then-enqueue pairing (module
+        docstring): a ``done`` row is committed history, and when the
+        planner deliberately re-covers its span (the lookback margin
+        refetch), the row must release back to plannable -- otherwise the
+        idempotent enqueue collapses onto it and the re-covered day is
+        never fetched again. Run provenance is the runs ledger's; a unit
+        row inside a window being re-planned is live work, not archive.
+
+        Sound at exactly one call site -- residual planning, which runs
+        only after the claim loop drained (so every row is ``done``) and
+        immediately re-tiles the released span hole-free, preserving the
+        prefix rule's gap-unreachability (DESIGN §5's re-derivation,
+        2026-07-21). A crash between release and enqueue is safe: the
+        watermark is untouched, so the next run resolves the identical
+        residual and plans it fresh. Only rows FULLY inside the window
+        release; a straddling ``done`` row stays, harmlessly overlapped
+        by the fresh tiles (refetch is idempotent per partition).
+
+        Args:
+            provider: The provider whose units to release.
+            endpoint: The endpoint whose units to release.
+            window: The residual window the caller is about to re-plan.
+
+        Returns:
+            The count of released (deleted) rows.
+
+        Side Effects:
+            Opens a connection, deletes the released rows, and commits.
+        """
+        with self._database.transaction() as connection:
+            changes_before: int = connection.total_changes
+            connection.execute(
+                _RELEASE_DONE_SQL,
+                (
+                    provider.value,
+                    endpoint,
+                    WorkUnitStatus.DONE.value,
+                    to_iso8601(window.start),
+                    to_iso8601(window.end),
+                ),
+            )
+            released: int = connection.total_changes - changes_before
+        logger.debug('released %s done work units for re-planning', released)
+        return released
+
     def reset_claimed_to_pending(self, provider: Provider, endpoint: str) -> int:
         """
         Revert every ``claimed`` unit to ``pending`` (startup crash recovery).
@@ -470,10 +537,12 @@ class WorkUnitStore:
         is gap-blind by design: it sees only rows, so a hole no row represents
         — a never-enqueued window between done units — would not gate the
         prefix. Soundness therefore rests on the four §5 invariants (one
-        enqueue site running only after the claim loop drains, the
-        capless always-claimable queue, no row deletion, hole-free planner tiling),
-        which make such a hole unreachable; the state-layer gap-blindness test
-        pins this dependence.
+        enqueue site running only after the claim loop drains, the capless
+        always-claimable queue, row deletion confined to the planning
+        site's release-then-enqueue pairing which immediately re-tiles the
+        released span, hole-free planner tiling), which make such a hole
+        unreachable; the state-layer gap-blindness test pins this
+        dependence.
 
         Args:
             provider: The provider whose units to read.

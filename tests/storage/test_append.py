@@ -148,18 +148,21 @@ class TestFeedAppendWriter:
     ) -> None:
         # The durable-rename recipe rides every part: the token commit is
         # fsynced (SQLite), so a power loss must never persist a token
-        # whose page the page cache still held -- the file AND its
-        # directory both fsync.
-        synced: list[int] = []
-        real_fsync = atomic_module.os.fsync
+        # whose page -- or whose newly created partition directory -- the
+        # page cache still held. This first-ever write creates the date=
+        # partition directory, so the file, the new directory, AND the
+        # dataset root holding its entry all fsync (the durable chain).
+        synced: list[Path] = []
+        real_fsync_path = atomic_module._fsync_path
 
-        def recording_fsync(descriptor: int) -> None:
-            synced.append(descriptor)
-            real_fsync(descriptor)
+        def recording_fsync_path(path: Path) -> None:
+            synced.append(path)
+            real_fsync_path(path)
 
-        monkeypatch.setattr(atomic_module.os, 'fsync', recording_fsync)
+        monkeypatch.setattr(atomic_module, '_fsync_path', recording_fsync_path)
         FeedAppendWriter(tmp_path, 'occurred_at').write(_frame(_DAY_ONE))
-        assert len(synced) >= 2
+        assert synced[0].name.endswith('.tmp')
+        assert synced[1:] == [tmp_path / 'date=2026-07-01', tmp_path]
 
     def test_append_never_touches_existing_files(self, tmp_path: Path) -> None:
         # THE I3 TRIPWIRE (DESIGN section 14): a feed run appends new part

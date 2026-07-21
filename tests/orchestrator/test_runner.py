@@ -655,7 +655,12 @@ class TestWatermarkRun:
         assert len(recorder.failed) == 1
         # The same tmp_path state database still holds the unit un-done, so
         # a fresh invocation re-claims it, re-drives the whole window, and
-        # only then commits the prefix.
+        # only then commits the prefix. The residual plan then releases and
+        # refetches the just-driven window once more (the stub cursor never
+        # persists its advance, so resolution re-anchors at the cold start;
+        # the release-then-enqueue pairing re-covers it rather than
+        # collapsing onto the done row) -- a second completed run and a
+        # second recorded advance.
         retry_recorder = _RecordingRecorder()
         retry_runner = _make_runner(
             retry_recorder,
@@ -665,9 +670,10 @@ class TestWatermarkRun:
         )
         outcome = retry_runner.run(_watermark_definition(), CannedDriver([batch]))
         assert isinstance(outcome, Executed)
-        assert retry_recorder.completed == [(1, 1)]
+        assert retry_recorder.completed == [(1, 1), (2, 1)]
         assert cursor.advance_calls == [
-            (Provider.MOTIVE, 'locations', datetime(2026, 6, 13, 9, tzinfo=UTC))
+            (Provider.MOTIVE, 'locations', datetime(2026, 6, 13, 9, tzinfo=UTC)),
+            (Provider.MOTIVE, 'locations', datetime(2026, 6, 13, 9, tzinfo=UTC)),
         ]
 
     def test_fail_run_failure_does_not_mask_original_error(

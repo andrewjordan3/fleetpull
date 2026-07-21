@@ -67,6 +67,12 @@ class UnitQueue(Protocol):
         """Insert planned units idempotently; return the newly inserted count."""
         ...
 
+    def release_done_units(
+        self, provider: Provider, endpoint: str, *, window: DateWindow
+    ) -> int:
+        """Release a re-planned window's ``done`` units back to plannable."""
+        ...
+
     def reset_claimed_to_pending(self, provider: Provider, endpoint: str) -> int:
         """Revert orphaned ``claimed`` units to ``pending`` (startup recovery)."""
         ...

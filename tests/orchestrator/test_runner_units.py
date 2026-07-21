@@ -402,8 +402,12 @@ def test_crash_resume_drives_only_the_remaining_units(
     assert (progress.done, progress.failed, progress.pending) == (2, 1, 2)
 
     # The resumed invocation re-claims the failed unit and the pending tail,
-    # ascending; the residual re-plan collapses onto the already-done daily
-    # units, so nothing before the failure point is requested again.
+    # ascending. The residual plan then RELEASES and re-drives the lookback
+    # margin behind the freshly advanced watermark (floor(06-14T12 - 1d) =
+    # 06-13) -- the release-then-enqueue pairing, DESIGN section 5
+    # corrected 2026-07-21: day-aligned tiles re-tile onto identical unit
+    # keys, so without the release the margin would silently collapse onto
+    # the kept done rows. Nothing before the margin is requested again.
     pin_shard_names(monkeypatch)
     resumed_driver = _WindowRecordingDriver(_fleet_batches())
     second_runner = _make_runner(_RecordingRecorder(), root, cursors, chunk_days=1)
@@ -412,6 +416,8 @@ def test_crash_resume_drives_only_the_remaining_units(
     assert isinstance(outcome, Executed)
     assert resumed_driver.windows == [
         _daily_window(12),
+        _daily_window(13),
+        _daily_window(14),
         _daily_window(13),
         _daily_window(14),
     ]
@@ -428,6 +434,64 @@ def test_crash_resume_drives_only_the_remaining_units(
     )
     assert _partition_bytes(root) == _partition_bytes(uninterrupted_root)
     assert cursors.applied_advances[-1] == uninterrupted_cursors.applied_advances[-1]
+
+
+def test_the_next_runs_lookback_margin_refetches_done_units(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # THE RELEASE-THEN-ENQUEUE TRIPWIRE (DESIGN section 5, corrected
+    # 2026-07-21): day-aligned units re-tile onto identical natural keys,
+    # so without the planner's release the idempotent enqueue collapses
+    # the lookback overlap onto the kept done rows and the late-arrival
+    # refetch -- the lookback's entire purpose on mutating-rollup
+    # surfaces -- silently never happens. The next day's run must
+    # RE-drive the margin days (2026-06-13/14 here), not just the new
+    # one. Any change that makes this drive only [15, 16) has revived
+    # the collapse.
+    root = tmp_path / 'daily'
+    _, cursors, _ = _run_to_completion(root, chunk_days=1, monkeypatch=monkeypatch)
+    assert cursors.applied_advances[-1] == datetime(2026, 6, 14, 12, tzinfo=UTC)
+
+    # One day later: trailing edge 2026-06-16, stored watermark
+    # 2026-06-14T12 -> residual [floor(06-13T12), 06-16) = [06-13, 06-16).
+    pin_shard_names(monkeypatch)
+    next_day_driver = _WindowRecordingDriver(_fleet_batches())
+    next_day_runner = EndpointRunner(
+        StubClientSource(),
+        RunStateAccess(
+            recorder=_RecordingRecorder(), cursors=cursors, units=_open_store(root)
+        ),
+        FrozenClock(start_time_utc=datetime(2026, 6, 17, tzinfo=UTC)),
+        FleetpullConfig(
+            sync=SyncConfig(
+                default_start_date=date(2026, 6, 10),
+                backfill_chunk_days=1,
+                backfill_unit_workers=1,
+            ),
+            storage=StorageConfig(dataset_root=root),
+            providers=ProvidersConfig(),
+        ),
+    )
+    outcome = next_day_runner.run(_definition(), next_day_driver)
+
+    assert isinstance(outcome, Executed)
+    assert next_day_driver.windows == [
+        _daily_window(13),
+        _daily_window(14),
+        _daily_window(15),
+    ]
+    # The refetched margin re-observes the same maximum; the forward-only
+    # guard applies nothing new, and the rewritten partition set is
+    # unchanged (2026-06-13 and -15 hold no rows).
+    assert cursors.applied_advances[-1] == datetime(2026, 6, 14, 12, tzinfo=UTC)
+    progress = _open_store(root).progress(Provider.MOTIVE, _ENDPOINT)
+    assert (progress.done, progress.failed, progress.pending) == (6, 0, 0)
+    assert sorted(_partition_bytes(root)) == [
+        'date=2026-06-10',
+        'date=2026-06-11',
+        'date=2026-06-12',
+        'date=2026-06-14',
+    ]
 
 
 def test_orphaned_claimed_unit_is_reclaimed_and_rerun_whole(
@@ -623,6 +687,11 @@ class _ScriptedUnits:
 
     def enqueue(self, units: list[WorkUnitSpec]) -> int:
         raise AssertionError('the race test never enqueues')
+
+    def release_done_units(
+        self, provider: Provider, endpoint: str, *, window: DateWindow
+    ) -> int:
+        raise AssertionError('the race test never releases')
 
     def reset_claimed_to_pending(self, provider: Provider, endpoint: str) -> int:
         raise AssertionError('the race test never resets')
