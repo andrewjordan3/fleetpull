@@ -20,6 +20,11 @@ from fleetpull.models.samsara.driver import (
     DriverStaticAssignedVehicleRef,
     DriverTagRef,
 )
+from fleetpull.models.samsara.driver_fuel_energy_report import (
+    DriverFuelEnergyCost,
+    DriverFuelEnergyDriverRef,
+    DriverFuelEnergyReport,
+)
 from fleetpull.models.samsara.driver_vehicle_assignment import (
     AssignmentDriverRef,
     AssignmentVehicleExternalIds,
@@ -51,6 +56,12 @@ from fleetpull.models.samsara.vehicle import (
     VehicleGatewayRef,
     VehicleStaticAssignedDriverRef,
 )
+from fleetpull.models.samsara.vehicle_fuel_energy_report import (
+    VehicleFuelEnergyCost,
+    VehicleFuelEnergyExternalIds,
+    VehicleFuelEnergyReport,
+    VehicleFuelEnergyVehicleRef,
+)
 
 __all__: list[str] = [
     'Address',
@@ -67,6 +78,9 @@ __all__: list[str] = [
     'Driver',
     'DriverActivationStatus',
     'DriverCarrierSettings',
+    'DriverFuelEnergyCost',
+    'DriverFuelEnergyDriverRef',
+    'DriverFuelEnergyReport',
     'DriverHosSetting',
     'DriverStaticAssignedVehicleRef',
     'DriverTagRef',
@@ -85,6 +99,10 @@ __all__: list[str] = [
     'TripCoordinates',
     'Vehicle',
     'VehicleExternalIds',
+    'VehicleFuelEnergyCost',
+    'VehicleFuelEnergyExternalIds',
+    'VehicleFuelEnergyReport',
+    'VehicleFuelEnergyVehicleRef',
     'VehicleGatewayRef',
     'VehicleStaticAssignedDriverRef',
 ]

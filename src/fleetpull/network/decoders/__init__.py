@@ -19,6 +19,7 @@ from fleetpull.network.decoders.motive import (
 from fleetpull.network.decoders.samsara import (
     SamsaraCursorPageDecoder,
     SamsaraVehicleSeriesPageDecoder,
+    SamsaraWindowReportPageDecoder,
 )
 from fleetpull.network.decoders.single_page import SinglePageDecoder
 
@@ -29,5 +30,6 @@ __all__: list[str] = [
     'MotiveWrappedSinglePageDecoder',
     'SamsaraCursorPageDecoder',
     'SamsaraVehicleSeriesPageDecoder',
+    'SamsaraWindowReportPageDecoder',
     'SinglePageDecoder',
 ]

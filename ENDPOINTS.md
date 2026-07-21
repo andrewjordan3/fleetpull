@@ -62,6 +62,8 @@ headers; the configured self-limit is the only budget. 429s carry fractional
 | `odometer_readings` | `GET /fleet/vehicles/stats/history`, `types=obdOdometerMeters` | windowed watermark | `time` | The odometer arm of the stats triple — the engine_states row's mechanics verbatim (vehicle-axis cursor, series-unnesting decoder, 512 tier, reading-time anchoring). Series keys exactly `{time, value}` with `value` the OBD odometer in bare-int METERS, mirrored verbatim. |
 | `asset_locations` | `GET /assets/location-and-speed/stream` | windowed watermark | `happened_at_time` | The legacy hub's `location_stream`, renamed per the name=plural-of-entity invariant. The `ids` filter is REQUIRED (id-less → HTTP 400) with the batch cap API-enforced at 50, so the binding declares the first `BatchedRosterFanOut`: one cursor-walk chain per sorted 50-member comma-joined batch of the Samsara `vehicle_ids` roster — transport packing only (records self-identify via `asset.id`, a STRING here), resolved onto the existing member-agnostic fan-out driver, whose progress lines count batches for this shape. Standard cursor walk at this surface's probed 512 tier (513 → 400); reading-time anchored on the half-open `[start, end)` window. No speed key observed despite the wire path's name; `location.geofence` observed-empty (DESIGN §8). |
 | `driver_vehicle_assignments` | `GET /fleet/driver-vehicle-assignments` | windowed watermark | `start_time` | ONE dataset despite the REQUIRED two-value `filterBy` (missing/bogus → loud HTTP 400): full 24h walks under `vehicles` and `drivers` returned IDENTICAL row sets (216 = 216 as tuple sets), so the axis is traversal, not partition — `filterBy=vehicles` is baked in as a fixed builder param (the stats triple's `types` idiom), no sweep, no second endpoint. Standard cursor walk with `results_limit=50` declared as documentation of the server's own FIXED 50-record paging — the `limit` param is proven ignored (513 not rejected; no enforced tier). Retrieval OVERLAP-anchored (midnight-spanning assignments shared across adjacent windows); ownership start-anchored via the post-fetch filter, no wire pad — the trips decisions mirrored. `vehicle.externalIds` carries the literal dotted `samsara.serial`/`samsara.vin` wire keys on the nested ref. No roster. |
+| `vehicle_fuel_energy_reports` | `GET /fleet/reports/vehicles/fuel-energy` | windowed watermark | `window_start` | The legacy hub's `vehicle_fuel_energy`, renamed per the name=snake-plural-of-model invariant (`VehicleFuelEnergyReport`). The first WINDOW-GRAIN ROLLUP endpoint: the provider aggregates over exactly the requested window (widening the window GREW per-vehicle metrics) and day rollups are NON-ADDITIVE into wider windows (89/267 mismatched), so the binding declares `fixed_unit_days=1` on its `WatermarkMode` — the unit width is part of the row's meaning and never floats with `backfill_chunk_days`. Rows carry NO event-time key; the `SamsaraWindowReportPageDecoder` extracts the NESTED report list (`data` is an object holding `vehicleReports`) and stamps every report with the sent window (`windowStartDate`/`windowEndDate` verbatim from the sent `startDate`/`endDate` — this family's own param names, RFC3339 accepted despite them). `results_limit=100` documents the server's own ~100-report paging (`limit` proven ignored: 512/513/10 all paged identically). Census-open `energyType`/`currencyCode` stay plain strs; the dotted `externalIds` on the nested vehicle ref. No roster. |
+| `driver_fuel_energy_reports` | `GET /fleet/reports/drivers/fuel-energy` | windowed watermark | `window_start` | The legacy hub's `driver_fuel_energy`, renamed per the name=snake-plural-of-model invariant (`DriverFuelEnergyReport`). The vehicle arm's binding with the path and report key swapped (`data.driverReports`): the same metric core + `estFuelEnergyCost` attributed to `driver {id, name}` — NO `externalIds` was ever observed on this arm. The pair's window-grain and non-additivity proofs apply, so `fixed_unit_days=1`, the decoder-stamped `window_start` routing, `results_limit=100` as documentation of the server's own paging, and the `startDate`/`endDate` naming quirk are all shared. No roster. |
 
 ## Port queue
 
@@ -69,10 +71,11 @@ Endpoint breadth is a scope principle (DESIGN §1): an endpoint is deferred,
 never excluded for lacking a known consumer. fleet-telemetry-hub seeds the
 order below; it is a bootstrap aid, not the ceiling.
 
-### 1. Samsara legacy wave (next)
+### 1. Samsara legacy wave (COMPLETE 2026-07-21)
 
-The legacy four first (complete 2026-07-20), then the remainder — each
-on its own probe-then-build vertical:
+Every legacy-hub Samsara endpoint is shipped — the legacy four first
+(complete 2026-07-20), then the remainder, each on its own
+probe-then-build vertical:
 
 | Endpoint | Legacy wire surface | Status |
 |---|---|---|
@@ -84,8 +87,8 @@ on its own probe-then-build vertical:
 | `vehicle_stats_history` | `/fleet/vehicles/stats/history` | **shipped 2026-07-20 as three endpoints: `engine_states`, `gps_readings`, `odometer_readings`** (disjoint per-type schemas — DESIGN §8) |
 | `location_stream` | `/assets/location-and-speed/stream` | **shipped 2026-07-20 as `asset_locations`** (renamed per the name=plural-of-entity invariant; the first `BatchedRosterFanOut` consumer — DESIGN §8) |
 | `driver_vehicle_assignments` | `/fleet/driver-vehicle-assignments` | **shipped 2026-07-20** |
-| `vehicle_fuel_energy` | `/fleet/reports/vehicles/fuel-energy` | queued |
-| `driver_fuel_energy` | `/fleet/reports/drivers/fuel-energy` | queued |
+| `vehicle_fuel_energy` | `/fleet/reports/vehicles/fuel-energy` | **shipped 2026-07-21 as `vehicle_fuel_energy_reports`** (renamed per the name=snake-plural-of-model invariant, model `VehicleFuelEnergyReport`; the first fixed-unit-width endpoint — DESIGN §8) |
+| `driver_fuel_energy` | `/fleet/reports/drivers/fuel-energy` | **shipped 2026-07-21 as `driver_fuel_energy_reports`** (renamed per the name=snake-plural-of-model invariant, model `DriverFuelEnergyReport`) |
 
 ### 2. Motive deferred legacy endpoints
 

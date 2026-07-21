@@ -56,7 +56,11 @@ class SyncConfig(ConfigModel):
             run). Sync-level only, deliberately without a per-provider
             override: chunk size is fleetpull's transactional knob, not a
             provider-latency fact. Applies to newly planned units only --
-            already-persisted unit boundaries are honored on resume.
+            already-persisted unit boundaries are honored on resume. An
+            endpoint whose ``WatermarkMode`` declares ``fixed_unit_days``
+            (a window-grain rollup surface, where the unit width is part
+            of the row's meaning) tiles at exactly that width instead;
+            this knob remains the default for every other endpoint.
         backfill_unit_workers: How many of a windowed endpoint's work units
             drive concurrently (DESIGN section 5's prefix-advance rule keeps
             the watermark truthful under any completion order). ``1`` is the

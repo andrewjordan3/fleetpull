@@ -7,7 +7,8 @@ unified plan-and-drive loop (DESIGN sections 4/5): re-claim any incomplete
 work units and drive them (``backfill_unit_workers`` concurrently), then
 resolve the residual window exactly as before -- watermark less lookback
 (floored), else coverage frontier, else the cold-start anchor, against the
-cutoff trailing edge -- plan it into ``backfill_chunk_days`` units, and
+cutoff trailing edge -- plan it into ``backfill_chunk_days`` units (or the
+endpoint's declared ``fixed_unit_days``, which wins over config), and
 drive those. Every unit is its own transaction: fetch the unit's window
 (the fan-out threads unchanged within it), write parquet, record the
 ledger row, and mark the unit done with its folded observation. The
@@ -342,7 +343,9 @@ class EndpointRunner:
                 already holds. The runner reads exactly four values:
                 ``sync.default_start_datetime`` (the cold-start anchor),
                 ``sync.backfill_chunk_days`` (the unit width newly planned
-                windows tile into), ``storage.dataset_root`` (where the
+                windows tile into, unless the endpoint's ``WatermarkMode``
+                declares a ``fixed_unit_days`` override),
+                ``storage.dataset_root`` (where the
                 writers land), and ``storage.drop_exact_duplicates`` (the
                 writers' exact-dedup switch).
         """
@@ -477,7 +480,11 @@ class EndpointRunner:
         (floored), else the coverage frontier, else the cold-start anchor,
         against the cutoff trailing edge -- planned into
         ``backfill_chunk_days`` units (a window smaller than one chunk is
-        one unit: the daily run), and driven the same way. Each unit commits
+        one unit: the daily run; an endpoint declaring
+        ``fixed_unit_days`` on its ``WatermarkMode`` tiles at exactly
+        that width instead, because on a window-grain rollup surface the
+        unit width is part of the row's meaning), and driven the same
+        way. Each unit commits
         independently; the watermark advances per completion across the
         contiguous done-prefix (the prefix-advance rule, so out-of-order
         completions never overstate it); a failing unit returns to a
@@ -535,7 +542,17 @@ class EndpointRunner:
         outcomes = drive_claimable_units(crew, workers=workers)
         residual = self._resolve_residual_window(definition, mode)
         if residual is not None:
-            chunk = timedelta(days=self._sync_config.backfill_chunk_days)
+            # The endpoint's declared fixed unit width wins over config: on a
+            # window-grain rollup surface the unit width is part of the row's
+            # meaning (the provider aggregates over exactly the requested
+            # window), so it must never float with sync.backfill_chunk_days;
+            # config remains the default for endpoints declaring None.
+            chunk_days = (
+                self._sync_config.backfill_chunk_days
+                if mode.fixed_unit_days is None
+                else mode.fixed_unit_days
+            )
+            chunk = timedelta(days=chunk_days)
             claimable_units = self._state.units.enqueue(
                 plan_backfill_units(provider, name, residual, chunk)
             )

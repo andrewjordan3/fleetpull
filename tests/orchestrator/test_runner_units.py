@@ -166,7 +166,9 @@ class _WindowRecordingDriver:
             yield FetchedPage(records=records, durable_progress=None)
 
 
-def _definition() -> EndpointDefinition[_WatermarkModel]:
+def _definition(
+    fixed_unit_days: int | None = None,
+) -> EndpointDefinition[_WatermarkModel]:
     return EndpointDefinition(
         provider=Provider.MOTIVE,
         name=_ENDPOINT,
@@ -175,7 +177,11 @@ def _definition() -> EndpointDefinition[_WatermarkModel]:
         response_model=_WatermarkModel,
         quota_scope=QuotaScope.MOTIVE,
         storage_kind=StorageKind.DATE_PARTITIONED,
-        sync_mode=WatermarkMode(lookback=timedelta(days=1), cutoff=timedelta(days=1)),
+        sync_mode=WatermarkMode(
+            lookback=timedelta(days=1),
+            cutoff=timedelta(days=1),
+            fixed_unit_days=fixed_unit_days,
+        ),
         event_time_column='occurred_at',
     )
 
@@ -278,6 +284,47 @@ def test_single_and_multi_unit_plans_write_identical_bytes(
     assert _partition_bytes(tmp_path / 'multi') == single_bytes
     assert multi_cursors.applied_advances[-1] == single_cursors.applied_advances[-1]
     assert single_outcome.records_fetched == multi_outcome.records_fetched == 5
+
+
+def test_a_declared_fixed_unit_width_overrides_the_configured_chunk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The fixed-unit-width declaration (WatermarkMode.fixed_unit_days):
+    # a window-grain rollup endpoint's unit width is part of the row's
+    # meaning, so the declaration wins over sync.backfill_chunk_days --
+    # under the same 7-day config, the declaring endpoint tiles the
+    # resolved 5-day window into five one-day units while the
+    # None-declaring sibling still plans one config-width unit.
+    pin_shard_names(monkeypatch)
+    declared_driver = _WindowRecordingDriver(_fleet_batches())
+    declared_runner = _make_runner(
+        _RecordingRecorder(),
+        tmp_path / 'declared',
+        _FaithfulCursorAccess(),
+        chunk_days=7,
+    )
+    declared_outcome = declared_runner.run(
+        _definition(fixed_unit_days=1), declared_driver
+    )
+    assert isinstance(declared_outcome, Executed)
+    assert declared_driver.windows == [_daily_window(day) for day in range(10, 15)]
+
+    pin_shard_names(monkeypatch)
+    config_driver = _WindowRecordingDriver(_fleet_batches())
+    config_runner = _make_runner(
+        _RecordingRecorder(),
+        tmp_path / 'config',
+        _FaithfulCursorAccess(),
+        chunk_days=7,
+    )
+    config_outcome = config_runner.run(_definition(), config_driver)
+    assert isinstance(config_outcome, Executed)
+    assert config_driver.windows == [DateWindow(start=_WINDOW_START, end=_WINDOW_END)]
+    # The decomposition stays a transactional choice: both plans land
+    # byte-identical partitions (the boundary-invariance property).
+    assert _partition_bytes(tmp_path / 'declared') == _partition_bytes(
+        tmp_path / 'config'
+    )
 
 
 def test_one_day_chunks_commit_per_day_with_identical_bytes(
