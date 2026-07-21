@@ -7,7 +7,7 @@ GeoTab serializes every duration as a .NET TimeSpan string
 fields may arrive as either a bare known-id sentinel string
 (``"UnknownDriverId"``) or an object (``{"id": ..., "isDriver": true}``).
 Both shapes are structural wire facts shared across GeoTab entities
-(``Trip`` today; ``ExceptionEvent``'s ``driver``/``diagnostic`` next),
+(``Trip``, ``ExceptionEvent``, and the feed wave's ``FillUp``/``FuelTaxDetail`` today),
 so their coercions live here beside each other, consumed through
 ``Annotated`` field aliases -- never as per-model parsing logic.
 

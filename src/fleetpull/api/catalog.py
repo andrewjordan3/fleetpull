@@ -16,7 +16,12 @@ matching mode, and every discovered endpoint must appear here with the
 mode-matching identity type.
 """
 
-from fleetpull.api.identity import EndpointIdentity, SnapshotEndpoint, WindowedEndpoint
+from fleetpull.api.identity import (
+    EndpointIdentity,
+    FeedEndpoint,
+    SnapshotEndpoint,
+    WindowedEndpoint,
+)
 from fleetpull.vocabulary import Provider
 
 __all__: list[str] = ['Endpoints', 'available_endpoints']
@@ -91,6 +96,15 @@ class Endpoints:
         exception_events: WindowedEndpoint = WindowedEndpoint(
             Provider.GEOTAB, 'exception_events'
         )
+        log_records: FeedEndpoint = FeedEndpoint(Provider.GEOTAB, 'log_records')
+        status_data: FeedEndpoint = FeedEndpoint(Provider.GEOTAB, 'status_data')
+        fill_ups: FeedEndpoint = FeedEndpoint(Provider.GEOTAB, 'fill_ups')
+        fuel_and_energy_used: FeedEndpoint = FeedEndpoint(
+            Provider.GEOTAB, 'fuel_and_energy_used'
+        )
+        fuel_tax_details: FeedEndpoint = FeedEndpoint(
+            Provider.GEOTAB, 'fuel_tax_details'
+        )
 
 
 def available_endpoints() -> tuple[EndpointIdentity, ...]:
@@ -124,4 +138,9 @@ def available_endpoints() -> tuple[EndpointIdentity, ...]:
         Endpoints.Geotab.users,
         Endpoints.Geotab.trips,
         Endpoints.Geotab.exception_events,
+        Endpoints.Geotab.log_records,
+        Endpoints.Geotab.status_data,
+        Endpoints.Geotab.fill_ups,
+        Endpoints.Geotab.fuel_and_energy_used,
+        Endpoints.Geotab.fuel_tax_details,
     )
