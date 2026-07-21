@@ -64,6 +64,9 @@ class Endpoints:
         asset_locations: WindowedEndpoint = WindowedEndpoint(
             Provider.SAMSARA, 'asset_locations'
         )
+        driver_vehicle_assignments: WindowedEndpoint = WindowedEndpoint(
+            Provider.SAMSARA, 'driver_vehicle_assignments'
+        )
 
     class Geotab:
         """GeoTab endpoint identities."""
@@ -96,6 +99,7 @@ def available_endpoints() -> tuple[EndpointIdentity, ...]:
         Endpoints.Samsara.gps_readings,
         Endpoints.Samsara.odometer_readings,
         Endpoints.Samsara.asset_locations,
+        Endpoints.Samsara.driver_vehicle_assignments,
         Endpoints.Geotab.devices,
         Endpoints.Geotab.users,
         Endpoints.Geotab.trips,
