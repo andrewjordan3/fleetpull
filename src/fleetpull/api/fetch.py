@@ -30,7 +30,8 @@ for GeoTab session aging) → the shape-resolved request driver (the
 shared ``resolve_request_driver`` seam with no roster source: the
 stateless shapes a snapshot can declare -- single fetch, param sweep
 -- resolve (a bisected window is watermark-only by construction and
-never reaches this verb), a ``RosterFanOut`` is refused loudly, and the
+never reaches this verb), a roster-backed shape (``RosterFanOut`` /
+``BatchedRosterFanOut``) is refused loudly, and the
 driver honors a declared completeness check, so a guarded snapshot is
 verified on this verb exactly as under sync) → ``TransportClient`` →
 ``validate_records`` → ``models_to_dataframe``.
@@ -172,7 +173,8 @@ def fetch(
         ConfigurationError: The identity is not snapshot-typed, the auth
             shape mismatches the endpoint's provider, the identity
             resolves to no registered endpoint, or the endpoint declares
-            a ``RosterFanOut`` shape (roster state is sync territory;
+            a roster-backed shape (``RosterFanOut`` /
+            ``BatchedRosterFanOut``: roster state is sync territory;
             fetch is stateless by contract).
         AuthenticationError: The provider rejected the credential
             unfixably.
@@ -215,7 +217,7 @@ def fetch(
     }
     with FetchPoolRegistry(fetch_workers) as fetch_pools:
         # The shared shape seam with no roster source: every stateless
-        # shape resolves; a RosterFanOut is refused loudly before any
+        # shape resolves; a roster-backed shape is refused loudly before any
         # transport pool opens. The resolved driver owns the chain (spec
         # build, page loop) and, when the definition declares a
         # completeness check, the post-stream count verification -- fetch

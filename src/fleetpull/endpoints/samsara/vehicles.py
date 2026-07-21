@@ -76,7 +76,8 @@ _VEHICLE_IDS_MAX_AGE: Final[timedelta] = timedelta(days=1)
 _VEHICLE_IDS_EVICTION_THRESHOLD: Final[int] = 3
 
 # The Samsara vehicle_ids roster: fed by this module's vehicles listing,
-# read by the trips fan-out (which carries only the RosterKey). The
+# read by its fan-out consumers -- trips and asset_locations -- which
+# carry only the RosterKey. The
 # source column is the vehicles frame's 'id' (the top-level model field,
 # flattened verbatim) -- a numeric string, mirrored as string.
 VEHICLE_IDS_ROSTER: RosterDefinition = RosterDefinition(

@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from fleetpull.endpoints.shared import (
+    BatchedRosterFanOut,
     BisectedWindowFetch,
     CompletenessCheck,
     EndpointDefinition,
@@ -308,6 +309,21 @@ class TestEndpointDefinitionValidation:
                 request_shape=RosterFanOut(
                     roster=RosterKey(Provider.GEOTAB, 'vehicle_ids'),
                     member_key='vehicle_id',
+                ),
+            )
+
+    def test_cross_provider_batched_roster_fan_out_raises(self) -> None:
+        # The batched shape carries the same provider-boundary invariant
+        # as its per-member sibling; both arms of the guard stay pinned.
+        with pytest.raises(ValueError, match='crosses the provider boundary'):
+            _make_endpoint(
+                WatermarkMode(lookback=timedelta(days=1), cutoff=timedelta(days=2)),
+                storage_kind=StorageKind.DATE_PARTITIONED,
+                event_time_column='occurred_at',
+                request_shape=BatchedRosterFanOut(
+                    roster=RosterKey(Provider.GEOTAB, 'vehicle_ids'),
+                    member_key='ids',
+                    batch_size=50,
                 ),
             )
 
