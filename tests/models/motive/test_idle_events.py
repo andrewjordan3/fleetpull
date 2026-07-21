@@ -1,4 +1,4 @@
-"""Tests for fleetpull.models.motive.idle_events.
+"""Tests for fleetpull.models.motive.idle_event.
 
 Every fixture is the committed 2026-07-15 capture set
 (``tests/motive_idle_events_capture.py``): the full page and the

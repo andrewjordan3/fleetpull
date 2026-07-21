@@ -475,7 +475,14 @@ class TestExampleFile:
         config = FleetpullConfig.from_yaml(_write(tmp_path, pointed))
         motive = config.providers.motive
         assert motive is not None
-        assert motive.endpoints == ('vehicles', 'vehicle_locations')
+        assert motive.endpoints == (
+            'vehicles',
+            'vehicle_locations',
+            'driving_periods',
+            'idle_events',
+            'groups',
+            'users',
+        )
         samsara = config.providers.samsara
         assert samsara is not None
         assert samsara.endpoints == (

@@ -1,6 +1,6 @@
 """Tests for fleetpull.records.schema."""
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
@@ -26,6 +26,7 @@ class _Sample(ResponseModel):
     color: _Color
     tags: list[int]
     when: datetime
+    joined_on: date | None = None
     elapsed: timedelta | None = None
     block: _Block | None = None
 
@@ -40,6 +41,7 @@ def test_maps_each_scalar_kind() -> None:
     assert schema['ratio'] == pl.Float64()
     assert schema['name'] == pl.String()
     assert schema['when'] == pl.Datetime(time_unit='us', time_zone='UTC')
+    assert schema['joined_on'] == pl.Date()
     assert schema['elapsed'] == pl.Duration(time_unit='us')
 
 

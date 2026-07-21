@@ -1,4 +1,4 @@
-"""Tests for fleetpull.models.motive.driving_periods.
+"""Tests for fleetpull.models.motive.driving_period.
 
 Every fixture is the committed 2026-07-15 capture set
 (``tests/motive_driving_periods_capture.py``): the offset-pagination

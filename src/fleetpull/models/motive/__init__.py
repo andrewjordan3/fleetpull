@@ -1,30 +1,34 @@
 """Motive response models; the face re-exports each endpoint module's models."""
 
-from fleetpull.models.motive.driving_periods import DrivingPeriod
-from fleetpull.models.motive.idle_events import IdleEvent
+from fleetpull.models.motive.driving_period import DrivingPeriod
+from fleetpull.models.motive.group import Group
+from fleetpull.models.motive.idle_event import IdleEvent
 from fleetpull.models.motive.shared import (
-    DriverSummary,
     EldDeviceInfo,
+    UserSummary,
     VehicleSummary,
 )
-from fleetpull.models.motive.vehicle_locations import (
-    VehicleLocation,
-    VehicleLocationType,
-)
-from fleetpull.models.motive.vehicles import (
+from fleetpull.models.motive.user import User
+from fleetpull.models.motive.vehicle import (
     AvailabilityDetails,
     AvailabilityStatus,
     Vehicle,
     VehicleStatus,
 )
+from fleetpull.models.motive.vehicle_location import (
+    VehicleLocation,
+    VehicleLocationType,
+)
 
 __all__: list[str] = [
     'AvailabilityDetails',
     'AvailabilityStatus',
-    'DriverSummary',
     'DrivingPeriod',
     'EldDeviceInfo',
+    'Group',
     'IdleEvent',
+    'User',
+    'UserSummary',
     'Vehicle',
     'VehicleLocation',
     'VehicleLocationType',
