@@ -9,7 +9,7 @@ is structurally unavailable here — id-sort is rejected outright for
 this type (captured 2026-07-15: ``ArgumentException``, "Can not sort by
 id"), and any sort composed with a search degrades to the deterministic
 ``-32000 GenericException`` — so the leaf composes the shared
-``GeotabWindowedGetSpecBuilder`` (``_get_requests``) with
+``GeotabWindowedGetSpecBuilder`` (``_requests``) with
 ``id_sort=False`` (no ``sort`` member ever written), declares the
 ``BisectedWindowFetch`` request shape, and the orchestrator's bisecting
 driver fetches each unit window whole, halving on the exactly-full
@@ -31,7 +31,7 @@ from datetime import timedelta
 from typing import Final
 
 from fleetpull.config import GeotabConfig
-from fleetpull.endpoints.geotab._get_requests import (
+from fleetpull.endpoints.geotab._requests import (
     GeotabWindowedGetSpecBuilder,
     server_host,
 )

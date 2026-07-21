@@ -349,13 +349,19 @@ class RunLedger:
         Open a feed run resuming from ``from_version`` (``mode='feed'``).
 
         ``from_version`` is the feed arm's opaque start token, stored verbatim
-        (fleetpull never parses it). The run's end ``toVersion`` is recorded later
-        by :meth:`complete_run`.
+        (fleetpull never parses it) — or, on the seeded first run (which has
+        no token yet, while the table requires a non-null ``from_version`` on
+        a feed row), the runner's self-describing ``seed:<iso8601>`` marker
+        naming the ``search.fromDate`` the run seeded from. Never read back
+        by the program; the marker is run provenance, exactly like the rest
+        of the row. The run's end ``toVersion`` is recorded later by
+        :meth:`complete_run`.
 
         Args:
             provider: The provider being fetched.
             endpoint: The endpoint being fetched.
-            from_version: The feed arm's opaque start version.
+            from_version: The feed arm's opaque start version, or the seeded
+                first run's ``seed:<iso8601>`` marker.
 
         Returns:
             The new run's ``run_id`` (the table's rowid alias).

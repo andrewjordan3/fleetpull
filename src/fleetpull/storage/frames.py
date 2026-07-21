@@ -3,9 +3,11 @@
 half-open window-membership predicate.
 
 Two pure DataFrame helpers. ``drop_exact_duplicates`` is the write-time exact
-dedup (DESIGN §6): every writer runs it on its finalized frame, clearing
-byte-identical rows -- a feed's pagination / refetch duplicates most importantly,
-a cheap safety net elsewhere. ``in_window`` is the half-open ``[start, end)``
+dedup (DESIGN §6): the replace-partition and single-file writers run it on
+their finalized frames, clearing byte-identical rows as a cheap safety net.
+The feed append cell deliberately does NOT (DESIGN §4's stored-as-emitted
+contract and §14's append-only invariant): crash-window and re-emission
+duplicates are the log's honest content, reconciled by the consumer. ``in_window`` is the half-open ``[start, end)``
 membership predicate that defines the window boundary in exactly one place: its
 consumer today is the orchestrator's batch shaping, which keeps a fetch's
 in-window rows before they reach a writer; the future single-file window-clearing

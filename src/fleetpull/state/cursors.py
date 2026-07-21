@@ -14,14 +14,17 @@ not parseable ISO-8601 UTC, is state-store corruption and raises
 ``ConfigurationError``, consistent with the other §5 corruption stances.
 ``get_cursor`` returning ``None`` means exactly "no cursor has been persisted for
 this (provider, endpoint)" — the store never fabricates one and never interprets
-absence; that decision lives in the caller. Two writes, two stances:
-``set_cursor`` is the unconditional single-row upsert with no advance
-discipline — the general write the feed arm will use when it lands (no
-production caller today) — while ``advance_watermark_forward`` is the
-watermark arm's write, carrying the strictly-forward guard inside its
-statement (the recorded §5 exception to the dumb-store stance, 2026-07-20),
-because its concurrent prefix-committing callers cannot enforce monotonicity
-race-free from outside the statement.
+absence; that decision lives in the caller. Two writes, one arm each, both
+kind-guarded inside their statements (so a cursor row can never silently
+change arm — the §5 kind-guard doctrine, total since the feed arm landed
+2026-07-21 and the earlier unguarded general upsert was deleted with it):
+``advance_watermark_forward`` is the watermark arm's write, additionally
+carrying the strictly-forward monotonicity guard in-statement (the recorded
+§5 exception to the dumb-store stance, 2026-07-20), because its concurrent
+prefix-committing callers cannot enforce monotonicity race-free from outside
+the statement; ``commit_feed_token`` is the feed arm's write —
+kind-guarded last-write-wins, with monotonicity deliberately left to the
+caller's serial per-page sequencing (the reasoning on the method).
 """
 
 import logging
@@ -54,32 +57,6 @@ class CursorKind(StrEnum):
 
     DATE_WATERMARK = 'date_watermark'
     FEED_TOKEN = 'feed_token'
-
-
-def _serialize_cursor(cursor: IncrementalCursor) -> tuple[CursorKind, str]:
-    """
-    Serialize an incremental cursor to its ``(kind, value)`` row form.
-
-    The write-side half of the codec. A ``DateWatermark`` renders its
-    ``watermark`` to seconds-precision ISO-8601 UTC text via the timing codec; a
-    ``FeedToken`` stores its opaque token verbatim (fleetpull never parses it).
-
-    Args:
-        cursor: The tagged-union cursor to serialize.
-
-    Returns:
-        The ``(kind, value)`` pair: the discriminator naming the arm and the
-        arm's serialized ``value`` column text.
-
-    Raises:
-        ValueError: A ``DateWatermark`` whose ``watermark`` is naive or not UTC —
-            surfaced from the timing codec, kept stdlib as a caller bug.
-    """
-    match cursor:
-        case DateWatermark():
-            return CursorKind.DATE_WATERMARK, to_iso8601(cursor.watermark)
-        case FeedToken():
-            return CursorKind.FEED_TOKEN, cursor.from_version
 
 
 def _deserialize_cursor(
@@ -144,15 +121,6 @@ _SELECT_CURSOR_SQL: Final[str] = (
     'SELECT kind, value FROM cursors WHERE provider = ? AND endpoint = ?'
 )
 
-_UPSERT_CURSOR_SQL: Final[str] = """
-INSERT INTO cursors (provider, endpoint, kind, value, updated_at)
-VALUES (?, ?, ?, ?, ?)
-ON CONFLICT (provider, endpoint) DO UPDATE SET
-    kind = excluded.kind,
-    value = excluded.value,
-    updated_at = excluded.updated_at
-"""
-
 # The atomic forward-only advance (DESIGN section 5, 2026-07-20): the
 # monotonicity guard lives INSIDE the statement, so concurrent unit
 # completions racing their prefix commits can never interleave a stale
@@ -168,6 +136,27 @@ ON CONFLICT (provider, endpoint) DO UPDATE SET
 WHERE cursors.kind = excluded.kind AND excluded.value > cursors.value
 """
 
+# The feed arm's kind-guarded last-write-wins commit (DESIGN section 5,
+# 2026-07-21): the in-statement kind guard keeps a stored watermark
+# untouched (the caller distinguishes that refusal loudly — see
+# commit_feed_token); the value is otherwise overwritten unconditionally.
+# Deliberately NO monotonicity guard, unlike the watermark's: the token is
+# opaque by doctrine (section 8's probe-settled decision 4 — the version
+# order is the provider's, never fleetpull's to compare), a lexical guard
+# would bet on the observed-but-uncontracted 16-hex encoding, and the feed
+# drive is the only writer and strictly serial (one page after another under
+# the single-driver-per-state-database assumption), so there is no
+# interleaving for an in-statement guard to defend against — the situation
+# that justified the watermark exception does not exist here.
+_COMMIT_FEED_TOKEN_SQL: Final[str] = """
+INSERT INTO cursors (provider, endpoint, kind, value, updated_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (provider, endpoint) DO UPDATE SET
+    value = excluded.value,
+    updated_at = excluded.updated_at
+WHERE cursors.kind = excluded.kind
+"""
+
 
 class CursorStore:
     """
@@ -176,18 +165,19 @@ class CursorStore:
     The translator between the ``IncrementalCursor`` union (§4) and
     ``cursors``-table rows: it owns the serialization the cursor leaf and the
     migration runner deliberately don't. Runs after ``migrate_to_head`` (the
-    table must exist). ``get_cursor`` reconstructs the tagged-union arm from the
-    row's ``kind`` discriminator; ``set_cursor`` is an unconditional single-row
-    upsert stamped with the injected ``Clock``.
+    table must exist). ``get_cursor`` reconstructs the tagged-union arm from
+    the row's ``kind`` discriminator; the two writes — one per arm, both
+    stamped with the injected ``Clock`` — each carry the kind guard inside
+    their statement, so a cursor row can never silently change arm (§5's
+    kind-guard doctrine): ``advance_watermark_forward`` is the watermark
+    arm's strictly-forward advance, and ``commit_feed_token`` is the feed
+    arm's last-write-wins commit. No unguarded general write exists (the
+    earlier ``set_cursor`` upsert, scaffolding for the then-unbuilt feed arm,
+    was deleted when the guarded feed commit landed, 2026-07-21).
 
-    The store is deliberately dumb: it never fabricates a cursor and never
-    interprets absence. ``set_cursor`` applies no advance/monotonicity
-    discipline — it is the general upsert the feed arm will write through
-    when it lands, its discipline the caller's (§5) — with one deliberate
-    exception: ``advance_watermark_forward``, the watermark arm's write,
-    carries the strictly-forward guard inside its statement, because the
-    prefix-advance rule's concurrent callers cannot enforce monotonicity
-    race-free from outside (§5, 2026-07-20).
+    The store stays deliberately dumb otherwise: it never fabricates a
+    cursor and never interprets absence; resume-on-absence policy lives in
+    the orchestrator (§5).
 
     Args:
         database: The initialized, migrated state database supplying connections.
@@ -236,50 +226,78 @@ class CursorStore:
             raise RuntimeError(f'cursors.value was not text: {value_text!r}')
         return _deserialize_cursor(provider, endpoint, kind_text, value_text)
 
-    def set_cursor(
-        self, provider: Provider, endpoint: str, cursor: IncrementalCursor
+    def commit_feed_token(
+        self, provider: Provider, endpoint: str, to_version: str
     ) -> None:
         """
-        Upsert the cursor for one (provider, endpoint).
+        Commit the feed cursor to ``to_version`` — kind-guarded last-write-wins.
 
-        An unconditional single-row upsert: the existing row for the key, if any,
-        is overwritten with this cursor's serialized ``kind``/``value`` and a fresh
-        ``updated_at`` from the injected clock. No advance or monotonicity check
-        happens here — the caller decides whether a write is warranted (§5).
-        This is the general write path the feed arm will use when it lands;
-        the watermark arm writes through ``advance_watermark_forward``
-        instead, so today this method has no production caller.
+        The feed arm's only write (DESIGN §5, 2026-07-21). The kind guard
+        lives inside the statement, mirroring the watermark advance: a feed
+        token never overwrites a stored watermark (a refused write here is
+        always a cross-mode wiring bug, surfaced loudly). There is
+        deliberately NO monotonicity guard, unlike the watermark's two
+        reasons deep: the token is opaque by doctrine (§8's probe-settled
+        decision 4 — a lexical comparison would bet on the observed 16-hex
+        encoding GeoTab never contracted), and the feed drive is the only
+        writer and strictly serial (per-page commits of a version-ordered
+        stream under the single-driver assumption), so no interleaving
+        exists for a guard to defend against. Forward motion is therefore
+        the protocol's and the caller's property, not the store's;
+        last-write-wins is the documented semantic.
 
         Args:
-            provider: The provider whose cursor to persist.
-            endpoint: The endpoint whose cursor to persist.
-            cursor: The tagged-union cursor to store.
+            provider: The provider whose feed cursor to commit.
+            endpoint: The endpoint whose feed cursor to commit.
+            to_version: The page's ``toVersion`` — the opaque resume token,
+                stored verbatim (fleetpull never parses it). Re-committing
+                the stored value (the at-head empty page) is a valid no-op
+                rewrite.
 
         Raises:
-            ValueError: A ``DateWatermark`` whose ``watermark`` is naive or not
-                UTC — surfaced from the timing codec during serialization.
+            ConfigurationError: The stored cursor is a date watermark — a
+                cross-mode write is a wiring bug upstream, surfaced loudly
+                rather than silently skipped.
 
         Side Effects:
-            Opens a connection, upserts one row, and commits.
+            Opens a connection; inserts or overwrites at most one row; commits.
         """
-        kind, value = _serialize_cursor(cursor)
         updated_at: str = to_iso8601(self._clock.now_utc())
         with self._database.connect() as connection:
-            # connect() yields a DEFAULT-isolation connection: the INSERT opens an
-            # implicit transaction and commit() ends it. Do NOT add an explicit
-            # BEGIN here — under default isolation it raises "cannot start a
-            # transaction within a transaction" (the recorded migration-runner
-            # finding). Single statement, then commit.
+            changes_before: int = connection.total_changes
             connection.execute(
-                _UPSERT_CURSOR_SQL,
-                (provider.value, endpoint, kind.value, value, updated_at),
+                _COMMIT_FEED_TOKEN_SQL,
+                (
+                    provider.value,
+                    endpoint,
+                    CursorKind.FEED_TOKEN.value,
+                    to_version,
+                    updated_at,
+                ),
             )
+            committed: bool = connection.total_changes > changes_before
+            if not committed:
+                # Last-write-wins can only be refused by the kind guard, so a
+                # refusal is always the cross-mode bug; the diagnostic read
+                # names the stored kind (the advance_watermark_forward
+                # pattern, outside the write's atomicity — the write already
+                # refused, nothing raced).
+                row: tuple[SqliteScalar, SqliteScalar] | None = connection.execute(
+                    _SELECT_CURSOR_SQL, (provider.value, endpoint)
+                ).fetchone()
+                stored_kind = None if row is None else row[0]
+                raise ConfigurationError(
+                    'cross-mode feed-token commit refused',
+                    provider=provider.value,
+                    endpoint=endpoint,
+                    detail=f'stored cursor kind is {stored_kind!r}, not a feed token',
+                )
             connection.commit()
         logger.debug(
-            'persisted cursor: provider=%s endpoint=%s kind=%s',
+            'feed token committed: provider=%s endpoint=%s to_version=%s',
             provider.value,
             endpoint,
-            kind.value,
+            to_version,
         )
 
     def advance_watermark_forward(

@@ -11,7 +11,9 @@ partitioned writer relies on is preserved (nothing is collected up front).
 
 It is the non-feed pipe: ``process_batch`` transforms ``page.records`` and drops
 ``durable_progress`` (the feed cursor token the snapshot and watermark arms never
-use), so the feed arm drives its own when built. The pipe owns no state and
+use), so the feed arm drives the driver's pages itself in the runner
+(``_consume_feed_pages``), where each page's token commits right after its
+parquet lands. The pipe owns no state and
 resolves no client -- the conductor (the runner, the refresh service) opens the
 run, picks the provider's client, and consumes the stream.
 """

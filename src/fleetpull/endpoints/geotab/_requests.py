@@ -1,10 +1,12 @@
-# src/fleetpull/endpoints/geotab/_get_requests.py
-"""The shared GeoTab ``Get`` request machinery for the endpoint leaves.
+# src/fleetpull/endpoints/geotab/_requests.py
+"""The shared GeoTab JSON-RPC request machinery for the endpoint leaves.
 
-One module carries everything a GeoTab ``Get`` leaf composes: the
-JSON-RPC POST envelope (every request is a POST to
+One module carries everything a GeoTab leaf composes on the request side
+(renamed from ``_get_requests`` when the ``GetFeed`` builder joined,
+2026-07-21): the JSON-RPC POST envelope (every request is a POST to
 ``https://{server}/apiv1``), the snapshot seek-walk builder, the
-windowed builder with its per-type sort declaration, the ``server_host``
+windowed builder with its per-type sort declaration, the ``GetFeed``
+seed-or-resume builder every feed leaf shares, the ``server_host``
 resolver, and the ``GetCountOfCheck`` truth instrument. Underscore-
 prefixed so the registry walk skips it: this module is machinery, not an
 endpoint leaf.
@@ -25,6 +27,11 @@ The probe provenance the shapes rest on:
   EXPLICIT null ``offset`` -- never an absent key. ``lastId`` is never
   written (probe-settled decision; the docs name it an
   ``ArgumentException`` beside id-sort).
+- ``GetFeed`` rides the same JSON-RPC POST but is its OWN method class
+  (its own ~60/min rate budget; the 2026-07-21 header-decrement probe).
+  Seeding via ``search.fromDate`` on the tokenless first call is
+  wire-proven (DESIGN section 4 carries the docs-falsified record);
+  resuming sends ``fromVersion`` and never ``search``.
 """
 
 from collections.abc import Mapping
@@ -34,8 +41,12 @@ from typing import Final
 from pydantic import BaseModel, ConfigDict
 
 from fleetpull.config import GeotabConfig
-from fleetpull.endpoints.shared import ResumeValue, require_date_window
-from fleetpull.incremental import DateWindow
+from fleetpull.endpoints.shared import (
+    ResumeValue,
+    require_date_window,
+    require_feed_resume,
+)
+from fleetpull.incremental import DateWindow, FeedSeed, FeedToken
 from fleetpull.network.client import TransportClient
 from fleetpull.network.contract import (
     HttpMethod,
@@ -46,6 +57,7 @@ from fleetpull.timing import to_iso8601
 from fleetpull.vocabulary import JsonValue
 
 __all__: list[str] = [
+    'GeotabGetFeedSpecBuilder',
     'GeotabGetSpecBuilder',
     'GeotabWindowedGetSpecBuilder',
     'GetCountOfCheck',
@@ -75,8 +87,10 @@ _SORT_KEY: Final[str] = 'sort'
 _SORT_BY_KEY: Final[str] = 'sortBy'
 _SORT_DIRECTION_KEY: Final[str] = 'sortDirection'
 _OFFSET_KEY: Final[str] = 'offset'
+_FROM_VERSION_KEY: Final[str] = 'fromVersion'
 _GET_METHOD: Final[str] = 'Get'
 _GET_COUNT_OF_METHOD: Final[str] = 'GetCountOf'
+_GET_FEED_METHOD: Final[str] = 'GetFeed'
 _ID_SORT: Final[str] = 'id'
 _ASCENDING: Final[str] = 'asc'
 
@@ -284,6 +298,76 @@ class GeotabWindowedGetSpecBuilder:
                 window=window,
                 id_sort=self.id_sort,
             ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class GeotabGetFeedSpecBuilder:
+    """Build a feed endpoint's first ``GetFeed`` request: seed or resume.
+
+    One builder serves every feed leaf; the leaf declares only its
+    ``type_name`` and ``results_limit``. The resume value decides the
+    shape (the wire-proven pair, DESIGN section 4):
+
+    - ``FeedSeed`` -- the tokenless first run. ``search.fromDate`` carries
+      the cold-start anchor, positioning the feed at a version covering all
+      entities with date >= that instant; NO ``fromVersion`` is written.
+      Wire-proven to the second on LogRecord and StatusData (2026-07-21)
+      DESPITE the docs claiming those types' search is ignored.
+    - ``FeedToken`` -- every run after. ``fromVersion`` carries the stored
+      token; NO ``search`` is written (the decoder's advances strip it the
+      same way, so the pair of sites agree).
+
+    Every request after this one is the decoder's
+    (``GeotabFeedPageDecoder`` advances by ``toVersion`` and reads
+    ``resultsLimit`` from the sent body, so builder-versus-decoder
+    divergence is structurally impossible).
+
+    Attributes:
+        server: The pre-auth authentication host (retargeted by the
+            session strategy after Authenticate).
+        type_name: The GeoTab entity to feed (``'LogRecord'``, ``'Trip'``).
+        results_limit: The page size; the short-page terminal rule and the
+            50,000 protocol maximum both key off it (per-type caps are the
+            leaf's declaration concern).
+    """
+
+    server: str
+    type_name: str
+    results_limit: int
+
+    def build_spec(
+        self, resume: ResumeValue, member_values: Mapping[str, str]
+    ) -> RequestSpec:
+        """Build the feed walk's first request.
+
+        Args:
+            resume: The seed-or-token a feed run always carries -- a
+                ``FeedSeed`` (first run) or ``FeedToken`` (every run
+                after); any other value is a wiring bug.
+            member_values: Accepted to satisfy the protocol; unused --
+                a single-chain endpoint binds no member.
+
+        Returns:
+            A credential-less JSON-RPC POST; ``params.credentials`` and
+            the resolved host are the session strategy's injections.
+
+        Raises:
+            TypeError: ``resume`` is neither a ``FeedSeed`` nor a
+                ``FeedToken``.
+            ValueError: A seed ``start`` that is naive or non-UTC
+                (surfaced from the timing codec).
+        """
+        feed_resume = require_feed_resume(resume, type(self).__name__)
+        params: dict[str, JsonValue] = {_TYPE_NAME_KEY: self.type_name}
+        match feed_resume:
+            case FeedSeed(start=start):
+                params[_SEARCH_KEY] = {_FROM_DATE_KEY: to_iso8601(start)}
+            case FeedToken(from_version=from_version):
+                params[_FROM_VERSION_KEY] = from_version
+        params[_RESULTS_LIMIT_KEY] = self.results_limit
+        return _post_spec(
+            self.server, {_METHOD_KEY: _GET_FEED_METHOD, _PARAMS_KEY: params}
         )
 
 

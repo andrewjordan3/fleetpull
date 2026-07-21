@@ -153,7 +153,21 @@ class GeotabFeedPageDecoder:
                 records=feed.data,
                 advance=PageAdvance(next_spec=None, durable_progress=feed.to_version),
             )
-        # Advance by cursor: fromVersion replaces search.
+        # Advance by cursor: fromVersion replaces search. A full page
+        # whose toVersion equals the version it was asked from cannot
+        # advance -- continuing would refetch the identical page forever
+        # (unbounded duplicate growth at the append cell), so the
+        # forward-progress violation is surfaced loudly instead. Never
+        # observed live (probed full pages always advanced); the guard
+        # exists for wedged providers and replaying proxies.
+        if feed.to_version == sent_params.get(_FROM_VERSION_KEY):
+            raise ProviderResponseError(
+                detail=(
+                    f'GetFeed returned a full page without advancing '
+                    f'toVersion ({feed.to_version!r}) -- a stalled feed '
+                    f'would loop forever'
+                )
+            )
         next_params: dict[str, JsonValue] = {
             param_name: param_value
             for param_name, param_value in sent_params.items()

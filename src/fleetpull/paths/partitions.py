@@ -7,8 +7,10 @@ hive directory-name segment that encodes it. The forward direction builds the
 segment for the write path (the storage layer joins it under an endpoint
 directory). The inverse has no production caller yet: today it pins the segment
 grammar's round-trip (the tests drive the two directions against each other);
-its production consumer is the future layer that reads partition directories
-back -- the metadata snapshot generator and the feed cells -- when it lands.
+its production consumer is a future layer that reads partition directories back
+(the shipped candidates never needed it -- the metadata snapshot projects the
+orchestrator's own facts, and the feed cell scans part files inside partition
+directories it derives forward from record dates).
 
 A pure leaf -- stdlib ``date`` only, imports nothing internal, never touches the
 filesystem (directory creation and scanning are the writing/reading layers'

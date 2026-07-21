@@ -24,7 +24,7 @@ from fleetpull.endpoints.shared.request_shape import (
     RosterFanOut,
     SingleFetch,
 )
-from fleetpull.endpoints.shared.resume import require_date_window
+from fleetpull.endpoints.shared.resume import require_date_window, require_feed_resume
 from fleetpull.endpoints.shared.spec_builders import StaticGetSpecBuilder
 from fleetpull.endpoints.shared.url_paths import (
     UrlPathTemplateError,
@@ -51,4 +51,5 @@ __all__: list[str] = [
     'WatermarkMode',
     'render_url_path_template',
     'require_date_window',
+    'require_feed_resume',
 ]

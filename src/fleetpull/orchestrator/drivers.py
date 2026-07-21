@@ -70,7 +70,8 @@ class RequestDriver(Protocol):
                 ``page_decoder``, and ``quota_scope``).
             client: The transport client for this endpoint's provider.
             resume: The resume value injected into the first request -- ``None``
-                for a snapshot, the resolved window for a watermark endpoint.
+                for a snapshot, the resolved window for a watermark endpoint,
+                the stored token or cold-start seed for a feed endpoint.
 
         Yields:
             One ``FetchedPage`` per batch, in order.

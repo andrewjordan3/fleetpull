@@ -20,6 +20,8 @@ import importlib
 import pytest
 
 from fleetpull import ConfigurationError, Endpoints, fetch
+from fleetpull.api import FeedEndpoint
+from fleetpull.vocabulary import Provider
 
 _fetch_module = importlib.import_module('fleetpull.api.fetch')
 
@@ -41,6 +43,23 @@ def test_windowed_identity_is_rejected_before_client_construction(
     assert 'vehicle_locations' in message
     assert 'snapshot-only' in message
     assert 'windowed' in message
+
+
+def test_feed_identity_is_rejected_before_client_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # No feed endpoint is cataloged yet, so the identity is constructed
+    # directly; the runtime guard's feed arm still fires (and the
+    # parameter-type gate rejects it statically -- the ignore below is the
+    # same warn-unused-ignores tripwire as the windowed case).
+    monkeypatch.setattr(_fetch_module, 'TransportClient', _ExplodingClient)
+    feed_identity = FeedEndpoint(Provider.GEOTAB, 'log_records')
+    with pytest.raises(ConfigurationError) as raised:
+        fetch(feed_identity, auth='k')  # type: ignore[arg-type]
+    message = str(raised.value)
+    assert 'log_records' in message
+    assert 'snapshot-only' in message
+    assert 'feed' in message
 
 
 def test_non_identity_input_is_rejected_before_client_construction(

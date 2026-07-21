@@ -5,12 +5,13 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from fleetpull.exceptions import ConfigurationError
-from fleetpull.incremental import DateWatermark, FeedToken
-from fleetpull.orchestrator.resume import resolve_watermark_start
+from fleetpull.incremental import DateWatermark, FeedSeed, FeedToken
+from fleetpull.orchestrator.resume import resolve_feed_resume, resolve_watermark_start
 from fleetpull.vocabulary import Provider
 
 _NOW = datetime(2026, 6, 16, tzinfo=UTC)
 _LOOKBACK = timedelta(days=1)
+_DEFAULT_START = datetime(2024, 1, 1, tzinfo=UTC)
 
 
 class TestResolveWatermarkStart:
@@ -50,4 +51,32 @@ class TestResolveWatermarkStart:
                 _NOW,
                 Provider.MOTIVE,
                 'locations',
+            )
+
+
+class TestResolveFeedResume:
+    def test_none_cursor_seeds_at_the_default_start(self) -> None:
+        # The seed exists ONLY on the no-cursor branch -- the structural
+        # half of the seed-once invariant (DESIGN section 14, I4).
+        resume = resolve_feed_resume(
+            None, _DEFAULT_START, Provider.GEOTAB, 'log_records'
+        )
+        assert resume == FeedSeed(start=_DEFAULT_START)
+
+    def test_stored_token_resumes_directly(self) -> None:
+        stored = FeedToken(from_version='0000000000000042')
+        resume = resolve_feed_resume(
+            stored, _DEFAULT_START, Provider.GEOTAB, 'log_records'
+        )
+        assert resume is stored
+
+    def test_watermark_cursor_raises(self) -> None:
+        # The cross-mode rejection in the feed direction -- the mirror of
+        # resolve_watermark_start's feed-cursor rejection.
+        with pytest.raises(ConfigurationError, match='watermark cursor'):
+            resolve_feed_resume(
+                DateWatermark(watermark=_NOW),
+                _DEFAULT_START,
+                Provider.GEOTAB,
+                'log_records',
             )

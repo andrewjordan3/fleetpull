@@ -5,7 +5,7 @@ A date-windowed, seek-paged pull of the ``Trip`` entity: the run resumes
 from a ``DateWindow`` (watermark with the provider's late-arrival
 lookback from config -- for trips, the same margin absorbs GeoTab's Trip
 recalculation), the request shape is the shared
-``GeotabWindowedGetSpecBuilder`` (``_get_requests``) with
+``GeotabWindowedGetSpecBuilder`` (``_requests``) with
 ``id_sort=True`` -- the window rides a ``TripSearch``
 (``search.fromDate`` / ``search.toDate``) beside the id-ascending
 ``sort`` of the seek walk -- and the fetched days land in
@@ -38,7 +38,7 @@ from datetime import timedelta
 from typing import Final
 
 from fleetpull.config import GeotabConfig
-from fleetpull.endpoints.geotab._get_requests import (
+from fleetpull.endpoints.geotab._requests import (
     GeotabWindowedGetSpecBuilder,
     server_host,
 )

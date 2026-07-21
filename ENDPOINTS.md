@@ -11,8 +11,13 @@ Sync modes and storage kinds are DESIGN §3/§4 vocabulary: a *snapshot* is a
 full current-state listing replaced each run (always a single parquet file);
 a *windowed watermark* endpoint fetches a half-open `[start, end)` UTC
 window, writes `date=YYYY-MM-DD` partitions, and replaces each covered
-partition wholesale. The *feed* mode (GeoTab `GetFeed`) has no shipped
-endpoint yet — its vertical is unbuilt.
+partition wholesale; a *feed* endpoint (GeoTab `GetFeed`) drives a
+version-token stream and appends every emitted record into its event date's
+partition as numbered `part-NNNNN.parquet` files — stored as emitted,
+nothing ever deleted or replaced, the consumer reconciling calculated feeds
+by `(id, max version)` and active feeds by `id` (DESIGN §4). The feed
+MACHINERY is built in full (2026-07-21); no feed endpoint has shipped yet —
+the queue is below.
 
 ## Shipped
 
@@ -35,9 +40,11 @@ REST over `https://api.gomotive.com`, static `X-API-Key` header
 ### GeoTab
 
 JSON-RPC `POST https://{server}/apiv1`; session auth (`Authenticate`, ~14-day
-sessions, single-flight refresh) with credentials injected per attempt; two
-method-class quota scopes (`geotab` for `Get`, `geotab_authenticate` at the
-fixed 10/min auth budget). Application errors arrive inside HTTP 200;
+sessions, single-flight refresh) with credentials injected per attempt; three
+method-class quota scopes (`geotab_get` for `Get` at ~650/min,
+`geotab_feed` for `GetFeed` at ~60/min — its own method class, proven by the
+2026-07-21 header-decrement probe — and `geotab_authenticate` at the fixed
+10/min auth budget). Application errors arrive inside HTTP 200;
 `error.data.type` is the discriminator, never the message text.
 
 | Endpoint | Wire surface | Mode | Event time | Notes |
@@ -109,13 +116,32 @@ Every legacy-hub Motive endpoint is shipped:
 
 Not in the legacy hub (GeoTab is new in fleetpull). Two directions:
 
-- **The feed arm** — the one unbuilt major vertical: the `GetFeed` runner,
-  the append-only storage cells, token-commit crash ordering. Active feeds
-  (`LogRecord`, `StatusData`) are append-only-complete; calculated feeds
-  (`Trip`, `ExceptionEvent`, `FillUp`, `FuelUsed`, `FuelAndEnergyUsed`,
-  `FuelTaxDetail`, `ChargeEvent`) re-emit versions, stored as emitted (the
-  consumer reconciles by `(id, max version)`). Open question to settle
-  empirically first: whether removals are signaled (DESIGN §4).
+- **The feed verticals** — the feed MACHINERY is built in full (2026-07-21:
+  the append-log storage cell, the kind-guarded token commit, the runner's
+  per-page seed-or-resume drive, the `geotab_feed` rate class, the shared
+  `GetFeed` spec builder, and the `FeedEndpoint` catalog identity — DESIGN
+  §3/§4/§5/§14). Seeding via `search.fromDate` is wire-proven (2026-07-21,
+  despite the docs claiming some types' search is ignored); removals may be
+  unsignaled (the dated accepted residual, DESIGN §4). The probed
+  **14-vertical feed queue**, each to ship on its own probe-then-build
+  vertical:
+  - *The five original feed entities:* `LogRecord`, `StatusData` (active —
+    append-only-complete; StatusData also carries a per-record version),
+    `FillUp`, `FuelAndEnergyUsed`, `FuelTaxDetail` (calculated — versions
+    re-emitted, reconciled by `(id, max version)`; the fuel family carries
+    the estimates-only-tenant caveat, and `FuelUsed` is NOT ported —
+    observed identical to `FuelAndEnergyUsed` on the probed tenant, its
+    provider-documented successor). `Trip` and `ExceptionEvent` stay on
+    their shipped `Get` verticals; migrating them to the feed is a
+    recorded evaluation item, not queue debt.
+  - *Tier 1:* `FaultData`, `DutyStatusLog`, `DriverChange`, `DVIRLog`.
+  - *Tier 2:* `AnnotationLog`, `ShipmentLog`, `Audit`, `TextMessage`,
+    `MediaFile`.
+  - *Deferred as unobservable on the probed tenant* (no data to probe a
+    shape from — deferred, never excluded): `ChargeEvent`,
+    `TrailerAttachment`, `IoxAddOn`, `CustomData`,
+    `EmissionComplianceEvent`, `Route`. `DeviceStatusInfo` is wire-proven
+    NOT feed-capable.
 - **The wider `Get` entity surface** — Zone, Group, Rule, and kin, each
   probed per type before building (sortability, cap behavior, and window
   anchoring have all varied per type).
@@ -136,7 +162,9 @@ Every endpoint ships through the same probe-then-build vertical:
    **Encode probed behavior, never documented behavior alone** — providers
    have shipped inert documented-required parameters and unenforced
    documented limits, and window anchoring has differed between sibling
-   endpoints on the same provider.
+   endpoints on the same provider. A census is a tenant-scoped observation:
+   it proves shapes and surface behavior for the probed account at capture
+   time, never data semantics and never other tenants' shapes.
 2. **Record the findings** in DESIGN §8 (observed-behaviors rows, plus a
    decision block when the endpoint needed design choices).
 3. **Build the vertical:** the pure API-mirror model in

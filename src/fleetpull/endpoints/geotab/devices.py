@@ -15,14 +15,14 @@ never built here; the strategy also retargets each prepared request to
 the session's resolved host, so the host this module writes is a
 pre-auth placeholder that never reaches the wire on its own (DESIGN
 section 8). The seek walk and the ``GetCountOfCheck`` truth instrument
-live in the shared ``_get_requests`` module (promoted when the users
+live in the shared ``_requests`` module (promoted when the users
 leaf became their second consumer); this leaf binds them to ``Device``.
 """
 
 from typing import Final
 
 from fleetpull.config import GeotabConfig
-from fleetpull.endpoints.geotab._get_requests import (
+from fleetpull.endpoints.geotab._requests import (
     GeotabGetSpecBuilder,
     GetCountOfCheck,
     server_host,

@@ -12,7 +12,12 @@ actually fires.
 
 from collections.abc import Iterable, Mapping
 
-from fleetpull.api import SnapshotEndpoint, WindowedEndpoint, available_endpoints
+from fleetpull.api import (
+    FeedEndpoint,
+    SnapshotEndpoint,
+    WindowedEndpoint,
+    available_endpoints,
+)
 from fleetpull.api.identity import EndpointIdentity
 from fleetpull.config import GeotabConfig, MotiveConfig, SamsaraConfig
 from fleetpull.endpoints import build_endpoint_registry
@@ -24,13 +29,12 @@ type _RegistryKey = tuple[Provider, str]
 
 def _identity_type_for_mode(
     sync_mode: SyncMode,
-) -> type[SnapshotEndpoint] | type[WindowedEndpoint] | None:
-    """The identity type a mode must be cataloged under; None = undecided.
+) -> type[SnapshotEndpoint] | type[WindowedEndpoint] | type[FeedEndpoint]:
+    """The identity type a mode must be cataloged under.
 
-    FeedMode deliberately maps to nothing: no feed endpoint exists, and
-    whether its identity is honestly 'windowed' is a naming decision to
-    make when the first one lands -- an unmapped mode fails parity
-    loudly rather than being bucketed silently.
+    Every mode maps (the feed arm's identity landed with its machinery,
+    2026-07-21): the closed ``SyncMode`` match means a hypothetical new
+    mode fails this function at the type level, never by silent bucketing.
     """
     match sync_mode:
         case SnapshotMode():
@@ -38,7 +42,7 @@ def _identity_type_for_mode(
         case WatermarkMode():
             return WindowedEndpoint
         case FeedMode():
-            return None
+            return FeedEndpoint
 
 
 def _parity_violations(
@@ -56,11 +60,7 @@ def _parity_violations(
             violations.append(f'catalog identity {key} resolves to no endpoint')
             continue
         expected_type = _identity_type_for_mode(sync_mode)
-        if expected_type is None:
-            violations.append(
-                f'{key}: no identity type maps {type(sync_mode).__name__}'
-            )
-        elif type(identity) is not expected_type:
+        if type(identity) is not expected_type:
             violations.append(
                 f'{key}: cataloged as {type(identity).__name__}, mode '
                 f'{type(sync_mode).__name__} requires {expected_type.__name__}'
@@ -117,11 +117,23 @@ def test_wrong_typed_catalog_identity_is_reported() -> None:
     assert 'SnapshotEndpoint' in violations[0]
 
 
-def test_unmapped_mode_is_reported_not_bucketed() -> None:
-    feed_identity = WindowedEndpoint(Provider.MOTIVE, 'planted_feed')
+def test_feed_endpoint_cataloged_under_the_wrong_type_is_reported() -> None:
+    # FeedMode maps to FeedEndpoint (the identity decision, 2026-07-21); a
+    # feed endpoint cataloged as windowed is a parity violation, not a
+    # silent bucketing.
+    wrong_typed = WindowedEndpoint(Provider.GEOTAB, 'planted_feed')
     modes: dict[_RegistryKey, SyncMode] = {
-        (Provider.MOTIVE, 'planted_feed'): FeedMode()
+        (Provider.GEOTAB, 'planted_feed'): FeedMode()
     }
-    violations = _parity_violations([feed_identity], modes)
+    violations = _parity_violations([wrong_typed], modes)
     assert len(violations) == 1
-    assert 'no identity type maps FeedMode' in violations[0]
+    assert 'WindowedEndpoint' in violations[0]
+    assert 'FeedEndpoint' in violations[0]
+
+
+def test_feed_endpoint_correctly_typed_passes_parity() -> None:
+    feed_identity = FeedEndpoint(Provider.GEOTAB, 'planted_feed')
+    modes: dict[_RegistryKey, SyncMode] = {
+        (Provider.GEOTAB, 'planted_feed'): FeedMode()
+    }
+    assert _parity_violations([feed_identity], modes) == []

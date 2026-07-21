@@ -16,9 +16,11 @@ snapshot, once per fanned-out unit for a partitioned watermark endpoint), then
 helpers (the atomic write, the exact dedup); the runtime resume ``window`` an
 incremental writer needs is supplied at construction, not on ``write``.
 
-The single-file family (``SnapshotWriter``) and the date-partitioned watermark cell
-(``WatermarkPartitionedWriter``, staging + per-partition compaction + the prune) are
-built; the feed cells (single and partitioned) fill with GeoTab.
+The single-file family (``SnapshotWriter``), the date-partitioned watermark cell
+(``WatermarkPartitionedWriter``, staging + per-partition compaction + the prune),
+and the append-log feed cell (``FeedAppendWriter``, ``storage/append.py`` -- the
+per-write-durable accumulate-only path) are built; the single-file date-window
+cell remains unbuilt.
 """
 
 from abc import ABC, abstractmethod
@@ -30,6 +32,7 @@ import polars as pl
 
 from fleetpull.endpoints.shared import (
     EndpointDefinition,
+    FeedMode,
     SnapshotMode,
     StorageKind,
     WatermarkMode,
@@ -37,6 +40,7 @@ from fleetpull.endpoints.shared import (
 from fleetpull.incremental import DateWindow
 from fleetpull.model_contract import ResponseModel
 from fleetpull.paths import PathInput, endpoint_directory
+from fleetpull.storage.append import FeedAppendWriter
 from fleetpull.storage.atomic import atomic_write_parquet
 from fleetpull.storage.files import data_file, partition_part_file
 from fleetpull.storage.frames import drop_exact_duplicates
@@ -93,8 +97,8 @@ class SingleFileWriter(ABC):
     subclass's finalized frame and atomically rewrite the single file. Subclasses
     supply ``_finalize_frame`` -- the per-cell write semantic, which decides
     whether the prior file is read at all. A snapshot does not read it (it
-    replaces); the feed and watermark single-file cells do (they combine with
-    prior rows), each reading through ``read_parquet_if_exists`` themselves. The
+    replaces); the unbuilt watermark single-file cell will (it combines with
+    prior rows), reading through ``read_parquet_if_exists`` itself. The
     base never reads -- the read is opt-in by the subclass.
     """
 
@@ -200,11 +204,13 @@ class PartitionedWriter(ABC):
     (``stage_shard``); ``finalize`` folds each touched date's shards into that
     date's ``part.parquet`` (``compact_partition``) and reports. Two per-cell
     decisions are the subclass's: whether compaction folds in the existing
-    partition (``_reads_existing`` -- append cells do, replace cells do not), and
-    whether the run prunes the covered-but-empty dates (``_prunes`` -- a watermark
-    refresh authoritatively replaces its window, so it prunes; an append-only feed
-    does not). The ABC owns the staging and the finalize orchestration; the
-    per-partition compaction is the shared ``compact_partition`` it drives.
+    partition (``_reads_existing`` -- fold-in cells would, replace cells do
+    not), and whether the run prunes the covered-but-empty dates (``_prunes``
+    -- a watermark refresh authoritatively replaces its window, so it prunes).
+    The feed cell is deliberately NOT in this family: it appends numbered part
+    files with per-write durability and no window (``storage/append.py``). The
+    ABC owns the staging and the finalize orchestration; the per-partition
+    compaction is the shared ``compact_partition`` it drives.
 
     ``write`` carries the window tripwire: every staged partition date must lie
     in ``window_dates(window)``. Upstream, the resume window is day-aligned at
@@ -390,9 +396,9 @@ def select_writer(
         The cell's ``DatasetWriter``.
 
     Raises:
-        ValueError: A ``window`` was supplied for the snapshot cell.
-        NotImplementedError: The endpoint's cell is not yet built (anything but
-            ``snapshot`` + ``single``).
+        ValueError: A ``window`` was supplied for the snapshot or feed cell.
+        NotImplementedError: The endpoint's cell is not yet built (the
+            single-file date-window cell).
 
     Side Effects:
         None.
@@ -408,6 +414,22 @@ def select_writer(
                     f'endpoints have no resume window.'
                 )
             return SnapshotWriter(target_dir, drop_duplicates=drop_duplicates)
+        case (StorageKind.APPEND_LOG, FeedMode()):
+            if window is not None:
+                raise ValueError(
+                    f'{definition.provider.value}.{definition.name}: feed '
+                    f'endpoints have no resume window.'
+                )
+            event_time_column = definition.event_time_column
+            if event_time_column is None:
+                raise ValueError(
+                    f'{definition.provider.value}.{definition.name}: an '
+                    f'append-log endpoint requires an event_time_column.'
+                )
+            # drop_duplicates is deliberately not threaded: the append-log
+            # cell performs no write-time dedup by design (stored-as-emitted,
+            # DESIGN section 4; storage/append.py carries the rationale).
+            return FeedAppendWriter(target_dir, event_time_column)
         case (StorageKind.DATE_PARTITIONED, WatermarkMode()):
             if window is None:
                 raise ValueError(
@@ -430,5 +452,5 @@ def select_writer(
             raise NotImplementedError(
                 f'no writer for storage_kind={definition.storage_kind} '
                 f'sync_mode={type(definition.sync_mode).__name__} yet '
-                f'(the single-file watermark cell and the feed cells are not built)'
+                f'(the single-file watermark cell is not built)'
             )

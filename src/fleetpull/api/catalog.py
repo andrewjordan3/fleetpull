@@ -4,8 +4,8 @@
 A static, committed module -- never codegen. Provider namespaces are
 CapWords class-like containers (``Endpoints.Motive``, PEP 8's convention
 for public class-like names); endpoint attributes are lowercase
-identities typed snapshot or windowed, so the type checker enforces
-``fetch``'s snapshot-only exposure at the call site. The load-bearing
+identities typed snapshot, windowed, or feed, so the type checker
+enforces ``fetch``'s snapshot-only exposure at the call site. The load-bearing
 identity everywhere strings live stays the lowercase ``Provider`` value,
 so the CapWords surface introduces no string drift (DESIGN §10).
 

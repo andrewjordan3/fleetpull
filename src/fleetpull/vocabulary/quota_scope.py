@@ -13,10 +13,12 @@ add another ``QuotaScope`` member while the ``Provider`` stays ``SAMSARA``).
 
 GeoTab meters per method class, not per provider (§8, captured 2026-07-09),
 so its scopes are method-class members: ``GEOTAB_GET`` is the Get-class data
-scope endpoint definitions declare, and ``GEOTAB_AUTHENTICATE`` is the
-dedicated Authenticate scope — auth-internal, never an endpoint declaration;
-the composition root passes it to the authenticator factory by name. The
-GetFeed-class scope joins with the feed vertical.
+scope endpoint definitions declare, ``GEOTAB_FEED`` is the GetFeed-class
+scope the feed endpoints declare (its own ~60/min budget, proven by the
+2026-07-21 header-decrement probe — distinct from the ~650/min Get class),
+and ``GEOTAB_AUTHENTICATE`` is the dedicated Authenticate scope —
+auth-internal, never an endpoint declaration; the composition root passes it
+to the authenticator factory by name.
 """
 
 from enum import StrEnum
@@ -39,6 +41,7 @@ class QuotaScope(StrEnum):
     """
 
     GEOTAB_AUTHENTICATE = 'geotab_authenticate'
+    GEOTAB_FEED = 'geotab_feed'
     GEOTAB_GET = 'geotab_get'
     MOTIVE = 'motive'
     SAMSARA = 'samsara'

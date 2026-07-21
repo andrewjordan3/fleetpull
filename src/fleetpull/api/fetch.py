@@ -46,7 +46,7 @@ from fleetpull.api.auth_ingress import (
     ProviderProfileContext,
     build_provider_profile,
 )
-from fleetpull.api.identity import SnapshotEndpoint, WindowedEndpoint
+from fleetpull.api.identity import FeedEndpoint, SnapshotEndpoint, WindowedEndpoint
 from fleetpull.config import (
     GeotabConfig,
     HttpConfig,
@@ -107,8 +107,8 @@ def _require_snapshot_identity(endpoint: object) -> None:
         None when ``endpoint`` is a ``SnapshotEndpoint``.
 
     Raises:
-        ConfigurationError: ``endpoint`` is windowed-typed (naming the
-            endpoint and its mode) or is no catalog identity at all.
+        ConfigurationError: ``endpoint`` is windowed- or feed-typed (naming
+            the endpoint and its mode) or is no catalog identity at all.
     """
     if isinstance(endpoint, SnapshotEndpoint):
         return
@@ -120,6 +120,17 @@ def _require_snapshot_identity(endpoint: object) -> None:
             detail=(
                 'this endpoint is windowed-mode; windowed retrieval is the '
                 'config-driven sync path, not a fetch option'
+            ),
+        )
+    if isinstance(endpoint, FeedEndpoint):
+        raise ConfigurationError(
+            'fetch is snapshot-only',
+            provider=endpoint.provider.value,
+            endpoint=endpoint.name,
+            detail=(
+                'this endpoint is feed-mode; a feed is an unbounded version '
+                'stream with durable cursor state, retrieved only through '
+                'the config-driven sync path'
             ),
         )
     raise ConfigurationError(

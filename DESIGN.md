@@ -1,6 +1,6 @@
 # fleetpull — Design Document
 
-**Status:** Design settled through the two-verb public API (§10) and config-driven sync. Shipped end-to-end: the `fetch` API; `Sync(config_path).run()`; the yaml-run CLI (`fleetpull sync <config>`) and the per-endpoint `metadata.json` projection (both 2026-07-17); work-unit planning with crash resume and the per-provider fan-out executor; Motive `vehicles` (snapshot), `vehicle_locations` (date-partitioned watermark, live-run), and the fleet-wide event pair `driving_periods` / `idle_events` (windowed watermark); GeoTab `devices` (snapshot, live-run), `users` (snapshot), `trips` (windowed watermark, stop-anchored), and `exception_events` (windowed watermark, bisected). The Samsara foundation is wired (2026-07-17): `SamsaraConfig` with the `SAMSARA_API_KEY` fallback, the bearer auth-ingress arm, and full `Sync` dispatch; Samsara `vehicles` (snapshot, cursor walk) is the first Samsara vertical, built from the same-day probe session. The GeoTab feed arm (`GetFeed` runner, storage cells, token commit) remains unbuilt — trips ships windowed until it lands (§8). See §15 for run status and the build roadmap.
+**Status:** Design settled through the two-verb public API (§10) and config-driven sync. Shipped end-to-end: the `fetch` API; `Sync(config_path).run()`; the yaml-run CLI (`fleetpull sync <config>`) and the per-endpoint `metadata.json` projection (both 2026-07-17); work-unit planning with crash resume and the per-provider fan-out executor; Motive `vehicles` (snapshot), `vehicle_locations` (date-partitioned watermark, live-run), and the fleet-wide event pair `driving_periods` / `idle_events` (windowed watermark); GeoTab `devices` (snapshot, live-run), `users` (snapshot), `trips` (windowed watermark, stop-anchored), and `exception_events` (windowed watermark, bisected). The Samsara foundation is wired (2026-07-17): `SamsaraConfig` with the `SAMSARA_API_KEY` fallback, the bearer auth-ingress arm, and full `Sync` dispatch; Samsara `vehicles` (snapshot, cursor walk) is the first Samsara vertical, built from the same-day probe session. The GeoTab feed MACHINERY is built in full (2026-07-21: the append-log storage cell, the kind-guarded token commit, the per-page feed drive, the `GEOTAB_FEED` rate class, the shared `GetFeed` spec builder, and the `FeedEndpoint` catalog identity — §3/§4/§5/§14); the feed verticals themselves queue in ENDPOINTS.md, and trips ships windowed until its feed vertical lands (§8). See §15 for run status and the build roadmap.
 **Name:** `fleetpull` — final. Describes exactly what the package does and nothing more (PyPI availability confirmed 2026-06-10).
 **Relationship to fleet-telemetry-hub:** New package, not a rewrite. fleet-telemetry-hub remains in production untouched while fleetpull is built.
 
@@ -82,6 +82,12 @@ data/
       date=2026-06-01/part.parquet
       date=2026-06-02/part.parquet
       metadata.json
+  geotab/
+    log_records/           # append-log strategy (feed endpoints)
+      date=2026-06-01/part-00001.parquet
+      date=2026-06-01/part-00002.parquet
+      date=2026-06-02/part-00001.parquet
+      metadata.json
   samsara/
     trips/
       ...
@@ -91,6 +97,17 @@ data/
 
 - `single` — one parquet file; a merge reads the whole file, applies the `SyncMode`'s write semantics, and rewrites it. Fine for low-volume endpoints (on the order of 10–15k rows/day or less). Snapshot endpoints are always `single` — a current-state snapshot has no event-time dimension to partition on.
 - `date_partitioned` — hive-style `date=YYYY-MM-DD` partitions; a merge touches only the partitions the fetch window overlaps. Required for breadcrumb-scale endpoints. Hive layout is read natively by BigQuery external tables and `pl.scan_parquet`.
+- `append_log` — hive-style `date=YYYY-MM-DD` partitions holding numbered
+  `part-NNNNN.parquet` files that only ever accumulate (2026-07-21, the feed
+  machinery). Every run appends new part files into the event-date partitions
+  its records belong to (`next = max existing part number + 1`, scanned at
+  write; the atomic temp-then-rename discipline as everywhere); nothing is
+  ever deleted or replaced. Feed endpoints only — the pairing is exclusive
+  in both directions and validated at `EndpointDefinition` construction
+  (`FeedMode` requires `APPEND_LOG` plus an `event_time_column` for
+  partition routing; `APPEND_LOG` requires `FeedMode` — any windowed or
+  snapshot semantic would corrupt an accumulate-only layout). Hive reads
+  glob `*.parquet`, so the numbered parts read exactly like `part.parquet`.
 
 `metadata.json` is a **generated human-readable snapshot** (shipped
 2026-07-17): after each successful endpoint run, the runner projects the run's
@@ -102,8 +119,8 @@ divergence. The write is post-commit and best-effort: an `OSError` logs at
 ERROR and the committed run stands — a stale file the next successful run
 rewrites beats failing a committed run over a cosmetic projection.
 
-**Realized structure (`snapshot`+`single` and `watermark`+`date_partitioned` built;
-the feed cells next).** Each `(StorageKind, SyncMode)` cell is its own
+**Realized structure (`snapshot`+`single`, `watermark`+`date_partitioned`, and
+`feed`+`append_log` built).** Each `(StorageKind, SyncMode)` cell is its own
 `DatasetWriter` — fused per cell, not composed from an injected merge, because the
 write semantic depends on both axes at once (a floored watermark write *replaces*
 under date partitioning but *clears and appends* under a single file). `select_writer`
@@ -111,17 +128,23 @@ is the single routing point: it resolves the endpoint directory and returns the
 cell's writer, constructed with the runtime resume `window` an incremental cell
 needs. The orchestrator drives every endpoint identically — `write` per fetched
 piece, `finalize` once — and `finalize` returns a `WriteResult`. The exact-duplicate
-dedup (§6) runs inside each writer's finalize, on the frame it is about to write.
+dedup (§6) runs inside each writer's finalize, on the frame it is about to write —
+except the feed cell, which performs no write-time dedup at all (the
+stored-as-emitted record, §4).
 Storage is stateless — parquet only, no SQLite, no watermark commit (the
 orchestrator sequences those after a successful `finalize`, §5); the
 `metadata.json` render/write primitive lives in `storage/metadata.py`, but the
-facts it projects are the orchestrator's. The single-file family (`SingleFileWriter` → `SnapshotWriter`) and the
-date-partitioned watermark cell (`PartitionedWriter` → `WatermarkPartitionedWriter`)
-are built; the feed cells (single and partitioned) fill with GeoTab. The leaf
+facts it projects are the orchestrator's. The single-file family (`SingleFileWriter` → `SnapshotWriter`), the
+date-partitioned watermark cell (`PartitionedWriter` → `WatermarkPartitionedWriter`),
+and the append-log feed cell (`FeedAppendWriter`, `storage/append.py` — deliberately
+NOT in either family: each `write` is durable on return, one new numbered part per
+event date present, because the feed drive's per-page crash order needs the page's
+parquet on disk before its token commits, §14) are built. The leaf
 primitives the writers compose: `split_by_date` (`storage/partition.py`: a frame →
 per-UTC-date sub-frames), `date_partition_segment` / `parse_date_partition_segment`
 (`paths/partitions.py`: the `date=YYYY-MM-DD` segment and its strict inverse),
-`partition_part_file` (`storage/files.py`), `in_window` (`storage/frames.py`: the
+`partition_part_file` / `append_part_file` (`storage/files.py`), `in_window`
+(`storage/frames.py`: the
 half-open `[start, end)` row predicate, for the single-file combine cells),
 `render_url_path_template` (`endpoints/shared/url_paths.py`: the per-vehicle URL
 fan-out), `latest_event_time` (`records/event_time.py`: the watermark candidate),
@@ -140,7 +163,10 @@ the orchestrator's, next.
 **There is no merge function — the combine lives in each writer.** The earlier
 design injected a `MergeFn` per `SyncMode` and applied it inside a `Layout`; both
 are gone. Each cell's writer owns its own combine: a snapshot returns this run's
-frame, a feed concatenates-and-dedups against the prior file, a watermark single-file
+frame, a feed appends new part files and never reads or touches prior ones (the
+2026-07-21 append-log design superseded the sketched concat-and-dedup feed cells —
+deduping against prior data would require rewriting landed files, exactly what the
+append-only invariant forbids), a watermark single-file
 clears the window (`~in_window`) and appends, a watermark date-partitioned replaces
 each covered partition and prunes the empty ones. Window-clearing is therefore not a
 row operation a merge performs but a property of the cell's write mechanism — and
@@ -155,9 +181,13 @@ whether the partition grain equals the window grain.** The full mechanism matrix
 |---|---|---|---|
 | `snapshot` / `single` | overwrite the file | no | built |
 | date-window / `single` | lazy `scan_parquet` + `~in_window` filter + concat + rewrite | yes (`in_window` here) | not built |
-| date-window / `date_partitioned` | delete covered `date=` folders + write the fetched partitions | **no parquet reads** | building now (`vehicle_locations`) |
-| feed / `date_partitioned` | append to the partition: read + concat + dedup + rewrite | yes | not built (GeoTab) |
-| feed / `single` | `scan_parquet` + concat + dedup + rewrite | yes | not built |
+| date-window / `date_partitioned` | delete covered `date=` folders + write the fetched partitions | **no parquet reads** | built (`vehicle_locations`) |
+| feed / `append_log` | append the next `part-NNNNN.parquet` per touched date; never read, rewrite, or delete | **no parquet reads** | built (2026-07-21) |
+
+*(The earlier sketched feed rows — `feed / date_partitioned` and `feed /
+`single``, both read-concat-dedup-rewrite — were superseded by the append-log
+cell before any was built: stored-as-emitted made the dedup read both
+unnecessary and forbidden, §4.)*
 
 Build obligation for the date-window / `single` cell: it shares one file across
 work units, so it must serialize its units or reject
@@ -177,7 +207,8 @@ fetched frame to `in_window` before `split_by_date` — only in-window dates are
 staged, compacted, or pruned — and the fold uses the filtered maximum, so the
 watermark never advances past the trailing edge. `in_window` (the row-level
 predicate) is therefore applied by the watermark arm and by the single-file
-date-window and feed cells, but never inside this directory-only cell.
+date-window cell, but never inside this directory-only cell — and never on the
+feed arm at all, which has no window (stored-as-emitted, §4).
 
 **The write+delete for that cell is two steps.** (1) Write every
 `split_by_date(new_frame)` partition through `atomic_write_parquet` —
@@ -312,7 +343,10 @@ only the bare, unseeded `GetFeed` positions its cursor at now. Accepted
 residual: a Trip recalculation arriving beyond the lookback horizon is
 missed by the windowed path and will be caught when the feed arm lands.
 `GeotabConfig` now carries the watermark knobs (`lookback_days` /
-`cutoff_days`).*
+`cutoff_days`). [Update 2026-07-21: the feed MACHINERY is now built in full
+— the feed record below, §14's per-page drive, §3's append-log cell — and
+the open design questions above are settled; the recalculation residual
+stands until the Trip feed vertical itself ships.]*
 
 These two carriers live in `incremental/` — a pure, dependency-free leaf, so
 an endpoint can name a strategy without importing the SQLite layer.
@@ -325,7 +359,11 @@ resume value is. For a watermark endpoint that value is a `DateWindow` — the
 half-open `[start, end)` window the spec-builder fetches, a frozen carrier in
 `incremental/` beside the cursors, so an endpoint names it without importing
 `state/`. For a feed endpoint the resume value is the stored `FeedToken` itself,
-used directly — no transformation, so the feed arm needs no resolver. The
+used directly — or, on the tokenless first run, a `FeedSeed` carrying the
+sync-wide cold-start anchor (`incremental/seed.py`, beside the window carrier);
+`resolve_feed_resume` (`orchestrator/resume.py`) is the feed arm's one-match
+resolver, and constructing the seed *only* on its no-cursor branch is what makes
+the seed-once invariant structural (§14's I4). The
 watermark arm resolves its window from three pure functions in
 `incremental/resolution.py` (`resolve_resume_start`, `resolve_trailing_edge`,
 `window_or_none`, below), not from the cursor alone — each pure (no clock, no
@@ -429,28 +467,61 @@ earlier window that owns its start. File coverage therefore extends slightly
 before a given window's `start`. This is intended. Do **not** "fix" it by
 clamping start times to the window — that would discard the authoritative copy.
 
-**Merge semantics (feed-token endpoints): append-only + exact dedup.** No
-window exists to delete; the token stream is the unit of truth, and only
-byte-identical rows (from our own pagination or a crash refetch) are dropped.
+**The feed record (settled 2026-07-21 — the feed machinery build; wire facts
+from the 2026-07-21 live probe session).** The protocol, as probed:
 
-GeoTab `GetFeed` entities are *active* or *calculated* (the provider's terms).
-Active feeds (e.g. `LogRecord`, `StatusData`) emit only new, static records —
-append-only is trivially complete. Calculated feeds (`Trip`, `ExceptionEvent`,
-`FillUp`, `FuelUsed`, `FuelAndEnergyUsed`, `FuelTaxDetail`, `ChargeEvent`)
-re-emit past records on reprocessing: the same `id` reappears with a higher
-`version` and changed fields. Append-only therefore stores *every emitted
-version*. This is deliberate and consistent with §6 — collapsing versions to the
-latest is same-key-different-payload dedup, the consumer's concern, not ours; the
-consumer reconciles by `(id, max version)`.
+- `GetFeed` is a JSON-RPC POST (the Get family's transport): `params`
+  `{credentials, typeName, fromVersion?, resultsLimit, search?}`; the result
+  is `{data: [...], toVersion}` with `toVersion` a 16-hex-lowercase string —
+  an *observed encoding*, never a contract; the token stays opaque (§8
+  probe-settled decision 4).
+- **Cold call** (no `fromVersion`, no `search`): `data=[]` plus the head
+  `toVersion` — cursor-at-now, useless for backfill.
+- **Seeding**: `search={'fromDate': <RFC3339>}` on the FIRST call starts the
+  feed at a version covering all entities with date >= `fromDate` — proven to
+  the second on `LogRecord` and `StatusData` DESPITE the provider docs
+  claiming those types' search is ignored (**docs falsified by wire**,
+  2026-07-21; encode probed behavior, never documented behavior alone). A
+  seeded page may also include records BEFORE the seed date (probed: 13/50
+  Trip records predated it) — append storage simply stores them.
+- **Continuation**: `fromVersion` = the prior page's `toVersion`; a page of
+  exactly `resultsLimit` records continues, a short page is terminal (the
+  decoder's rule). At head, `data=[]` arrives with `toVersion` UNCHANGED
+  (probed) — so an exactly-full final page costs one extra empty call and
+  terminates safely (§13's accepted residual).
+- **Re-emission**: modified old data resends under a newer version (docs +
+  probes); a per-record `version` rides calculated feeds, `LogRecord`
+  carries none. `resultsLimit` maxes at 50,000 (per-type caps lower for some
+  types — a per-leaf declaration concern, not machinery).
+- **Rate**: `GetFeed` is its OWN method class at ~60/minute (probed by
+  header decrement: `x-rate-limit-limit` `'1m'`, remaining counting down;
+  the Get class sits at ~650/min) — `QuotaScope.GEOTAB_FEED`, budgeted by
+  `GeotabConfig.feed_rate_limit`.
 
-*Open question (resolve empirically against the live feed — access is
-available):* calculated records can also be removed by the system. Whether the
-feed signals a removal as an emitted record (a tombstone the consumer can act on)
-or simply stops re-emitting it is unconfirmed. If removals are unsignaled, a
-removed record persists in append-only storage until the consumer reconciles
-against the live system — handling it any other way would require the event-id
-logic §6 places out of scope. Confirm the removal mechanism empirically before
-building the GeoTab merge.
+**The dataset contract: STORED-AS-EMITTED.** The feed cell appends every
+emitted record into its event date's partition (`append_log`, §3) and never
+deletes or replaces anything. GeoTab `GetFeed` entities are *active* or
+*calculated* (the provider's terms). Active feeds (e.g. `LogRecord`,
+`StatusData`) emit only new, static records — append-only is trivially
+complete, and the consumer reconciles by `id`. Calculated feeds (`Trip`,
+`ExceptionEvent`, `FillUp`, and kin) re-emit past records on reprocessing:
+the same `id` reappears with a higher `version` and changed fields, so the
+dataset stores *every emitted version* and the consumer reconciles by
+`(id, max version)`. Crash-window duplicates (the refetched page after a
+crash between parquet and token, §14) land as new rows under the same
+contract — harmless, because the reconcile collapses them. Collapsing
+versions at write time would be same-key-different-payload dedup, §6's
+out-of-scope; and even *exact* dedup is deliberately absent from this one
+cell, because deduping against prior data would require reading and
+rewriting landed part files — exactly what the append-only invariant (§14's
+I3) forbids.
+
+*Accepted residual (dated 2026-07-21, closing the earlier open question):
+unsignaled removals.* A calculated record the system removes may simply stop
+re-emitting rather than send a tombstone; such a record persists in
+append-only storage until the consumer reconciles against the live system.
+Handling it any other way would require the event-id logic §6 places out of
+scope. Accepted with that rationale — not an open question.
 
 **Never** overwrite storage with only the current window. Incremental means the
 dataset stays complete and current.
@@ -474,17 +545,20 @@ Rules:
 application-id stamping, integrity check), the v1 forward-only migration (`cursors`
 / `runs` / `work_units`), `CursorStore`, `RunLedger` / `RunStatus`, and
 `WorkUnitStore` with its claim queue. The orchestrator that sequences these
-against fetch and storage (§14) is likewise built; only the feed arm remains.
+against fetch and storage (§14) is likewise built in full — all three arms,
+the feed arm since 2026-07-21.
 
 **Crash-safety ordering:** write parquet first (temp file + atomic rename),
 commit watermark/cursor second. A crash between the two causes a refetch on the
 next run. For watermark endpoints, delete-by-window merge makes that refetch
-idempotent. For feed-token endpoints, resuming from the last-committed token
-refetches from there and exact dedup drops the byte-identical rows — and a
-calculated record reprocessed in the interim simply reappears as a new version,
-a normal §4 update rather than a duplication. At-least-once fetching + idempotent
-merge = exactly-once data, with no transactional coupling between SQLite and the
-filesystem.
+idempotent — at-least-once fetching + idempotent merge = exactly-once data.
+For feed endpoints the ordering applies PER PAGE (§14's per-page crash order):
+a crash between a page's parquet and its token refetches exactly that one page,
+whose rows land again as new appended rows — duplicates the stored-as-emitted
+contract absorbs, reconciled by the consumer's `(id, max version)` / `id` rule
+(§4); a calculated record reprocessed in the interim simply reappears as a new
+version, a normal §4 update rather than a duplication. Either way, no
+transactional coupling between SQLite and the filesystem.
 
 **Writer discipline:** fetch workers run in parallel, but parquet merge per
 endpoint is **single-writer**. Fetch workers produce record batches into a
@@ -532,16 +606,33 @@ corruption stances.
 `get_cursor` returns `IncrementalCursor | None`; `None` means exactly "no cursor
 has been persisted for this (provider, endpoint)" — nothing more. The store never
 fabricates a cursor and never interprets absence; the resume-on-absence decision
-lives above it (see resume precedence below). Two writes, two stances:
-`set_cursor` is the unconditional single-row upsert with no advance
-discipline — the general write the feed arm will use when it lands (no
-production caller today) — and `advance_watermark_forward` (added 2026-07-20
-with the prefix-advance rule below) is the watermark arm's write, carrying the
-strictly-forward monotonicity guard and the cursor-kind guard *inside* its
-statement. That in-statement guard is the recorded exception to the
-dumb-store stance: the prefix rule's concurrent per-completion commits cannot
-enforce monotonicity race-free from outside the statement (a read-compare-write
-in the caller can interleave a stale read into a backward write).
+lives above it (see resume precedence below). Two writes, one per arm, both
+kind-guarded *inside* their statements — so a cursor row can never silently
+change arm, in either direction (the kind-guard doctrine, made total
+2026-07-21; `tests/state/test_cursors.py`'s `TestKindGuardBothDirections`
+pins both): `advance_watermark_forward` (added 2026-07-20 with the
+prefix-advance rule below) is the watermark arm's write, carrying the
+strictly-forward monotonicity guard beside the kind guard — the recorded
+exception to the dumb-store stance, because the prefix rule's concurrent
+per-completion commits cannot enforce monotonicity race-free from outside the
+statement (a read-compare-write in the caller can interleave a stale read
+into a backward write). `commit_feed_token` (added 2026-07-21 with the feed
+arm) is the feed arm's write: kind-guarded **last-write-wins**, with
+monotonicity deliberately left OUT of the store. The lexical guard was
+considered and declined on two grounds: token opacity is doctrine (§8's
+probe-settled decision 4 — the observed 16-hex fixed-width encoding would
+make lexical ordering chronological *today*, but that encoding is
+tenant-time observation, never contract, and a wrong ordering would silently
+refuse forward commits, stalling the cursor); and the feed drive is the only
+writer and strictly serial (per-page commits of a version-ordered stream
+under the single-driver assumption), so no interleaving exists for an
+in-statement guard to defend against — the situation that justified the
+watermark exception does not arise. The LWW semantic is pinned
+(`test_last_write_wins_is_the_documented_semantic`) so a future in-store
+ordering guard is a conscious decision. The earlier `set_cursor` — the
+unguarded general upsert held as scaffolding for exactly this arm — was
+deleted in the same change: with both arms guarded it had no caller and was
+a standing arm-flip footgun.
 
 **Watermark semantics: observed-data-only and monotonic.** A `DateWatermark` is
 the maximum event timestamp actually seen; it is set only from observed data and
@@ -553,13 +644,59 @@ synthesized from a window boundary; doing so would assert coverage backed by zer
 observations and silently abandon the historical window the moment it went
 momentarily empty.
 
-**Feed-token semantics: persist on every successful fetch.** The feed token is
+**Feed-token semantics: commit per page, parquet first.** The feed token is
 provider-issued (GeoTab's `toVersion`), not fleetpull-computed; GetFeed returns a
-`toVersion` on every page, including an empty one. The caller persists it after
-every successful page-through, empty or not — versions are append-only sequential,
-so persisting the latest never skips a future record. The empty-window/no-cursor
-problem is exclusively a `DateWatermark` concern; the feed arm always has a cursor
-to write.
+`toVersion` on every page, including an empty one. The feed drive commits it after
+every page's parquet lands — empty pages included (the at-head empty page
+re-commits its unchanged token; the LWW write absorbs the rewrite) — versions are
+append-only sequential, so persisting the latest never skips a future record. The
+empty-window/no-cursor problem is exclusively a `DateWatermark` concern; the feed
+arm always has a cursor to write.
+
+**The four feed invariants (decided 2026-07-21 — the feed machinery build).**
+The per-page drive's load-bearing invariants, each with its tripwire (the
+prefix-advance record's format — any change that violates one must
+consciously break its test):
+
+1. **A page's parquet always lands before its token commits.** The append
+   writer's `write` is durable on return (§3), and the drive commits the
+   page's `toVersion` only after it. Tripwire:
+   `tests/orchestrator/test_runner_feed.py::TestPerPageCrashOrder::
+   test_each_pages_parquet_is_on_disk_when_its_token_commits` — an ordering
+   recorder at the commit seam counts the rows already on disk at the exact
+   interleaving point.
+2. **The token never moves past unwritten data** — the state-side
+   restatement of (1): the stored cursor only ever lags the written bytes,
+   never leads them, so a crash loses at most one page's *token*, never a
+   page's *data*. Tripwire: `...::test_crash_between_parquet_and_token_
+   holds_the_prior_token` (death between a page's parquet and its commit →
+   the prior page's token is what is stored, the orphan rows stand).
+3. **Append-only** — no feed run ever deletes, rewrites, or replaces a
+   file; every write is a new numbered part. Tripwires:
+   `tests/storage/test_append.py::TestFeedAppendWriter::
+   test_append_never_touches_existing_files` (byte-identical prior
+   inventory across an append) plus the production collision guard
+   (`test_part_collision_fails_loudly_instead_of_clobbering` — a violated
+   single-writer assumption refuses rather than clobbers).
+4. **Seed-once** — `search.fromDate` rides ONLY the tokenless first request
+   of a cold endpoint, never a resumed one. Structural
+   (`resolve_feed_resume` constructs the `FeedSeed` only on its no-cursor
+   branch, and the spec builder renders seed and token as mutually
+   exclusive shapes); tripwired at both levels:
+   `tests/orchestrator/test_runner_feed.py::TestSeedAndResume::
+   test_resumed_run_carries_the_token_and_never_a_seed` (the drive) and
+   `tests/endpoints/geotab/test_requests.py::TestGeotabGetFeedSpecBuilder`
+   (the wire shapes — `fromDate` and `fromVersion` never co-occur).
+
+Together (1)+(2)+(3) make the crash story one sentence: a crash between a
+page's parquet and its token refetches exactly that page on the next run and
+appends its rows again — duplicates the stored-as-emitted contract absorbs
+(§4). The end-to-end proof is
+`...::test_the_redrive_appends_the_duplicate_page_and_lands_the_token`.
+One ledger convention rides the arm: a seeded run's `runs.from_version`
+records the self-describing `seed:<iso8601>` marker (the column is NOT NULL
+for feed rows and the seed date IS what the run resumed from); never read
+back by the program.
 
 **Resume precedence (no committed cursor).** When `get_cursor` returns `None`
 (only reachable for a watermark endpoint that has never committed a watermark),
@@ -739,7 +876,7 @@ shares one file across units, so it **must serialize its units or reject
 
 ## 6. Deduplication Policy
 
-- **Exact-duplicate dedup at write time: in scope, default ON** (config flag to disable for truly-raw output). Chunk-seam duplication and pagination drift are structural artifacts of *our* fetching, not of the provider's data; "the result comes out the way one expects" includes not handing consumers rows our pagination duplicated.
+- **Exact-duplicate dedup at write time: in scope, default ON** (config flag to disable for truly-raw output) — EXCEPT the feed append cell, which never dedups: the append log is stored-as-emitted (§4) and its crash-window/re-emission duplicates are honest content the consumer reconciles (§14 I3). Chunk-seam duplication and pagination drift are structural artifacts of *our* fetching, not of the provider's data; "the result comes out the way one expects" includes not handing consumers rows our pagination duplicated.
 - **Semantic / event-id dedup: out of scope.** Same-key-different-payload collapsing is a consumer concern. (Delete-by-window merge already resolves most payload drift within refetched windows as a side effect.)
 
 ---
@@ -2534,9 +2671,10 @@ fleetpull/
     codec.py       # pure UTC datetime <-> ISO-8601/date-string conversions (guards via canon)
     canon.py       # the canonical-UTC surface: ensure_utc (ingress normalizes) +
                    #   require_utc (interior/egress requires, identity) — §12 doctrine
-  incremental/     # per-endpoint resume state: cursors + window + resolution helpers; pure leaf (§4)
+  incremental/     # per-endpoint resume state: cursors + resume values + resolution helpers; pure leaf (§4)
     cursor.py      # DateWatermark, FeedToken, IncrementalCursor tagged union
     window.py      # DateWindow — the half-open [start, end) watermark resume window (§4)
+    seed.py        # FeedSeed + FeedResume — the feed arm's cold-start resume value (§4)
     resolution.py  # resolve_trailing_edge + resolve_resume_start + window_or_none — pure window resolution (§4)
   endpoints/       # per-endpoint bindings (the endpoints layer, below) — new fleetpull code
     shared/        # shared binding machinery (no auth here — auth is per-provider
@@ -2552,7 +2690,7 @@ fleetpull/
                    #   request cardinality as one closed axis (§14's shape
                    #   resolution matches over it)
       spec_builders.py  # StaticGetSpecBuilder — the shared snapshot spec-builder
-      resume.py    # require_date_window — the shared windowed-resume guard
+      resume.py    # require_date_window + require_feed_resume — the shared resume-value guards
       url_paths.py  # render_url_path_template — strict {placeholder} URL-path rendering (fan-out)
     motive/
       _spec_builders.py  # MotiveFleetDateRangeSpecBuilder — the shared fleet-wide date-range builder
@@ -2570,11 +2708,12 @@ fleetpull/
                    #   windowed fan-out over the v1-only surface (the roster
                    #   machinery's first cross-provider consumer, §8's trips block)
     geotab/
-      _get_requests.py  # the shared GeoTab Get request machinery: GeotabGetSpecBuilder
+      _requests.py # the shared GeoTab JSON-RPC request machinery: GeotabGetSpecBuilder
                    #   (the snapshot seek walk), GeotabWindowedGetSpecBuilder (the
-                   #   windowed builder with per-leaf id_sort), server_host, and
-                   #   GetCountOfCheck (underscore-prefixed so the registry walk
-                   #   skips it)
+                   #   windowed builder with per-leaf id_sort), GeotabGetFeedSpecBuilder
+                   #   (the seed-or-resume GetFeed builder every feed leaf shares),
+                   #   server_host, and GetCountOfCheck (underscore-prefixed so the
+                   #   registry walk skips it; renamed from _get_requests 2026-07-21)
       devices.py   # build_endpoint — the devices seek-paged snapshot factory
       users.py     # build_endpoint — the users seek-paged snapshot factory
       trips.py     # build_endpoint — the trips windowed (watermark) factory; the
@@ -2634,7 +2773,7 @@ fleetpull/
     event_time.py  # latest_event_time: the max event-time watermark candidate (raw datetime)
     roster_members.py # extract_roster_members: a frame column's distinct values as roster members
   storage/         # the storage layer: a records DataFrame -> parquet
-    files.py       # storage path construction: data_file, partition_dir, partition_part_file, temp_sibling_path
+    files.py       # storage path construction: data_file, partition_dir, partition_part_file, append_part_file, temp_sibling_path
     atomic.py      # atomic_write_parquet: the temp-then-rename durability primitive
     read.py        # read_parquet_if_exists: existence-tolerant parquet read (the write's read sibling)
     partition.py   # split_by_date: a frame -> per-UTC-date sub-frames (the date_partitioned write unit)
@@ -2643,10 +2782,11 @@ fleetpull/
     frames.py      # frame ops the writers compose: exact dedup + the half-open window predicate
     result.py      # WriteResult: the write report
     metadata.py    # MetadataSnapshot + render/write — the metadata.json projection (§3)
-    writers.py     # DatasetWriter protocol + SingleFile/Partitioned ABCs + Snapshot/WatermarkPartitioned writers + select_writer (feed cells next, §3)
+    append.py      # FeedAppendWriter — the append-log feed cell: per-write-durable numbered parts, never touches an existing file (§3/§4)
+    writers.py     # DatasetWriter protocol + SingleFile/Partitioned ABCs + Snapshot/WatermarkPartitioned writers + select_writer (§3)
   state/           # SQLite operational state (§5)
     database.py    # StateDatabase shell + DB primitives (connect, verify, WAL)
-    migrations.py  # forward-only migration runner (user_version); v1 = cursors + runs + work_units; v2 = rosters
+    migrations.py  # forward-only migration runner (user_version); v1 = cursors + runs + work_units; v2 = rosters; v3 = work_units.observed_max
     cursors.py     # CursorStore + CursorKind: IncrementalCursor <-> cursors rows
     run_ledger.py  # RunLedger + RunStatus: per-run records + coverage frontier + last_success_at
     work_units.py  # WorkUnitStore: the backfill claim queue (enqueue/claim/complete/recover)
@@ -2661,13 +2801,13 @@ fleetpull/
                    #   and the batched shape chunks them into sorted comma-joined
                    #   batch values here
     runner.py      # EndpointRunner — one endpoint's run transaction: the snapshot arm,
-                   #   the plan-and-drive watermark arm, and the post-success
-                   #   metadata projection (§14, §3)
+                   #   the plan-and-drive watermark arm, the per-page feed drive,
+                   #   and the post-success metadata projection (§14, §3)
     batch.py       # process_batch: per-batch validate/frame/window + fold (§14)
     streaming.py   # stream_processed_batches: a driver's pages, validated and framed per batch (§14)
     roster_harvest.py # harvest_roster_members: a feeder's complete membership as roster members (drives streaming, no write)
     roster_refresh.py # RosterRefreshCoordinator: refresh a roster when stale (staleness -> harvest -> reconcile -> apply); refresh only, not fan-out
-    resume.py      # resolve_watermark_start — stored-cursor interpretation + its guards (§14)
+    resume.py      # resolve_watermark_start + resolve_feed_resume — stored-cursor interpretation + its guards (§14)
     backfill.py    # plan_backfill_units: whole-UTC-day chunk -> WorkUnitSpecs (§5)
     unit_loop.py   # the concurrent, prefix-committing claim-and-drive loop over
                    #   work units (§13's settled transaction boundary; §5's
@@ -2679,7 +2819,7 @@ fleetpull/
     fetch.py       # fetch — the snapshot-only in-memory convenience verb
     sync.py        # Sync — the config-driven pipeline verb (validate, compose, execute)
     catalog.py     # Endpoints — the typed public identity catalog + available_endpoints
-    identity.py    # EndpointIdentity / SnapshotEndpoint / WindowedEndpoint
+    identity.py    # EndpointIdentity / SnapshotEndpoint / WindowedEndpoint / FeedEndpoint
     auth_ingress.py  # build_provider_profile — the one public auth= shape, coerced at the boundary
   cli.py           # the yaml-run CLI: fleetpull sync <config>
 ```
@@ -2963,7 +3103,7 @@ tzinfo-construction rules mechanically.
 
 ## 13. Open Questions
 
-- GeoTab specifics pending API access: `GetFeed` semantics in practice, real rate limits, which entities map to which storage strategies (the auth model is settled — session-based, §8). *Update (2026-07-09): the live probe session closed the `GetFeed`-semantics and rate-limit halves — see §8's observed-behaviors table and probe-settled decisions. Still open: which remaining entities map to which storage strategies, and the calculated-feed questions (version re-emission shape, tombstones — the bullet below), deferred to Trip's port.* *Update (2026-07-13): Trip's mapping is settled — watermark / `DATE_PARTITIONED` on `start` (the trips vertical; §4's amendment carries the rationale and the accepted recalculation residual). Still open per entity: ExceptionEvent pends the sort-failure discrimination (§8's `GenericException` row), and User pends the driver-visibility question — a scope anomaly where trips reference driver ids invisible to the probing account, under investigation with the subsidiary.*
+- GeoTab specifics pending API access: `GetFeed` semantics in practice, real rate limits, which entities map to which storage strategies (the auth model is settled — session-based, §8). *Update (2026-07-09): the live probe session closed the `GetFeed`-semantics and rate-limit halves — see §8's observed-behaviors table and probe-settled decisions. Still open: which remaining entities map to which storage strategies, and the calculated-feed questions (version re-emission shape, tombstones — the bullet below), deferred to Trip's port.* *Update (2026-07-13): Trip's mapping is settled — watermark / `DATE_PARTITIONED` on `start` (the trips vertical; §4's amendment carries the rationale and the accepted recalculation residual). Still open per entity: ExceptionEvent pends the sort-failure discrimination (§8's `GenericException` row), and User pends the driver-visibility question — a scope anomaly where trips reference driver ids invisible to the probing account, under investigation with the subsidiary.* *Update (2026-07-21): the calculated-feed questions are settled with the feed machinery — §4's feed record (seeding wire-proven despite falsifying docs, stored-as-emitted with `(id, max version)` reconciliation, unsignaled removals accepted as the dated residual) and §5's four feed invariants; the per-entity feed queue and the deferred-unobservable list live in ENDPOINTS.md.*
 
 - **Accepted residual (2026-07-09): the exactly-full-final-page feed edge.**
   When a feed's final page holds exactly `resultsLimit` records, the
@@ -2974,7 +3114,7 @@ tzinfo-construction rules mechanically.
   captured (§8's table). Not an open question.
 - Real rate-limit values for Motive/Samsara (YAML numbers above are placeholders)
 - Whether any endpoint actually warrants the flattening opt-out
-- Per-endpoint quota scopes for Samsara: a provider metering one endpoint apart adds a `QuotaScope` member (code), while that scope's limits stay config — a code-plus-config change, not config-only. (GeoTab's method-class scopes — `GEOTAB_GET` and `GEOTAB_AUTHENTICATE`, emitted from one `GeotabConfig`'s two budget fields — are the first shipped instance of this pattern.)
+- Per-endpoint quota scopes for Samsara: a provider metering one endpoint apart adds a `QuotaScope` member (code), while that scope's limits stay config — a code-plus-config change, not config-only. (GeoTab's method-class scopes — `GEOTAB_GET`, `GEOTAB_FEED` (2026-07-21, ~60/min by header-decrement probe), and `GEOTAB_AUTHENTICATE`, emitted from one `GeotabConfig`'s three budget fields — are the first shipped instance of this pattern.)
 
 - **`updated_after` as an ingestion-time CDC hook (open — for the
   incremental-strategy design conversation, not a current commitment).** The
@@ -3072,11 +3212,14 @@ tzinfo-construction rules mechanically.
     start/complete, the watermark plan (window bounds and claimable units),
     per-unit completion (in completion order — nondeterministic across
     parallel unit workers since 2026-07-20; the unit id and window bounds on
-    the line keep it attributable), and the fan-out heartbeat every 100
-    members, with
-    DEBUG carrying the per-member detail. Never per page or per record —
-    that is flood, not progress. (The motivating incident: the last live
-    pre-narration run was ~80 minutes for two log lines.)
+    the line keep it attributable), the fan-out heartbeat every 100
+    members, and (2026-07-21, the feed arm) the feed resume line —
+    `feed run seeded`/`feed run resumed` with its from-date or from-version
+    — plus the `feed complete` drain line (pages, rows, final token); DEBUG
+    carries the per-member and per-page detail (`feed page appended`, with
+    the page's record count and token). INFO is never per page or per
+    record — that is flood, not progress. (The motivating incident: the
+    last live pre-narration run was ~80 minutes for two log lines.)
   - *Every record carries its thread name* (added with provider-parallel
     `Sync`, 2026-07-20): queue threads are `fleetpull-sync-<provider>`,
     endpoint tasks under a queue worker are
@@ -3091,8 +3234,8 @@ tzinfo-construction rules mechanically.
 
 The layer that sequences fetch, records, storage (§3), and state (§5) into one
 endpoint's run. The network, `records/`, `storage/`, and `state/` layers are all
-built; this layer, which drives them, is built in full as well (only the
-feed arm remains, §15).
+built; this layer, which drives them, is built in full as well — all three
+arms, the feed drive since 2026-07-21.
 
 **The orchestrator-boundary principle: higher-level orchestrators and tools are
 polymorphic — provider-agnostic and endpoint-agnostic.** A caller invoking an
@@ -3305,6 +3448,42 @@ observation is already recorded for the heal). A crash mid-spine leaves the
 run merely `running` (diagnostic-only — the frontier filters `succeeded`).
 Snapshots are unaffected: they hold no cursor and never reach the frontier.
 
+**The feed drive — the runner's third arm (built 2026-07-21).** `_run_feed`
+drives a feed endpoint's version-token stream: (a) `resolve_feed_resume`
+interprets the stored cursor — the `FeedToken` used directly, a `FeedSeed` at
+`sync.default_start_datetime` when none is stored (threaded exactly the way
+the watermark cold-start threads the anchor), and a stored `DateWatermark`
+rejected as cross-mode corruption before any run opens (the mirror of the
+watermark arm's feed-cursor rejection); (b) the resume value flows through
+the ordinary declaration seams — `SingleFetch` → `SingleRequestDriver` → the
+spec builder, whose `require_feed_resume` guard narrows it (feeds are
+single-chain; nothing feed-specific leaks into the drivers); (c) the drive
+consumes the page stream directly (`_consume_feed_pages` — the feed arm's
+own pipe; `stream_processed_batches` deliberately drops `durable_progress`
+and stays the non-feed pipe), and PER PAGE: validate/frame
+(`process_batch` with no window context — no window filter, no future-event
+guard, no fold; whatever the stream emits is stored, §4) → append durably
+(the `FeedAppendWriter`'s per-write durability, §3) → commit the page's
+`toVersion` (`commit_feed_token`, §5). **The per-page crash order is
+parquet BEFORE token** — §5's four feed invariants carry the full record and
+tripwires; the consequence is a one-page duplicate window: a crash between
+the two refetches exactly one page next run, and its rows append again as
+duplicates the stored-as-emitted contract absorbs. (d) Terminal on the
+decoder's short-page signal; the run's ledger row brackets the drive —
+`start_feed_run` with the resume token (or the seeded run's `seed:<iso8601>`
+marker) before the first page, `complete_run` with the total row count and
+final `toVersion` after the last — so a crash mid-stream leaves a
+diagnostic `running` row while every completed page's parquet-and-token
+stands committed. A page with no `durable_progress` is a wiring bug (a
+non-feed decoder on a feed endpoint) and fails loudly before any write.
+Narration per §13: one INFO at start (`feed run seeded`/`feed run resumed`,
+with the from-date or from-version), DEBUG per page, one INFO at drain
+(`feed complete` with pages/rows/final token) ahead of the shared
+endpoint-complete line. The feed arm never touches the work-units queue
+(the version stream is sequential — there is no window to decompose) and
+never reaches `coverage_frontier` (it always holds a committed cursor after
+its first page).
+
 **Two future-time guards, one rule applied where it can surface.** The
 `CursorStore`'s only advance discipline is `advance_watermark_forward`'s
 strictly-forward guard (§5, 2026-07-20); the future-time checks stay the
@@ -3379,7 +3558,7 @@ new definition field, never a second resolver.
 ## 15. Next Steps
 
 1. Review/amend this document
-2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → retry policy (done, `config/retry.py` + `network/retry/`) → page-decoder abstraction (done, `network/contract/page_decoder.py` + `decoders/`) → HTTP config + the real GeoTab authenticator (done, `config/http.py` + `network/auth/authenticate.py`) → `network/client/` (done) → `endpoints/shared/base.py` (done) → `records` (done) → `storage` (done: `snapshot`+`single` plus the date-partitioned/watermark writer, §3) → `state` (done in full — §5) → `orchestrator` (built in full: the run executor's snapshot arm and plan-and-drive watermark arm, the request drivers, the fan-out machinery, the unit loop, and the roster refresh — §7/§13/§14). The chain's original endpoint, `cli.py`, is superseded by the build roadmap below — the public API (§10) precedes any YAML/CLI surface.
+2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → retry policy (done, `config/retry.py` + `network/retry/`) → page-decoder abstraction (done, `network/contract/page_decoder.py` + `decoders/`) → HTTP config + the real GeoTab authenticator (done, `config/http.py` + `network/auth/authenticate.py`) → `network/client/` (done) → `endpoints/shared/base.py` (done) → `records` (done) → `storage` (done: `snapshot`+`single` plus the date-partitioned/watermark writer, §3) → `state` (done in full — §5) → `orchestrator` (built in full: the run executor's snapshot arm, plan-and-drive watermark arm, and per-page feed drive (2026-07-21), the request drivers, the fan-out machinery, the unit loop, and the roster refresh — §7/§13/§14). The chain's original endpoint, `cli.py`, is superseded by the build roadmap below — the public API (§10) precedes any YAML/CLI surface.
 
 The `network/client/` step inherits a recorded agenda: classify
 prepare-time transport exceptions (the authenticator propagates
@@ -3517,9 +3696,19 @@ resolution (item 1, done).
    full-population shape proven live per §8's rows): the second seek-walk
    consumer, so the walk's spec builder and `GetCountOfCheck` promoted out
    of the devices leaf into the shared `_seek_walk` module — unified
-   2026-07-17 into `_get_requests`, which also carries the windowed
-   builder. Second half
-   (the feed vertical) remains. Under the endpoint-breadth scope
+   2026-07-17 into `_get_requests` — renamed `_requests` 2026-07-21 when
+   the `GetFeed` builder joined it beside the windowed
+   builder. Second half, the feed arm: **the feed MACHINERY is
+   built in full 2026-07-21** — `StorageKind.APPEND_LOG` and the
+   `FeedAppendWriter` (§3), the stored-as-emitted feed record (§4), the
+   kind-guarded `commit_feed_token` and the four tripwired feed invariants
+   (§5), the runner's per-page feed drive (§14), `QuotaScope.GEOTAB_FEED`
+   with `GeotabConfig.feed_rate_limit` (~60/min, header-decrement probe),
+   the shared `GeotabGetFeedSpecBuilder`, and the `FeedEndpoint` catalog
+   identity. No feed VERTICAL ships with the machinery; the probed
+   14-vertical feed queue and the deferred-unobservable list are recorded
+   in ENDPOINTS.md, each vertical to follow the standard probe-then-build
+   discipline. Under the endpoint-breadth scope
    principle (§1, 2026-07-17) this item's endgame widened: after the
    Samsara onboarding (foundation, then the legacy four — `vehicles`,
    `drivers`, `trips`, `idling/events` — then the remaining legacy six),
