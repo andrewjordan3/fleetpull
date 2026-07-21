@@ -241,9 +241,10 @@ BigQuery external tables and `scan_parquet` badly — so each date folds to one
 `part.parquet`.
 
 The fan-out key source is settled: a provider-listed roster in SQLite, not the
-feeder parquet. An endpoint that fans out over a roster declares the
-`RosterFanOut` request shape (`EndpointDefinition.request_shape`; the default
-`SingleFetch` fetches once) naming a `RosterKey`; the
+feeder parquet. An endpoint that fans out over a roster declares a
+roster-backed request shape -- `RosterFanOut`, or `BatchedRosterFanOut`
+for an API-capped id filter -- (`EndpointDefinition.request_shape`; the
+default `SingleFetch` fetches once) naming a `RosterKey`; the
 `RosterRegistry` maps that key to a `RosterDefinition` — the feeder endpoint and
 frame column its members come from, plus the staleness and eviction policy. The
 consumer carries only the key, never the feeder. Keys are listed from the
@@ -1618,6 +1619,82 @@ vehicle-stats build implements them.
    dataset, and only carrier vehicles are returned per type (no
    empty-array padding observed), so an empty page is honestly empty.
 
+### Samsara `location_stream` probe-settled decisions (2026-07-20)
+
+Settled by the 2026-07-20 live probe session (the captured rows above);
+the asset_locations build implements them. The heading keeps the legacy
+hub's `location_stream` name for greppability; the shipped endpoint is
+**`asset_locations`**.
+
+1. **The endpoint ships as `asset_locations`.** The legacy hub called
+   the surface `location_stream` (after the wire path
+   `/assets/location-and-speed/stream`); the catalog name follows the
+   name=plural-of-entity invariant — the stored entity is the
+   asset-location reading, one row per fix. The model module docstring
+   carries the legacy-name mapping.
+2. **The shape is the sanctioned new union member:
+   `BatchedRosterFanOut`.** The surface REQUIRES an id filter
+   (an id-less request is HTTP 400 `"Need to include asset IDs to
+   filter by."`) with the batch cap API-ENFORCED AT 50 (probed: 50 →
+   200; 100/200/609 → 400 `"Need to filter by 50 or less asset IDs or
+   syncTokens."`), so neither `SingleFetch` (no fleet-wide request
+   exists) nor a plain `RosterFanOut` (609 chains where 13 suffice)
+   fits. The binding declares
+   `BatchedRosterFanOut(roster=vehicle_ids, member_key='ids',
+   batch_size=50)` over the Samsara `vehicle_ids` roster — the roster
+   indirection is `RosterFanOut`'s verbatim.
+3. **The batch is TRANSPORT PACKING only.** Every record carries its
+   own `asset.id` attribution, so no member attribution rides on the
+   request mapping — unlike a `RosterFanOut` chain, whose responses
+   may not echo the requested member. Consequences, recorded not
+   hidden: the shape resolves onto the EXISTING member-agnostic
+   fan-out driver (the ParamSweep precedent — each sorted comma-joined
+   batch string is simply one member; a pure chunking helper in the
+   shape seam does the batching, the driver untouched), and the
+   fan-out progress narration counts BATCHES for this shape
+   (`members=N/13`-style lines count chains). Chunking is
+   deterministic: members sort before chunking, so identical rosters
+   always produce identical batches.
+4. **The trips retrofit question, probed and CLOSED.** `/v1/fleet/trips`
+   with a comma-joined `vehicleId` returns HTTP 400 (`rpc error: code
+   = InvalidArgument`), so trips genuinely cannot batch and stays
+   per-member `RosterFanOut`. `BatchedRosterFanOut` serves
+   asset_locations alone today, by API evidence.
+5. **The windowed leaf is the idling_events species at the 512 tier,
+   batch-fanned.** Windowed watermark / `DATE_PARTITIONED` / SAMSARA
+   scope / `event_time_column='happened_at_time'`; the leaf builder
+   renders RFC3339 `startTime`/`endTime` (the idling precedent) and
+   merges the batch binding verbatim as the `ids` query parameter (the
+   trips member-merge precedent); the standard
+   `SamsaraCursorPageDecoder` walks each chain (records are already
+   reading-grain — NO series decoder; the fat composite `endCursor`
+   passes back verbatim as `after`). `limit` is 512, probed on THIS
+   surface (512 → 200, 513 → 400 — the per-endpoint tier rule).
+   Retrieval is READING-TIME anchored on the half-open `[start, end)`
+   window (probe: 12:00–13:00Z returned min 12:00:03Z / max
+   12:59:56Z), so retrieval and routing coincide natively, no wire pad
+   exists, and the runner's window filter is pure hygiene. Vehicles is
+   the feeder (staging orders it first); no roster is sourced.
+6. **The model is the three-block census mirror, with one deliberate
+   requiredness judgment.** `happened_at_time`, `asset {id: str}` (the
+   ONLY observed asset key; a STRING — the idling_events bare-int
+   contrast, mirrored per endpoint), and the `location` core
+   (`accuracy_meters`/`heading_degrees` ints,
+   `latitude`/`longitude` floats) are all REQUIRED. The nested 300/300
+   census on a 454-record page is NOT a whole-population oath (the
+   drivers conservative posture would leave the block's fields
+   optional), but the location core is required anyway by structural
+   judgment: a location record without coordinates mirrors nothing —
+   a future record omitting them should fail loudly, never land an
+   all-null coordinate row. Recorded on the model docstring.
+7. **`location.geofence` is OBSERVED-EMPTY, not excluded; speed is
+   UNOBSERVED, not excluded.** `geofence` was present 300/300 but an
+   empty object with ZERO keys on every censused record — there is
+   nothing to mirror, so it is unmodeled (`extra='ignore'` drops it);
+   revisit on a capture showing content. No speed key appeared
+   anywhere despite the surface's name — unmodeled as unobserved;
+   revisit on a capture that shows one.
+
 ### The exception hierarchy (implemented: `exceptions.py`)
 
 The operational errors consumers catch, mirroring the classification
@@ -1723,6 +1800,10 @@ budgets → `RetriesExhaustedError`, failed auth paths →
 | Samsara | Stats-history retrieval is READING-TIME anchored on the half-open `[startTime, endTime)` window, probe-proven: a 12:00:00Z–13:00:00Z window returned min_time 12:00:03.062Z and max_time 12:59:56.881Z — readings strictly inside the window, so `event_time_column='time'` routing coincides with retrieval natively, no wire pad (captured 2026-07-20). |
 | Samsara | Stats-history per-vehicle record census (74/74 on the mixed-type page): `id` (str), `name` (str), `externalIds` (object, 74/74) carrying the literal DOTTED wire keys `samsara.serial` (74/74 str) and `samsara.vin` (74/74 str), plus one series array per requested type. One page is not a whole-population oath — serial/vin stay optional on the flat mirror (the drivers conservative posture) (captured 2026-07-20). |
 | Samsara | Stats-history series censuses: `engineStates` (1,045 readings/24h) keys exactly `{time: str, value: str}`, value vocabulary observed exactly `{'On': 475, 'Off': 301, 'Idle': 269}` — census-closed only, NOT API-enforced on output, so modeled plain str. `obdOdometerMeters` (9,480 readings/24h) keys exactly `{time: str, value: int}`, every value int, observed range 3,552,000..1,012,456,215 meters. `gps` (2,512-reading sample over 8 pages): always present — `time` (str), `latitude`/`longitude` (floats), `headingDegrees` (int), `speedMilesPerHour` (MIXED int\|float — modeled float), `isEcuSpeed` (bool), `reverseGeo {formattedLocation: str}`; partial — `address {id: str, name: str}` 401/2512, the address-book reference (captured 2026-07-20). |
+| Samsara | `GET /assets/location-and-speed/stream` is a modern-envelope surface (`data` + `pagination {endCursor, hasNextPage}` — the standard cursor contract; the `endCursor` is a FAT COMPOSITE token, opaque, passed back verbatim as `after` like every other cursor). The `ids` param is REQUIRED: omitting it is HTTP 400 `{"message": "Need to include asset IDs to filter by."}`. The batch cap is API-ENFORCED AT 50: 1 id → 200, 50 ids → 200, 100/200/609 comma-joined ids → HTTP 400 `{"message": "Need to filter by 50 or less asset IDs or syncTokens."}`. The `limit` tier was probed directly: limit=512 → 200, limit=513 → 400 — the vehicles/drivers 512 tier (captured 2026-07-20). |
+| Samsara | Location-stream retrieval is READING-TIME anchored on the half-open `[startTime, endTime)` window, probe-proven: a 12:00–13:00Z window returned min 12:00:03Z / max 12:59:56Z — readings strictly inside. A 50-id one-hour walk completed in 2 pages / 701 records; fleet density ≈ 8,500 records/hour at 609 vehicles (captured 2026-07-20). |
+| Samsara | Location-stream record census (454 records on page 1; nested blocks censused over 300): `happenedAtTime` 454/454 (RFC3339 str); `asset` 454/454 an object whose ONLY observed key is `id` — a STRING (300/300), unlike idling_events' bare-int `asset.id`; `location` 454/454 carrying `accuracyMeters` (int on every censused record, but FLOAT on the live full-day walk — the 2026-07-20 live proof failed validation on a float at record 351, widening the model field to float: the census sample was narrower than the wire), `headingDegrees` (int), `latitude`/`longitude` (floats), each 300/300, plus `geofence` 300/300 — an object with ZERO KEYS on every censused record (observed-empty, nothing to mirror). NO speed key was observed anywhere despite the surface's name (`location-and-speed`) — unmodeled as unobserved, never excluded; revisit on a capture that shows one (captured 2026-07-20). |
+| Samsara | The trips batch-retrofit question, probed and CLOSED: `/v1/fleet/trips` with a comma-joined `vehicleId` returns HTTP 400 (`rpc error: code = InvalidArgument`) — trips genuinely cannot batch and stays per-member `RosterFanOut`; `BatchedRosterFanOut` serves asset_locations alone today, by API evidence (captured 2026-07-20). |
 | Motive | 401 body is `{"error_message": ...}`; the documented /vehicle_locations limit was not observed to enforce — generic 429 posture. |
 | Motive | `/v3/vehicle_locations/{vehicle_id}` verified live: envelope `{"vehicle_locations": [{"vehicle_location": {...}}]}`, `located_at` is UTC ISO-8601 (`Z`-suffixed), one non-paginated page per fetch (so `SinglePageDecoder` fits), and a single per-vehicle fetch spans multiple calendar dates (the sample crossed two) — confirming `split_by_date`'s multi-partition output is load-bearing in production, not a theoretical edge: one fetch genuinely fans into several partitions. |
 | Motive | `/v3/vehicle_locations/{vehicle_id}` date bounds pinned by direct probing: day-granular `start_date`/`end_date` are honored inclusively on both bounds — a single-day request returns that full day, a two-day request both complete days. The documented 3-month maximum range is real: long backfills will eventually need request chunking (a range limit, unrelated to the §15 item-1 window defect). |
@@ -1800,7 +1881,8 @@ the snapshot subset, `fetch` is shape-polymorphic with a stateless boundary
 (2026-07-20): its driver comes from the same `resolve_request_driver` seam
 sync uses (§14), called with no roster source, so every stateless
 `RequestShape` — `SingleFetch`, `ParamSweep` — serves identically on both
-verbs, while a `RosterFanOut` is refused with a loud `ConfigurationError`
+verbs, while a roster-backed shape (`RosterFanOut` /
+`BatchedRosterFanOut`) is refused with a loud `ConfigurationError`
 (roster membership is durable state, and fetch's contract is no state).
 
 **The `Endpoints` catalog.** Endpoint addressing is a public catalog of inert
@@ -2075,8 +2157,9 @@ fleetpull/
                    #   CompletenessCheck Protocols, the SyncMode union (SnapshotMode /
                    #   WatermarkMode / FeedMode), ResumeValue, and StorageKind
       request_shape.py  # the RequestShape union — SingleFetch / RosterFanOut /
-                   #   BisectedWindowFetch / ParamSweep: request cardinality as one
-                   #   closed axis (§14's shape resolution matches over it)
+                   #   BatchedRosterFanOut / BisectedWindowFetch / ParamSweep:
+                   #   request cardinality as one closed axis (§14's shape
+                   #   resolution matches over it)
       spec_builders.py  # StaticGetSpecBuilder — the shared snapshot spec-builder
       resume.py    # require_date_window — the shared windowed-resume guard
       url_paths.py  # render_url_path_template — strict {placeholder} URL-path rendering (fan-out)
@@ -2182,8 +2265,10 @@ fleetpull/
     drivers.py     # RequestDriver Protocol + SingleRequestDriver + FanOutRequestDriver — yields FetchedPage per batch (§14)
     bisection.py   # BisectingWindowDriver — capped, unsortable Gets fetched whole via adaptive window halving (§14)
     shape_resolution.py  # resolve_request_driver — the RequestShape -> RequestDriver
-                   #   seam both composition roots call (§14); RosterFanOut members
-                   #   are fed in by the caller
+                   #   seam both composition roots call (§14); roster-backed members
+                   #   (RosterFanOut / BatchedRosterFanOut) are fed in by the caller,
+                   #   and the batched shape chunks them into sorted comma-joined
+                   #   batch values here
     runner.py      # EndpointRunner — one endpoint's run transaction: the snapshot arm,
                    #   the plan-and-drive watermark arm, and the post-success
                    #   metadata projection (§14, §3)
@@ -2318,6 +2403,10 @@ single-chain leaves declare nothing), not a field per pattern. The members:
 `SingleFetch` (one chain), `RosterFanOut` (one chain per roster member —
 names a `RosterKey` and the `member_key` each member binds under; the source
 endpoint and column live in the roster registry, never on the shape),
+`BatchedRosterFanOut` (one chain per fixed-size batch of roster members,
+each batch sorted and comma-joined into one query-param value — for surfaces
+that REQUIRE a member-id filter under an API-enforced batch cap; the batch
+is transport packing only, since records self-identify),
 `BisectedWindowFetch` (the unit window fetched whole, halved adaptively on
 the capped-response overflow signal — the declaration carries the provider
 facts: `results_limit`, `floor`, `event_time_wire_key`), and `ParamSweep`
@@ -2672,8 +2761,12 @@ orchestration splits into three nested layers, by concern:
   (`member_values={member_key: member}`), yielding each member's pages — the
   member list the caller's, and the driver member-agnostic: a `RosterFanOut`
   fans the whole roster (one member per backfill unit's chain set, the whole
-  roster per incremental run) and a `ParamSweep` fans its declared values
-  with `member_key=param` — no separate sweep driver exists.
+  roster per incremental run), a `BatchedRosterFanOut` fans the roster's
+  sorted comma-joined batches (each batch string is simply one member — the
+  shape resolution chunks; the driver never knows a batch from a member,
+  so its `members=N/M` progress narration counts BATCHES for this shape,
+  a deliberate, recorded consequence), and a `ParamSweep` fans its declared
+  values with `member_key=param` — no separate sweep or batch driver exists.
   `BisectingWindowDriver` (`orchestrator/bisection.py`, added
   2026-07-15) serves capped, unsortable Gets declaring `BisectedWindowFetch`:
   it fetches the unit window whole, halves on the exactly-full overflow
@@ -2710,7 +2803,8 @@ runner receives. `EndpointDefinition.request_shape` is matched in exactly one
 place — `resolve_request_driver` — and `fetch` calls the same seam with no
 roster source, so every stateless shape (`SingleFetch`, `ParamSweep`, and
 structurally `BisectedWindowFetch`) serves on both verbs while a
-`RosterFanOut` under `fetch` is refused with a loud `ConfigurationError`
+roster-backed shape (`RosterFanOut` / `BatchedRosterFanOut`) under `fetch`
+is refused with a loud `ConfigurationError`
 naming the endpoint and the roster (fetch's in-memory, no-state contract).
 
 The driver is the missing adapter between one endpoint run and one-or-many request
@@ -2874,7 +2968,14 @@ consolidated into one construction validator, and one polymorphic resolution
 seam (`resolve_request_driver`) both composition roots call. `ParamSweep`
 joined as the first new member under the closed-extension contract (first
 consumer: Samsara drivers, whose provider partitions the population behind a
-mandatory activation-status filter). The contract going forward: a new
+mandatory activation-status filter). `BatchedRosterFanOut` joined as the
+second (2026-07-20; first consumer: Samsara asset_locations, whose surface
+requires an id filter under an API-enforced 50-id batch cap): its arm reads
+the roster through the same member source a `RosterFanOut` uses — handed
+the per-member fan-out the packing wraps, one roster machinery path — then
+chunks the sorted members into comma-joined batch values and hands the
+existing member-agnostic fan-out driver one chain per batch. The contract
+going forward: a new
 cardinality pattern is a new union member plus its resolution arm — never a
 new definition field, never a second resolver.
 
@@ -3052,8 +3153,14 @@ resolution (item 1, done).
    per its §8 decision block (one legacy endpoint, three
    disjoint-schema entities at the reading grain; the series-unnesting
    decoder composing the cursor decoder by delegation is the one
-   machinery addition); the remainder of the legacy
-   wave queues next.* The per-endpoint
+   machinery addition). Samsara `asset_locations` shipped 2026-07-20
+   (the legacy `location_stream` surface, renamed per the
+   name=plural-of-entity invariant; the first `BatchedRosterFanOut`
+   consumer per its §8 decision block — the required-ids batched
+   fan-out at the API-enforced 50-id cap, the union member plus its
+   resolution arm the one machinery addition, resolving onto the
+   existing member-agnostic fan-out driver); the remainder of the
+   legacy wave queues next.* The per-endpoint
    inventory and port queue are tracked in `ENDPOINTS.md` (added
    2026-07-17), updated in the same change as any endpoint addition.
 8. **Polish phase, gated on a stable public surface:** full-tree ceremony

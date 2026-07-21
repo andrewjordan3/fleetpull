@@ -12,7 +12,9 @@ changes for one again (unified 2026-07-20; DESIGN section 14 carries the
 decision record).
 
 Members: ``SingleFetch`` (one chain -- the default), ``RosterFanOut``
-(one chain per roster member), ``BisectedWindowFetch`` (the unit window
+(one chain per roster member), ``BatchedRosterFanOut`` (one chain per
+fixed-size batch of roster members, the batch comma-joined into one
+query-parameter value), ``BisectedWindowFetch`` (the unit window
 fetched whole, halved adaptively on the capped-response overflow
 signal), and ``ParamSweep`` (one chain per declared query-parameter
 value).
@@ -24,6 +26,7 @@ from datetime import timedelta
 from fleetpull.roster import RosterKey
 
 __all__: list[str] = [
+    'BatchedRosterFanOut',
     'BisectedWindowFetch',
     'ParamSweep',
     'RequestShape',
@@ -72,6 +75,61 @@ class RosterFanOut:
 
     roster: RosterKey
     member_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class BatchedRosterFanOut:
+    """One request chain per fixed-size batch of roster members.
+
+    The shape for surfaces that REQUIRE a member-id filter and enforce a
+    batch cap on it (first consumer: Samsara asset_locations, where an
+    id-less request is a loud HTTP 400 and 51+ comma-joined ids another
+    -- the API-enforced 50-id cap, captured 2026-07-20). The roster
+    indirection is ``RosterFanOut``'s verbatim: only the ``RosterKey``
+    is named here, and the shape resolution reads the membership through
+    the same refresh-then-read machinery path.
+
+    The batch is TRANSPORT PACKING only: each chain fetches a batch's
+    records in one walk, and every record self-identifies its member
+    (per-record asset attribution on the wire), so no member attribution
+    rides on the request mapping -- unlike a ``RosterFanOut`` chain,
+    whose responses may not echo the requested member. Batches are
+    deterministic: members are sorted before chunking, so identical
+    rosters always produce identical batches.
+
+    Attributes:
+        roster: The roster supplying the members packed into batches --
+            the opaque handle, exactly ``RosterFanOut.roster``.
+        member_key: The key each batch's comma-joined member string
+            binds under in the spec-builder's ``member_values`` -- for a
+            query-parameter surface, the verbatim wire parameter (e.g.
+            ``'ids'``). The spec builder owns the interpretation.
+        batch_size: The maximum members per chain -- the provider's
+            API-enforced cap, declared from probe evidence. At least 1;
+            a roster smaller than one batch fans a single chain.
+    """
+
+    roster: RosterKey
+    member_key: str
+    batch_size: int
+
+    def __post_init__(self) -> None:
+        """Reject a batch size that could not pack a request.
+
+        Raises:
+            ValueError: ``batch_size`` is less than 1 -- a zero or
+                negative batch packs nothing and would silently fetch
+                nothing, a declaration bug rejected at construction.
+
+        Side Effects:
+            None -- reads fields and may raise.
+        """
+        if self.batch_size < 1:
+            raise ValueError(
+                f'BatchedRosterFanOut({self.roster.name!r}): batch_size must '
+                f'be >= 1, got {self.batch_size} -- a batch that packs no '
+                f'members is a declaration bug, not an empty fan-out.'
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,7 +219,9 @@ class ParamSweep:
 
 # The endpoint's request-cardinality declaration (config): the shape
 # resolution matches on it to pick the request driver -- SingleFetch ->
-# SingleRequestDriver, RosterFanOut / ParamSweep -> FanOutRequestDriver,
-# BisectedWindowFetch -> BisectingWindowDriver. One declared member per
-# endpoint; mutual exclusion is structural.
-type RequestShape = SingleFetch | RosterFanOut | BisectedWindowFetch | ParamSweep
+# SingleRequestDriver, RosterFanOut / BatchedRosterFanOut / ParamSweep ->
+# FanOutRequestDriver, BisectedWindowFetch -> BisectingWindowDriver. One
+# declared member per endpoint; mutual exclusion is structural.
+type RequestShape = (
+    SingleFetch | RosterFanOut | BatchedRosterFanOut | BisectedWindowFetch | ParamSweep
+)

@@ -6,6 +6,7 @@ from datetime import timedelta
 import pytest
 
 from fleetpull.endpoints.shared.request_shape import (
+    BatchedRosterFanOut,
     BisectedWindowFetch,
     ParamSweep,
     RosterFanOut,
@@ -38,6 +39,49 @@ class TestRosterFanOut:
         )
         with pytest.raises(dataclasses.FrozenInstanceError):
             shape.member_key = 'other'  # type: ignore[misc]
+
+
+class TestBatchedRosterFanOut:
+    def test_holds_roster_member_key_and_batch_size(self) -> None:
+        shape = BatchedRosterFanOut(
+            roster=RosterKey(Provider.SAMSARA, 'vehicle_ids'),
+            member_key='ids',
+            batch_size=50,
+        )
+        assert shape.roster == RosterKey(Provider.SAMSARA, 'vehicle_ids')
+        assert shape.member_key == 'ids'
+        assert shape.batch_size == 50
+
+    def test_is_frozen(self) -> None:
+        shape = BatchedRosterFanOut(
+            roster=RosterKey(Provider.SAMSARA, 'vehicle_ids'),
+            member_key='ids',
+            batch_size=50,
+        )
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            shape.batch_size = 1  # type: ignore[misc]
+
+    def test_a_single_member_batch_is_valid(self) -> None:
+        # batch_size=1 degenerates to the plain per-member fan-out --
+        # legal, just pointless packing.
+        shape = BatchedRosterFanOut(
+            roster=RosterKey(Provider.SAMSARA, 'vehicle_ids'),
+            member_key='ids',
+            batch_size=1,
+        )
+        assert shape.batch_size == 1
+
+    @pytest.mark.parametrize('bad_batch_size', [0, -1])
+    def test_batch_sizes_below_one_raise(self, bad_batch_size: int) -> None:
+        # A batch that packs no members would silently fetch nothing --
+        # a declaration bug, rejected at construction (the ParamSweep
+        # posture).
+        with pytest.raises(ValueError, match='batch_size must be >= 1'):
+            BatchedRosterFanOut(
+                roster=RosterKey(Provider.SAMSARA, 'vehicle_ids'),
+                member_key='ids',
+                batch_size=bad_batch_size,
+            )
 
 
 class TestBisectedWindowFetch:
