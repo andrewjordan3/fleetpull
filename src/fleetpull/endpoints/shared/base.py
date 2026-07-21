@@ -27,6 +27,7 @@ from enum import StrEnum
 from typing import Any, Protocol, get_args
 
 from fleetpull.endpoints.shared.request_shape import (
+    BatchedRosterFanOut,
     BisectedWindowFetch,
     ParamSweep,
     RequestShape,
@@ -271,7 +272,8 @@ class EndpointDefinition[ModelT: ResponseModel]:
             ``RequestShape`` member, so mutual exclusion between patterns is
             structural. Defaults to ``SingleFetch()`` (one chain), keeping
             single-chain leaves undeclared; ``RosterFanOut`` fans one chain per
-            roster member, ``ParamSweep`` one per declared query-param value,
+            roster member, ``BatchedRosterFanOut`` one per comma-joined
+            roster batch, ``ParamSweep`` one per declared query-param value,
             ``BisectedWindowFetch`` fetches each unit window whole and halves
             on overflow. Resolved to a request driver by the orchestrator's
             shape resolution; semantic sync-mode pairings are validated here at
@@ -321,7 +323,8 @@ class EndpointDefinition[ModelT: ResponseModel]:
 
         Mutual exclusion between cardinality patterns is structural (one
         ``request_shape`` field); what remains here are the semantic
-        pairings. ``RosterFanOut`` requires its roster to share the
+        pairings. The roster-backed shapes (``RosterFanOut``,
+        ``BatchedRosterFanOut``) require their roster to share the
         endpoint's provider -- ``Sync`` (§7) runs one queue per provider,
         and cross-queue independence rests on rosters never crossing
         providers (within a queue, the feeder barrier and the refresh
@@ -344,16 +347,18 @@ class EndpointDefinition[ModelT: ResponseModel]:
             None.
         """
         match self.request_shape:
-            case RosterFanOut() if self.request_shape.roster.provider is not (
-                self.provider
+            case RosterFanOut() | BatchedRosterFanOut() if (
+                self.request_shape.roster.provider is not self.provider
             ):
                 # Sync runs one queue per provider; the cross-queue
                 # independence argument (§7) rests on rosters never
                 # crossing providers -- a cross-provider roster would let
                 # two queues reconcile one roster's rows concurrently,
                 # outside the reach of either queue's feeder barrier.
+                # Both roster-backed shapes carry the invariant.
                 raise ValueError(
-                    f'{self.provider.value}.{self.name}: RosterFanOut roster '
+                    f'{self.provider.value}.{self.name}: '
+                    f'{type(self.request_shape).__name__} roster '
                     f'{self.request_shape.roster.provider.value}/'
                     f'{self.request_shape.roster.name} crosses the provider '
                     f'boundary -- a roster and its consumer share one provider.'

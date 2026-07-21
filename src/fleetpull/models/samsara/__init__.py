@@ -7,6 +7,11 @@ from fleetpull.models.samsara.address import (
     AddressGeofenceCircle,
     AddressGeofenceSettings,
 )
+from fleetpull.models.samsara.asset_location import (
+    AssetLocation,
+    AssetLocationAssetRef,
+    AssetLocationFix,
+)
 from fleetpull.models.samsara.driver import (
     Driver,
     DriverActivationStatus,
@@ -46,6 +51,9 @@ __all__: list[str] = [
     'AddressGeofence',
     'AddressGeofenceCircle',
     'AddressGeofenceSettings',
+    'AssetLocation',
+    'AssetLocationAssetRef',
+    'AssetLocationFix',
     'AssetRef',
     'Driver',
     'DriverActivationStatus',

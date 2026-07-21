@@ -8,8 +8,8 @@ time; ``FanOutRequestDriver`` issues one chain per supplied member
 (``member_values={member_key: member}``), fetching members concurrently on its
 injected ``FetchPool`` and yielding each member's pages in member order -- the
 member list is the caller's (a ``RosterFanOut``'s whole roster, fanned once per
-work unit's window, or a ``ParamSweep``'s declared values; the driver is
-member-agnostic). ``member_values`` live only here -- the run executor never
+work unit's window, a ``BatchedRosterFanOut``'s comma-joined batches, or a
+``ParamSweep``'s declared values; the driver is member-agnostic). ``member_values`` live only here -- the run executor never
 builds them and the orchestration entry never supplies them; only the driver
 does. A driver touches just the endpoint's ``SpecBuilder`` and the transport
 client, and yields whole ``FetchedPage`` objects (records and durable
@@ -214,8 +214,9 @@ class FanOutRequestDriver:
 
     The driver for endpoints that fan a request out over per-member values --
     a ``RosterFanOut``'s roster members (the per-vehicle ``vehicle_locations``
-    endpoint) or a ``ParamSweep``'s declared values; the driver is
-    member-agnostic and never knows which shape supplied its list. Each member
+    endpoint), a ``BatchedRosterFanOut``'s comma-joined batches, or a
+    ``ParamSweep``'s declared values; the driver is member-agnostic and
+    never knows which shape supplied its list. Each member
     is one piece: a worker on the injected ``fetch_pool`` runs that member's
     whole chain (``member_values={member_key: member}``, tokens and the
     concurrency semaphore acquired per attempt exactly as a serial fetch
@@ -237,7 +238,8 @@ class FanOutRequestDriver:
     Attributes:
         members: The member values to issue one chain each for, in order.
         member_key: The key each member binds under in ``member_values``
-            (``RosterFanOut.member_key`` or ``ParamSweep.param``); the spec
+            (``RosterFanOut.member_key``, ``BatchedRosterFanOut.member_key``,
+            or ``ParamSweep.param``); the spec
             builder owns its interpretation.
         fetch_pool: The provider's fetch workers and channel bound (from the
             composition root's ``FetchPoolRegistry``; tests inject a
