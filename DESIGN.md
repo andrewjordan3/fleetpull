@@ -1695,6 +1695,81 @@ hub's `location_stream` name for greppability; the shipped endpoint is
    anywhere despite the surface's name — unmodeled as unobserved;
    revisit on a capture that shows one.
 
+### Samsara `driver_vehicle_assignments` probe-settled decisions (2026-07-20)
+
+Settled by the 2026-07-20 live probe session (the captured rows below);
+the driver_vehicle_assignments build implements them.
+
+1. **ONE endpoint, `filterBy=vehicles` baked in as a FIXED param.**
+   `filterBy` is REQUIRED and API-enforced to a two-value vocabulary
+   (missing → HTTP 400; a bogus value → HTTP 400 naming
+   `'drivers'`/`'vehicles'`), but the two sweeps are ONE DATASET: full
+   24-hour walks under both values returned IDENTICAL row sets —
+   216 = 216, proven equal as sets of `(driver.id, vehicle.id,
+   startTime, endTime, assignmentType, isPassenger, assignedAtTime)`
+   tuples. The drivers decision-1 reasoning lands on the NO-SPLIT side
+   here: same entity, same rows — the axis is a traversal choice, not
+   a data partition (and not the stats triple's disjoint-schema
+   split). So one endpoint, no `ParamSweep`, no second endpoint; the
+   fixed param rides the leaf builder (the stats triple's `types`
+   idiom — a leaf builder, no new shared abstraction). Rejected:
+   sweeping both values (it would double every fetch to re-download
+   the identical rows) and a second endpoint (two datasets carrying
+   one row set would push a spurious union onto every consumer).
+2. **`results_limit=50` is documentation-by-declaration of the
+   server's OWN paging.** The server pages at a FIXED 50 records and
+   the `limit` param is PROVEN IGNORED: limit=1, 5, 100, 512, 513 —
+   and no limit at all — each returned a 50-record first page with
+   `hasNextPage: true`, and 513 was NOT rejected (no enforced tier on
+   this surface, unlike every previously probed Samsara surface). The
+   binding declares the observed page size with a provenance comment
+   stating the param is inert — the declaration documents the wire,
+   it is not a working knob.
+3. **Retrieval is OVERLAP-anchored — the trips decisions mirrored.**
+   Two adjacent day windows shared 5 midnight-spanning assignments
+   (identical tuples in both), and the later window carried 5 rows
+   whose `startTime` precedes the window start plus 2 whose `endTime`
+   is at/after the window end. Per §4 (the trips reasoning verbatim):
+   overlap retrieval supersets start-anchored ownership, so
+   `event_time_column='start_time'`, the runner's post-fetch window
+   filter assigns each assignment to the single chunk owning its
+   start, no wire pad exists, and wholesale date-partition replacement
+   absorbs midnight-spanning intervals exactly as it does for trips.
+   No empty or missing `endTime` was observed (216/216 carry both
+   bounds) — assignments were only ever observed complete, and the
+   watermark lookback absorbs late materialization (accepted
+   residual).
+4. **`assignmentType` stays a plain `str` — a decision the live proof
+   vindicated within hours.** The 24-hour census observed exactly
+   `{'static': 158, 'HOS': 58}`, but that closure was census-only: the
+   API 400-enforces `filterBy`'s INPUT vocabulary yet does not enforce
+   output assignment types, so the enum bar is unmet (the
+   eldExemptReason lesson, the engine-state `value` stance). The
+   2026-07-21 live proof's week-wide walk then surfaced a THIRD value
+   the census never saw — `driverApp` (25 of 8,042 rows, beside
+   `HOS` 5,520 and `static` 2,497) — which a census-closed enum would
+   have failed on loudly. The vocabulary is documented on the model,
+   never enforced.
+5. **The dotted `externalIds` mirror wire-verbatim on the NESTED
+   vehicle ref.** `vehicle.externalIds` carries the LITERAL DOTTED
+   wire keys `samsara.serial`/`samsara.vin` (both str, 216/216),
+   modeled with explicit `Field` aliases (the `VehicleExternalIds`
+   precedent) — unlike the stats triple's `vehicleSerial`/
+   `vehicleVin`, which are flat keys the series-unnesting DECODER
+   synthesizes; here the dotted keys are the record's own.
+   Requiredness posture: the census was TOTAL (every key 216/216),
+   but one day's two-sweep walk is not a whole-population-over-time
+   oath — the drivers conservative posture holds EXCEPT the
+   structural core (`driver`, `vehicle`, `start_time`, `end_time`,
+   and the refs' `id`s: an assignment without its parties or bounds
+   is structurally meaningless), required by structural judgment and
+   recorded on the model docstring (the asset_locations judgment).
+6. **No completeness check** (windowed, deliberately partial — the
+   standing snapshot-only rule); no range cap was probed on this
+   surface; the default 7-day chunk width is live-proven (the
+   2026-07-21 live proof's 7-day unit fetched 6,897 records clean —
+   the trips/idling wide-window acceptance family).
+
 ### The exception hierarchy (implemented: `exceptions.py`)
 
 The operational errors consumers catch, mirroring the classification
@@ -1804,6 +1879,11 @@ budgets → `RetriesExhaustedError`, failed auth paths →
 | Samsara | Location-stream retrieval is READING-TIME anchored on the half-open `[startTime, endTime)` window, probe-proven: a 12:00–13:00Z window returned min 12:00:03Z / max 12:59:56Z — readings strictly inside. A 50-id one-hour walk completed in 2 pages / 701 records; fleet density ≈ 8,500 records/hour at 609 vehicles (captured 2026-07-20). |
 | Samsara | Location-stream record census (454 records on page 1; nested blocks censused over 300): `happenedAtTime` 454/454 (RFC3339 str); `asset` 454/454 an object whose ONLY observed key is `id` — a STRING (300/300), unlike idling_events' bare-int `asset.id`; `location` 454/454 carrying `accuracyMeters` (int on every censused record, but FLOAT on the live full-day walk — the 2026-07-20 live proof failed validation on a float at record 351, widening the model field to float: the census sample was narrower than the wire), `headingDegrees` (int), `latitude`/`longitude` (floats), each 300/300, plus `geofence` 300/300 — an object with ZERO KEYS on every censused record (observed-empty, nothing to mirror). NO speed key was observed anywhere despite the surface's name (`location-and-speed`) — unmodeled as unobserved, never excluded; revisit on a capture that shows one (captured 2026-07-20). |
 | Samsara | The trips batch-retrofit question, probed and CLOSED: `/v1/fleet/trips` with a comma-joined `vehicleId` returns HTTP 400 (`rpc error: code = InvalidArgument`) — trips genuinely cannot batch and stays per-member `RosterFanOut`; `BatchedRosterFanOut` serves asset_locations alone today, by API evidence (captured 2026-07-20). |
+| Samsara | `GET /fleet/driver-vehicle-assignments` is a modern-envelope surface (`data` + `pagination {endCursor, hasNextPage}` — the standard cursor contract) taking an RFC3339 `startTime`/`endTime` window. `filterBy` is REQUIRED and API-enforced to a two-value vocabulary: omitting it is HTTP 400, and `filterBy=bogus` is HTTP 400 `value of filterBy must be one of "drivers", "vehicles" but got value "bogus"` — loud, never silent-empty (captured 2026-07-20). |
+| Samsara | **The two `filterBy` sweeps are ONE DATASET:** full 24-hour walks under `filterBy=vehicles` and `filterBy=drivers` returned IDENTICAL row sets — 216 = 216, proven equal as sets of `(driver.id, vehicle.id, startTime, endTime, assignmentType, isPassenger, assignedAtTime)` tuples. The axis is a traversal choice, not a data partition, so the binding bakes `filterBy=vehicles` in as a fixed param — one endpoint, no sweep (captured 2026-07-20). |
+| Samsara | `/fleet/driver-vehicle-assignments` pages at a FIXED 50 records and the `limit` param is PROVEN IGNORED: limit=1, 5, 100, 512, 513 — and no limit at all — each returned a 50-record first page with `hasNextPage: true`; 513 was NOT rejected. No enforced tier exists on this surface (the first probed Samsara surface with an inert `limit`), so the declared `results_limit=50` documents the server's own observed page size rather than working as a knob (captured 2026-07-20). |
+| Samsara | `/fleet/driver-vehicle-assignments` window matching is OVERLAP-anchored: two adjacent day windows shared 5 midnight-spanning assignments (identical tuples in both), and the later window carried 5 rows whose `startTime` precedes the window start plus 2 whose `endTime` is at/after the window end. Overlap retrieval supersets start-anchored ownership — the trips reasoning, so `start_time` routing needs no wire pad (captured 2026-07-20). |
+| Samsara | Assignment-record census (216/216 for EVERY key — the census is total, no partial-presence key anywhere): `startTime`/`endTime` (RFC3339 strs; no empty or missing `endTime` observed — assignments only ever observed complete), `assignedAtTime` (present on every row but the EMPTY STRING on all of them — the 2026-07-21 live proof failed datetime parsing on record 0, and a 6,921-row week-wide value census found `''` on every single row: the Samsara empty-string posture, mirrored verbatim as str; a populated value's wire format is UNOBSERVED), `assignmentType` (str; the 24h census observed `{'static': 158, 'HOS': 58}`, and the 2026-07-21 week-wide live proof added `driverApp` (25/8,042) — an open vocabulary, modeled plain str), `isPassenger` (bool), `driver {id: str, name: str}`, `vehicle {id: str, name: str, externalIds}` — `externalIds` carrying the LITERAL DOTTED wire keys `samsara.serial`/`samsara.vin` (both str, 216/216) on the NESTED object, mirrored via explicit aliases (unlike the stats triple's decoder-synthesized flat keys) (captured 2026-07-20). |
 | Motive | 401 body is `{"error_message": ...}`; the documented /vehicle_locations limit was not observed to enforce — generic 429 posture. |
 | Motive | `/v3/vehicle_locations/{vehicle_id}` verified live: envelope `{"vehicle_locations": [{"vehicle_location": {...}}]}`, `located_at` is UTC ISO-8601 (`Z`-suffixed), one non-paginated page per fetch (so `SinglePageDecoder` fits), and a single per-vehicle fetch spans multiple calendar dates (the sample crossed two) — confirming `split_by_date`'s multi-partition output is load-bearing in production, not a theoretical edge: one fetch genuinely fans into several partitions. |
 | Motive | `/v3/vehicle_locations/{vehicle_id}` date bounds pinned by direct probing: day-granular `start_date`/`end_date` are honored inclusively on both bounds — a single-day request returns that full day, a two-day request both complete days. The documented 3-month maximum range is real: long backfills will eventually need request chunking (a range limit, unrelated to the §15 item-1 window defect). |
@@ -3159,8 +3239,14 @@ resolution (item 1, done).
    consumer per its §8 decision block — the required-ids batched
    fan-out at the API-enforced 50-id cap, the union member plus its
    resolution arm the one machinery addition, resolving onto the
-   existing member-agnostic fan-out driver); the remainder of the
-   legacy wave queues next.* The per-endpoint
+   existing member-agnostic fan-out driver). Samsara
+   `driver_vehicle_assignments` shipped 2026-07-20 (the fleet-wide
+   windowed cursor walk with the fixed `filterBy=vehicles` param per
+   its §8 decision block — the identical-sweeps proof collapsing the
+   required traversal axis into one dataset, `results_limit=50`
+   documenting the server's own fixed paging, and the trips overlap
+   anchoring mirrored; zero shared-machinery changes); the remainder
+   of the legacy wave queues next.* The per-endpoint
    inventory and port queue are tracked in `ENDPOINTS.md` (added
    2026-07-17), updated in the same change as any endpoint addition.
 8. **Polish phase, gated on a stable public surface:** full-tree ceremony

@@ -20,6 +20,12 @@ from fleetpull.models.samsara.driver import (
     DriverStaticAssignedVehicleRef,
     DriverTagRef,
 )
+from fleetpull.models.samsara.driver_vehicle_assignment import (
+    AssignmentDriverRef,
+    AssignmentVehicleExternalIds,
+    AssignmentVehicleRef,
+    DriverVehicleAssignment,
+)
 from fleetpull.models.samsara.engine_state import EngineState
 from fleetpull.models.samsara.gps_reading import (
     GpsReading,
@@ -55,12 +61,16 @@ __all__: list[str] = [
     'AssetLocationAssetRef',
     'AssetLocationFix',
     'AssetRef',
+    'AssignmentDriverRef',
+    'AssignmentVehicleExternalIds',
+    'AssignmentVehicleRef',
     'Driver',
     'DriverActivationStatus',
     'DriverCarrierSettings',
     'DriverHosSetting',
     'DriverStaticAssignedVehicleRef',
     'DriverTagRef',
+    'DriverVehicleAssignment',
     'EngineState',
     'FuelCost',
     'GpsReading',
