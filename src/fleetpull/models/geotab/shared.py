@@ -1,5 +1,6 @@
 # src/fleetpull/models/geotab/shared.py
-"""Shared GeoTab boundary-model machinery: TimeSpan parsing, reference coercion.
+"""Shared GeoTab boundary-model machinery: TimeSpan parsing, reference
+coercion, and the nested-location model trio.
 
 GeoTab serializes every duration as a .NET TimeSpan string
 (``[d.]hh:mm:ss[.f{1,7}]`` -- captured 2026-07-13: ``"00:05:01"``,
@@ -10,6 +11,21 @@ Both shapes are structural wire facts shared across GeoTab entities
 (``Trip``, ``ExceptionEvent``, and the feed wave's ``FillUp``/``FuelTaxDetail`` today),
 so their coercions live here beside each other, consumed through
 ``Annotated`` field aliases -- never as per-model parsing logic.
+
+The nested-location trio (``GeotabAddressedLocation`` wrapping an
+optional ``GeotabCoordinate`` and an optional ``GeotabPostalAddress``)
+is the third shared shape, consumed on ``DutyStatusLog`` and ``DVIRLog``
+-- two consumers at birth, so it lives here (the second-consumer
+threshold) rather than per-model. The wrapper carries the DOUBLE-NESTED
+``{location: {x, y}}`` COORDINATE arm OR an ``{address:
+{formattedAddress}}`` arm: the 2026-07-21 feed-wave-two census (nested
+blocks sampled at 200) saw only the coordinate arm, but a 24,860-block
+LIVE-PROOF walk (2026-07-21) found the wrapper carries the coordinate
+arm on 24,846 blocks and the address arm on 14 (mutually exclusive at
+that scale) -- the fourth time an at-scale walk found an arm a bounded
+census missed (the ``StatusData.controller`` lesson). Both arms are
+optional on the wrapper; a wrapper with neither is unobserved but
+representable.
 
 ``GeotabTimeSpan`` deliberately bakes nullability into the alias
 (``Annotated[timedelta | None, ...]`` rather than
@@ -26,15 +42,65 @@ import re
 from datetime import timedelta
 from typing import Annotated, Final
 
-from pydantic import BeforeValidator
+from pydantic import BeforeValidator, Field
 
+from fleetpull.model_contract import ResponseModel
 from fleetpull.vocabulary import JsonValue
 
 __all__: list[str] = [
+    'GeotabAddressedLocation',
+    'GeotabCoordinate',
+    'GeotabPostalAddress',
     'GeotabTimeSpan',
     'bare_id_to_reference',
     'parse_timespan',
 ]
+
+
+class GeotabCoordinate(ResponseModel):
+    """The inner coordinate block of a nested GeoTab location.
+
+    GeoTab's ``x`` is LONGITUDE and ``y`` is LATITUDE (the provider's
+    map-plane convention, consistent with the shipped ``FillUp``
+    location); both arrive as floats (bare-int arms lift losslessly
+    under lax coercion). Required within the block: a coordinate block
+    without its coordinates is a shape change and must fail loudly.
+    """
+
+    x: float
+    y: float
+
+
+class GeotabPostalAddress(ResponseModel):
+    """The inner address block of a nested GeoTab location.
+
+    The wrapper's address arm, observed only on ``DutyStatusLog`` in
+    the 24,860-block live-proof walk (14 blocks). Only
+    ``formattedAddress`` was observed on the block; other GeoTab
+    address keys (city, state, ...) are absorbed by ``extra='ignore'``
+    until a walk observes them. Required within the block on the same
+    loud-failure logic as the coordinates: a present address block
+    missing its one observed key is a shape change.
+    """
+
+    formatted_address: str = Field(alias='formattedAddress')
+
+
+class GeotabAddressedLocation(ResponseModel):
+    """The nested GeoTab location wrapper: a coordinate arm or an address arm.
+
+    Carries the double-nested ``{location: {x, y}}`` coordinate block
+    (``location``) OR the ``{address: {formattedAddress}}`` block
+    (``address``) -- both optional, mutually exclusive at the observed
+    scale (module docstring: the live-proof walk found 24,846
+    coordinate arms and 14 address arms, none carrying both). The
+    consuming models (``DutyStatusLog``, ``DVIRLog``) carry the wrapper
+    itself as an optional field.
+    """
+
+    location: GeotabCoordinate | None = None
+    address: GeotabPostalAddress | None = None
+
 
 # The .NET TimeSpan grammar: optional day prefix, exactly-two-digit
 # fields, 1-7 fractional digits (100 ns ticks). Range checks (hh <= 23,

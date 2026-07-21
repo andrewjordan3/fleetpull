@@ -514,6 +514,10 @@ class TestExampleFile:
             'fill_ups',
             'fuel_and_energy_used',
             'fuel_tax_details',
+            'fault_data',
+            'duty_status_logs',
+            'driver_changes',
+            'dvir_logs',
         )
         expected = resolve_path(tmp_path) / '.fleetpull' / 'state.sqlite3'
         assert config.state.database_path == expected

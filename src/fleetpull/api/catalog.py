@@ -105,6 +105,12 @@ class Endpoints:
         fuel_tax_details: FeedEndpoint = FeedEndpoint(
             Provider.GEOTAB, 'fuel_tax_details'
         )
+        fault_data: FeedEndpoint = FeedEndpoint(Provider.GEOTAB, 'fault_data')
+        duty_status_logs: FeedEndpoint = FeedEndpoint(
+            Provider.GEOTAB, 'duty_status_logs'
+        )
+        driver_changes: FeedEndpoint = FeedEndpoint(Provider.GEOTAB, 'driver_changes')
+        dvir_logs: FeedEndpoint = FeedEndpoint(Provider.GEOTAB, 'dvir_logs')
 
 
 def available_endpoints() -> tuple[EndpointIdentity, ...]:
