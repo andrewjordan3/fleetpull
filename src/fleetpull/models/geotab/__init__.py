@@ -9,10 +9,34 @@ from fleetpull.models.geotab.exception_event import (
     ExceptionEventDriverRef,
     ExceptionEventRuleRef,
 )
+from fleetpull.models.geotab.fill_up import (
+    FillUp,
+    FillUpDeviceRef,
+    FillUpDriverRef,
+    FillUpLocation,
+    FillUpTankCapacity,
+    FillUpTankLevelExtrema,
+    FillUpTankLevelPoint,
+)
+from fleetpull.models.geotab.fuel_and_energy_used import (
+    FuelAndEnergyUsed,
+    FuelAndEnergyUsedDeviceRef,
+)
+from fleetpull.models.geotab.fuel_tax_detail import (
+    FuelTaxDetail,
+    FuelTaxDetailDeviceRef,
+    FuelTaxDetailDriverRef,
+)
+from fleetpull.models.geotab.log_record import LogRecord, LogRecordDeviceRef
 from fleetpull.models.geotab.shared import (
     GeotabTimeSpan,
     bare_id_to_reference,
     parse_timespan,
+)
+from fleetpull.models.geotab.status_data import (
+    StatusData,
+    StatusDataDeviceRef,
+    StatusDataDiagnosticRef,
 )
 from fleetpull.models.geotab.trip import (
     Trip,
@@ -31,7 +55,24 @@ __all__: list[str] = [
     'ExceptionEventDiagnosticRef',
     'ExceptionEventDriverRef',
     'ExceptionEventRuleRef',
+    'FillUp',
+    'FillUpDeviceRef',
+    'FillUpDriverRef',
+    'FillUpLocation',
+    'FillUpTankCapacity',
+    'FillUpTankLevelExtrema',
+    'FillUpTankLevelPoint',
+    'FuelAndEnergyUsed',
+    'FuelAndEnergyUsedDeviceRef',
+    'FuelTaxDetail',
+    'FuelTaxDetailDeviceRef',
+    'FuelTaxDetailDriverRef',
     'GeotabTimeSpan',
+    'LogRecord',
+    'LogRecordDeviceRef',
+    'StatusData',
+    'StatusDataDeviceRef',
+    'StatusDataDiagnosticRef',
     'Trip',
     'TripDeviceRef',
     'TripDriverRef',

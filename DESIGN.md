@@ -1,6 +1,6 @@
 # fleetpull — Design Document
 
-**Status:** Design settled through the two-verb public API (§10) and config-driven sync. Shipped end-to-end: the `fetch` API; `Sync(config_path).run()`; the yaml-run CLI (`fleetpull sync <config>`) and the per-endpoint `metadata.json` projection (both 2026-07-17); work-unit planning with crash resume and the per-provider fan-out executor; Motive `vehicles` (snapshot), `vehicle_locations` (date-partitioned watermark, live-run), and the fleet-wide event pair `driving_periods` / `idle_events` (windowed watermark); GeoTab `devices` (snapshot, live-run), `users` (snapshot), `trips` (windowed watermark, stop-anchored), and `exception_events` (windowed watermark, bisected). The Samsara foundation is wired (2026-07-17): `SamsaraConfig` with the `SAMSARA_API_KEY` fallback, the bearer auth-ingress arm, and full `Sync` dispatch; Samsara `vehicles` (snapshot, cursor walk) is the first Samsara vertical, built from the same-day probe session. The GeoTab feed MACHINERY is built in full (2026-07-21: the append-log storage cell, the kind-guarded token commit, the per-page feed drive, the `GEOTAB_FEED` rate class, the shared `GetFeed` spec builder, and the `FeedEndpoint` catalog identity — §3/§4/§5/§14); the feed verticals themselves queue in ENDPOINTS.md, and trips ships windowed until its feed vertical lands (§8). See §15 for run status and the build roadmap.
+**Status:** Design settled through the two-verb public API (§10) and config-driven sync. Shipped end-to-end: the `fetch` API; `Sync(config_path).run()`; the yaml-run CLI (`fleetpull sync <config>`) and the per-endpoint `metadata.json` projection (both 2026-07-17); work-unit planning with crash resume, the three-grain concurrency ladder, and the per-provider fan-out executor; and the full endpoint inventory ENDPOINTS.md tracks as the manifest of record — the Motive and Samsara legacy waves are COMPLETE (2026-07-21), and the GeoTab `Get` verticals ship beside the feed wave below. The GeoTab feed MACHINERY is built in full (2026-07-21: the append-log storage cell, the kind-guarded token commit, the per-page feed drive, the `GEOTAB_FEED` rate class, the shared `GetFeed` spec builder, and the `FeedEndpoint` catalog identity — §3/§4/§5/§14); feed wave one shipped 2026-07-21 (`log_records`, `status_data`, `fill_ups`, `fuel_and_energy_used`, `fuel_tax_details` — the first APPEND_LOG datasets); waves two and three queue in ENDPOINTS.md, and trips ships windowed until its feed vertical lands (§8). See §15 for run status and the build roadmap.
 **Name:** `fleetpull` — final. Describes exactly what the package does and nothing more (PyPI availability confirmed 2026-06-10).
 **Relationship to fleet-telemetry-hub:** New package, not a rewrite. fleet-telemetry-hub remains in production untouched while fleetpull is built.
 
@@ -2207,6 +2207,96 @@ completes the Motive legacy queue.
    honored live); no range cap was probed (the fixed 1-day unit sits
    far inside any plausible cap anyway).
 
+### GeoTab feed wave one probe-settled decisions (2026-07-21)
+
+Settled by the 2026-07-21 live probe session (the captured rows below —
+one session for the five); the `log_records` / `status_data` /
+`fill_ups` / `fuel_and_energy_used` / `fuel_tax_details` verticals
+implement them. ALL censuses here are TENANT-SCOPED observations (the
+port discipline's standing rule): they prove the probed account's
+shapes at capture time, never data semantics and never other tenants'
+shapes.
+
+1. **All five ride the shipped feed machinery with ZERO machinery
+   changes — the boringness criterion, met.** Each leaf is exactly the
+   declaration set the machinery anticipated: `FeedMode` +
+   `StorageKind.APPEND_LOG` + an `event_time_column`, the shared
+   `GeotabGetFeedSpecBuilder` (per-leaf `typeName` and `resultsLimit`
+   only), the shared `GeotabFeedPageDecoder`, and
+   `QuotaScope.GEOTAB_FEED`. Nothing under the orchestrator, network,
+   records, storage, or state layers moved — the first vertical wave
+   over a machinery build proving the seams were cut right.
+2. **Whole-page-total censuses drive requiredness.** Every census was
+   total over its page (LogRecord and StatusData 2,000/2,000 every
+   key; FillUp 100/100; FuelAndEnergyUsed 2,000/2,000; FuelTaxDetail
+   every key on all sampled records) — large uniform censuses, so
+   every modeled field is REQUIRED, with nullable/sentinel arms
+   exactly as observed (none of these surfaces showed a null). Mixed
+   int-or-float wire numerics model `float`; uniformly-int values
+   (LogRecord `speed`) mirror as bare `int` (the odometer_readings
+   verbatim-mirror precedent); datetimes recover tz-aware per the
+   GeoTab sibling idiom. Reference blocks stay per-model (the
+   Trip-beside-ExceptionEvent precedent) so each model's census-driven
+   requiredness keeps its teeth — a shared union-lax ref would demote
+   the required `id`s these censuses proved.
+3. **The active/calculated split, per entity.** LogRecord and
+   StatusData are ACTIVE feeds (append-only-complete, reconciled by
+   `id`); StatusData carries a per-record `version` that LogRecord
+   does not — mirrored as wire truth, not promoted into reconcile
+   semantics. FillUp, FuelAndEnergyUsed, and FuelTaxDetail are
+   CALCULATED (re-emitted versions, reconciled `(id, max version)`);
+   FuelTaxDetail's version identity is the `versions` LIST of 16-hex
+   component tokens (a §9 list-of-scalar) rather than a scalar — the
+   consumer reads a re-emitted row's whole token list as the fresher
+   edition.
+4. **THE ESTIMATES-ONLY-TENANT CAVEAT (all three fuel models carry it
+   verbatim).** The probed tenant has NO fuel-transaction (fuel-card)
+   integration: every fuel value on `fill_ups`,
+   `fuel_and_energy_used`, and `fuel_tax_details` is provider-derived
+   from telemetry — estimates, not transactions — and the census
+   cannot speak for integrated tenants. Concretely on FillUp: `cost`
+   0.0 on ALL records, `productType` `'Unknown'` throughout, and
+   `fuelTransactions` an EMPTY list on 100/100 — EXCLUDED as
+   value-unobservable with the integrated-tenant note (on tenants with
+   fuel-card integration it populates with a shape never captured; it
+   joins the model when a capture types it — the users
+   never-populated-keys precedent).
+5. **FillUp sentinels and vocabularies.** The observed `-1.0`
+   `derivedVolume` (the could-not-derive marker) is mirrored VERBATIM
+   beside real volumes — nulling a sentinel would be interpretation.
+   `confidence` is a comma-joined detection-method token list kept as
+   ONE plain string (splitting would presume a use case);
+   `tankCapacity.source` observed `EstimateFuelLevel` /
+   `DiagnosticTankCapacity` / `Unknown` — census-open plain strs, like
+   `productType` and `currencyCode`. The `driver` reference reuses the
+   shipped Trip string-or-object mechanism exactly
+   (`bare_id_to_reference`: the bare `"UnknownDriverId"` lands as the
+   ref's `id`, `isDriver` null exactly on sentinel rows) — on FillUp
+   (87/100 object) and on FuelTaxDetail both.
+6. **The FillUp `resultsLimit` is 10,000 with DUAL PROVENANCE.**
+   10,000 is the DOCUMENTED per-type cap; the probe could NOT falsify
+   or confirm it — a 50,000 request was ACCEPTED at the probed
+   tenant's whole 380-record population, which proves nothing about a
+   cap the population never reaches. Encoding the documented figure is
+   the conservative arm of encode-probed-behavior: where the probe is
+   structurally unable to test a limit, the documented cap stands
+   (recorded on the leaf) until a larger tenant probes it. The other
+   four leaves declare the 50,000 protocol maximum.
+7. **`FuelUsed` is NOT ported.** Observed IDENTICAL to
+   `FuelAndEnergyUsed` on the probed tenant — same ids, same values,
+   week-wide — and the provider documents `FuelAndEnergyUsed` as its
+   successor: porting both would ship one dataset twice under two
+   names. Revisit only if a tenant ever shows the surfaces diverging.
+8. **The naming decisions.** `fuel_and_energy_used` is the WIRE'S OWN
+   VOCABULARY, not a plural (the driver_idle_rollups precedent):
+   `FuelAndEnergyUsed` names a quantity, so no snake-plural exists to
+   form and the endpoint mirrors the type name verbatim. `status_data`
+   is likewise the wire's uncountable vocabulary. `log_records`,
+   `fill_ups`, and `fuel_tax_details` are the standard
+   snake-plural-of-model names. `fuel_tax_details` anchors
+   `event_time_column='enter_time'` — the segment materializes where
+   it begins; the other four anchor `date_time`.
+
 ### The exception hierarchy (implemented: `exceptions.py`)
 
 The operational errors consumers catch, mirroring the classification
@@ -2284,6 +2374,12 @@ budgets → `RetriesExhaustedError`, failed auth paths →
 | GeoTab | The User visibility anomaly was scope, not nonexistence: after the account fix, `GetCountOf User` returned 157 (previously 2), `isDriver: true` search returns driver records, and a by-id fetch of a trip-referenced driver succeeds. The driver-variant User shape is captured (60+ fields; carries list-of-nested-object fields like `mapViews`, excluded from the shipped model per the Device exclusion precedent) (captured 2026-07-15). |
 | GeoTab | User supports id-sort seek paging — proven live, never assumed from Device: a `resultsLimit: 3` first page returned ascending ids, and the offset advance continued past the boundary with no overlap or loss. Third per-type sortability datum (Device yes, ExceptionEvent no, User yes) — sortability is probed per type, every time (captured 2026-07-16). |
 | GeoTab | The full User population sweep (bare `Get`): 157 records, equal to `GetCountOf` exactly; no null value and no type variance on any of the 75 observed keys — GeoTab omits keys rather than sending nulls, so User optionality is absence-shaped. The driver-only block (`licenseNumber`, `licenseProvince`, `viewDriversOwnDataOnly`, plus the `driverGroups`/`keys` lists) sits at exactly the 129-driver count; `maxPCDistancePerDay` (126/157) does NOT align with the driver split; `accessGroupFilter` appears on exactly one record; `iAMMetadata` on 42/157 (captured 2026-07-16). |
+| GeoTab | **The probed tenant is ESTIMATES-ONLY for fuel**: no fuel-transaction (fuel-card) integration exists on the account, so every fuel value across the `FillUp`/`FuelAndEnergyUsed`/`FuelTaxDetail` feed censuses is provider-derived from telemetry. All feed censuses are tenant-scoped observations — they prove this account's shapes at capture time, never integrated tenants' (captured 2026-07-21). |
+| GeoTab | LogRecord feed census (2,000/2,000 every key, no nulls): `dateTime` (RFC3339 str — the event time), `device {id: str}`, `id` (str), `latitude`/`longitude` (floats), `speed` (bare int on every record). NO per-record `version` — the active append-only feed. Volume >50,000/day (a 50,000-record page did not cover one day); `resultsLimit` 50,000 honored (captured 2026-07-21). |
+| GeoTab | StatusData feed census (2,000/2,000 every key, no nulls): `controller` (STRING-OR-OBJECT — the initial one-hour census saw only str; the 2026-07-21 live proof's 50,000-record full walk split it 49,745 `"ControllerNoneId"` sentinel strings / 255 `{id}` objects, the Trip UnknownDriverId mechanism verbatim; a census-scope lesson: an hour window can hide a whole arm), `data` (MIXED int\|float — the diagnostic value, modeled float), `dateTime` (the event time), `device {id: str}`, `diagnostic {id: str}`, `id` (str), and — unlike LogRecord — a per-record `version` (str) on this active feed, mirrored. Volume ~24,500/hour; `resultsLimit` 50,000 (captured 2026-07-21). |
+| GeoTab | FillUp feed census (100/100 every key, no nulls): `confidence` a comma-joined detection-method token list as ONE str (e.g. `'FuelLevel, TripStop'`); `cost` 0.0 on ALL records and `fuelTransactions` an EMPTY list on ALL records (the estimates-only tenant — the list excluded as value-unobservable); `currencyCode` str; `dateTime` the event time; `derivedVolume` MIXED int\|float with an observed `-1.0` sentinel, mirrored verbatim; `device {id}`; `distance` int\|float; `driver` object-or-`"UnknownDriverId"` (87/100 the `{id, isDriver}` ref — the Trip string-or-object mechanism); `id`; `location {x, y}` floats; `odometer` int\|float; `productType` `'Unknown'` on all (census-open); `tankCapacity {source: str (EstimateFuelLevel/DiagnosticTankCapacity/Unknown — census-open), volume: int\|float}`; `tankLevelExtrema {maximaPoint/minimaPoint {source, dateTime, data}}`; `totalFuelUsed` float; `version` str; `volume` int\|float. `resultsLimit`: 10,000 is the DOCUMENTED cap; a 50,000 request was ACCEPTED at the tenant's whole 380-record population — the cap unprobeable, the documented figure declared (captured 2026-07-21). |
+| GeoTab | FuelAndEnergyUsed feed census (2,000/2,000 every key, no nulls): `confidence` str (`'None'` 1,994/2,000, `'FuelUsedInconsistent'` 6 — census-open), `dateTime` (the event time), `device {id}`, `id`, `totalFuelUsed` int\|float, `totalIdlingFuelUsedL` int\|float, `version` str. **`FuelUsed` observed IDENTICAL to this surface** — same ids, same values, week-wide — and provider-documented as its predecessor: `FuelUsed` is not ported (captured 2026-07-21). |
+| GeoTab | FuelTaxDetail feed census (every key on all sampled records, 100–300 per key, no nulls): `authority`/`jurisdiction` strs (census-open); `device {id}`; `driver` object-or-`"UnknownDriverId"`; enter/exit `GpsOdometer` floats, `Odometer` int\|float, `Latitude`/`Longitude` floats, `enterTime`/`exitTime` RFC3339 strs (`enterTime` the event time — the segment materializes where it begins); `hasHourlyData` bool beside five hourly arrays (`hourlyGpsOdometer`/`hourlyLatitude`/`hourlyLongitude` list[float], `hourlyIsOdometerInterpolated` list[bool], `hourlyOdometer` list[int\|float]) which may ALL be EMPTY lists — present, zero elements; four odometer/interp/negligible booleans; `id`; and `versions` — a LIST of 16-hex component version tokens, this type's version identity. `resultsLimit` 50,000 (captured 2026-07-21). |
 | Samsara | 429 with fractional `Retry-After` (e.g. `0.40235`); 401 body is `{"message": ...}`; 5xx bodies are plain strings, never JSON. |
 | Samsara | Success responses carry NO rate-limit headers (`Date`/`Content-Type`/`Content-Length`/`Connection`/`Request-Id`/`Strict-Transport-Security` only) — the Motive posture: the real budget is unobservable outside a 429, so the config's self-limiting default carries the load. `Request-Id` is the support correlation handle (captured 2026-07-17). |
 | Samsara | `/fleet/vehicles` cursor mechanics proven live: the `after` advance continued across a real page boundary with no overlap or loss (ids ascend numerically straight across it), a fresh `endCursor` per page, and the TERMINAL page carries `hasNextPage: false` beside an EMPTY-STRING `endCursor` — not absent, not null — the shape the decoder's promised-continuation guard is calibrated against. The documented 512 `limit` maximum was honored exactly (608-vehicle fleet: 512 + 96) (captured 2026-07-17). |
@@ -3785,7 +3881,16 @@ resolution (item 1, done).
    envelope, its stamping helper promoted into the shared
    `decoders/_window_stamp.py` with two providers at birth). **The
    Motive legacy queue is COMPLETE 2026-07-21** — every legacy-hub
-   Motive endpoint is shipped.* The per-endpoint
+   Motive endpoint is shipped. **GeoTab feed wave one shipped
+   2026-07-21** — the five original feed entities (`log_records`,
+   `status_data`, `fill_ups`, `fuel_and_energy_used` under the wire's
+   own vocabulary, `fuel_tax_details`) as the first verticals over the
+   feed machinery, per their §8 decision block: whole-page-total
+   censuses → all-required mirrors, the estimates-only-tenant caveat
+   on the fuel three, the `FuelUsed` non-port, the FillUp 10,000
+   documented-cap dual provenance, and ZERO shared-machinery changes —
+   the machinery's first vertical wave landed on declarations alone.*
+   The per-endpoint
    inventory and port queue are tracked in `ENDPOINTS.md` (added
    2026-07-17), updated in the same change as any endpoint addition.
 8. **Polish phase, gated on a stable public surface:** full-tree ceremony

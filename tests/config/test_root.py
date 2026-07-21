@@ -504,6 +504,16 @@ class TestExampleFile:
         geotab = config.providers.geotab
         assert geotab is not None
         assert geotab.auth is not None
-        assert geotab.endpoints == ()  # devices ships commented out
+        assert geotab.endpoints == (
+            'devices',
+            'users',
+            'trips',
+            'exception_events',
+            'log_records',
+            'status_data',
+            'fill_ups',
+            'fuel_and_energy_used',
+            'fuel_tax_details',
+        )
         expected = resolve_path(tmp_path) / '.fleetpull' / 'state.sqlite3'
         assert config.state.database_path == expected

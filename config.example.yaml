@@ -164,15 +164,25 @@ providers:
       database: exampledb
       # server: my.geotab.com              # optional; the authentication host
 
-    # The endpoints to sync, by catalog name. Uncomment to enable GeoTab.
-    # endpoints:
-    #   - devices
-    #   - trips
+    # The endpoints to sync, by catalog name. The feed endpoints
+    # (log_records through fuel_tax_details) drive GeoTab's GetFeed
+    # version-token stream into append-only storage.
+    endpoints:
+      - devices
+      - users
+      - trips
+      - exception_events
+      - log_records
+      - status_data
+      - fill_ups
+      - fuel_and_energy_used
+      - fuel_tax_details
 
     # Per-provider window knobs for watermark endpoints (GeoTab trips and
-    # exception_events), in whole days. Optional overrides: a key set here beats sync's package-wide
-    # value, which beats this default. The lookback margin is also what
-    # absorbs GeoTab's Trip recalculation.
+    # exception_events; the feed endpoints resume from a version token and
+    # take no window), in whole days. Optional overrides: a key set here
+    # beats sync's package-wide value, which beats this default. The
+    # lookback margin is also what absorbs GeoTab's Trip recalculation.
     # lookback_days: 7
     # cutoff_days: 0
 
@@ -183,6 +193,14 @@ providers:
     #   requests_per_period: 650
     #   period_seconds: 60.0
     #   burst: 100
+    #   max_concurrency: 2
+
+    # The GetFeed method-class budget the feed endpoints spend from
+    # (~60/min, the 2026-07-21 header-decrement probe).
+    # feed_rate_limit:
+    #   requests_per_period: 60
+    #   period_seconds: 60.0
+    #   burst: 10
     #   max_concurrency: 2
 
     # The Authenticate method-class budget: 10/min (June 2026 capture;
