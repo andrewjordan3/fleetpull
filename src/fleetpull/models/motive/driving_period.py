@@ -1,4 +1,4 @@
-# src/fleetpull/models/motive/driving_periods.py
+# src/fleetpull/models/motive/driving_period.py
 """The Motive driving-period response model (captured 2026-07-15).
 
 One record per contiguous driving span from ``GET /v1/driving_periods``.
@@ -23,7 +23,7 @@ from datetime import datetime
 from pydantic import Field
 
 from fleetpull.model_contract import ResponseModel
-from fleetpull.models.motive.shared import DriverSummary, VehicleSummary
+from fleetpull.models.motive.shared import UserSummary, VehicleSummary
 
 __all__: list[str] = ['DrivingPeriod']
 
@@ -71,7 +71,7 @@ class DrivingPeriod(ResponseModel):
     duration: float
     start_kilometers: float
     end_kilometers: float | None = None
-    driver: DriverSummary | None = None
+    driver: UserSummary | None = None
     vehicle: VehicleSummary
     origin: str | None = None
     origin_lat: float | None = None

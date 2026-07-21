@@ -27,6 +27,8 @@ REST over `https://api.gomotive.com`, static `X-API-Key` header
 | `vehicle_locations` | `GET /v3/vehicle_locations/{vehicle_id}` | windowed watermark | `located_at` | Fans out per vehicle over the `vehicle_ids` roster; unpaginated per fetch. Day-granular `start_date`/`end_date`, inclusive both ends. Documented 3-month range max. The id-less collection endpoint is a different animal (active-only last-known snapshot) and is deliberately not this history source. |
 | `driving_periods` | `GET /v1/driving_periods` | windowed watermark | `start_time` | Fleet-wide, offset-paginated (page size 100). Window matching START-anchored on UTC days. Loud 30-day range cap (HTTP 400). |
 | `idle_events` | `GET /v1/idle_events` | windowed watermark | `start_time` | Fleet-wide, offset-paginated (page size 100). Window matching OVERLAP-anchored on **company-local** days — the wire window pads one day each side and the true UTC window trims post-fetch. No range cap observed; chunking stays 30-day-bounded anyway. |
+| `groups` | `GET /v1/groups` | snapshot | — | The vehicles template verbatim: page-numbered wrapped-list pagination at the configured page size (50 and 100 both honored live). Whole-population census (152 records, every key on all 152) made every `Group` field required; `parent_id` is null on root groups (the groups form a tree). The owner ref's `username`/`driver_company_id` excluded as never-populated (value-unobservable — DESIGN §8). No roster. |
+| `users` | `GET /v1/users` | snapshot | — | The vehicles template verbatim; the unfiltered listing is the whole population (2,665-record census, deactivated accounts included — no sweep). ONE dataset despite the perfectly role-partitioned shape: driver records (2,359) carry a driver-only key block absent — not null — on admin (32) / fleet_user (274) records, and the `role` column carries the split (DESIGN §8). Six never-populated keys excluded as value-unobservable; census-open `role`/`status` vocabularies stay plain strs. No roster. |
 
 ### GeoTab
 
@@ -94,8 +96,8 @@ probe-then-build vertical:
 
 | Endpoint | Legacy wire surface | Status |
 |---|---|---|
-| `groups` | `/v1/groups` | deferred |
-| `users` | `/v1/users` | deferred |
+| `groups` | `/v1/groups` | **shipped 2026-07-21** |
+| `users` | `/v1/users` | **shipped 2026-07-21** (one dataset; the role-partitioned shape rides the `role` column — DESIGN §8) |
 | `vehicle_utilization` | `/v2/vehicle_utilization` | deferred — documented company-local rollup timestamps: a documentation obligation on the mirror (verbatim timestamps, the timezone caveat in the model docstring) plus a window-matching probe question |
 | `driver_utilization` | `/v2/driver_utilization` | deferred — same rollup-timezone obligation |
 

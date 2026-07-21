@@ -1900,6 +1900,71 @@ pair implements them.
    range cap was probed on this family (the fixed 1-day unit sits far
    inside any plausible cap anyway).
 
+### Motive `groups` / `users` probe-settled decisions (2026-07-21)
+
+Settled by the 2026-07-21 live probe session (the captured rows below —
+one session for the pair); the port build implements them.
+
+1. **Both port as plain whole-population snapshots on the vehicles
+   template** — `StorageKind.SINGLE`, `SnapshotMode`, `SingleFetch`, the
+   shared static-GET builder, and the existing Motive wrapped-list
+   decoder bound with each endpoint's wrapper keys (`groups`/`group`,
+   `users`/`user`) at the configured `records_per_page` (50 and 100 both
+   honored live). No roster, no window, zero shared-machinery changes.
+2. **Whole-population censuses drive requiredness.** `/v1/groups` was
+   walked in full (152 records, 4 pages at 50): every key present on
+   all 152, so every modeled `Group` field is required, nullability per
+   census (`parent_id` null on roots — the groups form a tree;
+   `GroupOwnerRef.email` null-or-value). `/v1/users` was walked in full
+   (2,665 records, 27 pages at 100): the shared block, present on every
+   record of every role, is required (nullable exactly where null was
+   observed); see decision 3 for the rest.
+3. **The users shape is perfectly role-partitioned, and it stays ONE
+   dataset — the `role` column carries the split.** `role='driver'`
+   records (2,359) carry a driver-only key block on top of the shared
+   block; `admin` (32) and `fleet_user` (274) records carry exactly the
+   shared block; ZERO partial-presence keys within any role. This is
+   the Samsara drivers decision-1 reasoning with the split inverted:
+   there the partition was a provider filter quirk over one entity
+   (two sweeps, one dataset); here it is one population with a
+   role-dependent record shape (one fetch, one dataset) — splitting
+   into per-role endpoints would push the union onto every consumer and
+   triple the state surface for no semantic gain. On the model the
+   driver-only keys are OPTIONAL (absent, not null, on non-drivers),
+   with nullability per the census inside the driver role. The
+   always-present partition, exactly: 22 keys on every record (20
+   modeled), `admin`/`fleet_user` add 3 of their own (all
+   never-populated), drivers add 39 (38 modeled). `joined_at` is a
+   DATE-ONLY wire value (`YYYY-MM-DD`; a whole-population value census
+   found 34 of 2,359 drivers populated), recovered as `date | None` —
+   the one driver key whose value evidence arrived after the presence
+   census.
+4. **Never-populated keys are EXCLUDED as value-unobservable.** Six
+   `/v1/users` keys were present but never populated across the whole
+   population (`external_ids` and `phone_ext` on every record;
+   `expires_at`, `phone2`, `phone_country_code2` on the
+   `admin`/`fleet_user` shape; `associated_dispatcher_id` on the driver
+   shape) — no honest dtype exists, so modeling one would be doc-driven
+   invention (the driving_periods `source`/`*_hvb_*` precedent). They
+   join the models when a capture types them; `extra='ignore'` makes
+   exclusion exactly "don't model it". Contrast `joined_at`
+   (value-OBSERVED, hence modeled). The `/v1/groups` owner-ref
+   `username`/`driver_company_id` sub-keys — null on all 152 group
+   records — are NOT excluded: the owner ref rides the shared
+   `UserSummary` (the `shared.py` promotion rule; renamed from
+   `DriverSummary` with its `user_id` field, since the compact-user
+   shape now carries three surfaces), and both keys are value-observed
+   on the driving-period/idle-event driver references, so the
+   value-unobservable rationale dissolves under the shared shape —
+   they simply read null on this surface.
+5. **Census-open vocabularies stay plain `str`.** `role`
+   (`driver`/`admin`/`fleet_user`) and `status` (`active`: 1,020 /
+   `deactivated`: 1,645) are census-closed only, NOT API-enforced on
+   output — nothing rejects a new value loudly, so an enum would crash
+   on vocabulary growth a mirror must absorb; likewise `duty_status`,
+   `eld_mode`, `cycle`, and `violation_alerts` (the UserSummary
+   posture).
+
 ### The exception hierarchy (implemented: `exceptions.py`)
 
 The operational errors consumers catch, mirroring the classification
@@ -2028,6 +2093,8 @@ budgets → `RetriesExhaustedError`, failed auth paths →
 | Motive | `/v1/idle_events` window matching is OVERLAP-anchored on **company-local** day boundaries, not UTC — `start_date`/`end_date` are interpreted at UTC−5, matching the company-local `time_zone` the account's `/v1/companies` capture carried (a zone at a UTC−5 offset — the linkage behind the rollup-timezone documentation obligation): a single-local-day probe's earliest end landed 05:14:58Z against the predicted ≥ 05:00:00Z boundary with prior-local-evening overlappers present, and two-day windows returned records lying entirely outside the window on UTC terms. Two sibling endpoints, same param names, different anchor AND different timezone semantics (prediction-confirmed, captured 2026-07-15). |
 | Motive | The 30-day range cap is real and LOUD on `/v1/driving_periods` — HTTP 400, `{"error_message": "Date range cannot be greater than 30 days"}`, with a 30-day delta accepted exactly (the limit counts the date delta) — and is NOT enforced on `/v1/idle_events`, which honored a 35-day window to its final record. Never generalize a per-endpoint cap across siblings (captured 2026-07-15). |
 | Motive | Event-record mechanics, both endpoints: completed `driving_periods` reproduce `duration = end_time − start_time` exactly (float seconds); the in-progress shape carries `status: "in_progress"`, null `end_time`/`end_kilometers`/`distance`, an EMPTY-STRING `destination` beside null destination coordinates, and a fractional running `duration` counter. `start_time` was never observed null. Sort orders differ per endpoint (driving: start desc; idle: end asc); a past-the-end page returns 200 with an empty list and intact pagination echo (`total` = records); success responses carry NO rate-limit headers (the real budget is unobservable outside a 429); wide windows run 12–18 s with one observed 30 s client timeout (captured 2026-07-15). |
+| Motive | `/v1/groups` verified live: the standard wrapped-list envelope (`{"groups": [{"group": {...}}]}` + `pagination {per_page, page_no, total}`), `per_page` 50 and 100 both honored. WHOLE POPULATION walked: 152 records, 4 pages at 50, every key present on all 152 — `parent_id` int-or-null (the groups form a tree), the `user` owner ref's `username` and `driver_company_id` null on ALL 152 (value-unobservable; excluded from the model) (captured 2026-07-21). |
+| Motive | `/v1/users` verified live: wrapper `users`/`user`, same envelope and pagination, `per_page` 50 and 100 both honored. WHOLE POPULATION walked: 2,665 records, 27 pages at 100. The shape is PERFECTLY role-partitioned — `role='driver'` (2,359) carries a driver-only key block on top of the shared block; `admin` (32) and `fleet_user` (274) carry exactly the shared block; zero partial-presence keys within any role. `status` census: `active` 1,020 / `deactivated` 1,645 — the complete listing includes deactivated accounts, no sweep needed. The always-present partition: 22 keys on every record, +3 on `admin`/`fleet_user`, +39 on drivers; six keys never populated across their carrying shapes (`external_ids`/`phone_ext` everywhere, `expires_at`/`phone2`/`phone_country_code2` on non-drivers, `associated_dispatcher_id` on drivers). `joined_at` is DATE-ONLY (`YYYY-MM-DD`), 34/2,359 populated; `cycle2` 37 populated with HOS tokens like `70_8_2020`; `duty_status` {on_duty, off_duty, driving}, `eld_mode` {logs, none, exempt}, `violation_alerts` {never, 1_hour, 45/30/15_minutes} (captured 2026-07-21). |
 
 The `updated_after` finding generalizes into a standing rule: **encode probed
 provider behavior, never documented behavior alone.** Motive silently
@@ -2049,7 +2116,7 @@ derivation for free.
 
 Flattening: default ON, double-underscore-joined. Nested objects flatten to double-underscore-joined columns (`parent__child`, `parent__child__leaf`); a top-level field keeps its bare name. The join is double because field names themselves contain single underscores — a single separator is ambiguous about the level boundary and would let a top-level field collide with a nested one — and the prefix is applied uniformly (never conditionally on collision), so a column name is a stable function of the access path rather than something that can silently rename when an unrelated field is added. Arrays cannot flatten without exploding rows; default representation is `pl.List` of the inner scalar, overridable per endpoint. The line is structural, never semantic.
 
-Schema pipeline (`records/`): Schema derivation and flattening share one field walk (`records/fields.py`), so a column's name (type side) and its value (value side) cannot drift. Auto-derivation maps the closed scalar set, enums (→`pl.String` — the model already enforces membership), and `list[scalar]` (→`pl.List`), and recurses into nested models to flatten them. A leaf the deriver cannot place — an `Any`, a `dict`, a `list` of models, a multi-arm union — raises (fail fast); the per-endpoint `schema_overrides` escape hatch remains the planned answer for genuine derivation gaps but is unbuilt until a real consumer needs it, at which point it is built complete (the dtype side and the value-serialization side together — a schema-only override is a half-built hatch that errors at construction). There is no runtime required-column check: Pydantic guarantees every validated record carries every declared field, and constructing the frame with the explicit derived schema makes every column present by construction — the guarantee is a test invariant, not a runtime step. Value-level wire-cleaning (a stringly value Pydantic's lax mode cannot coerce) is not a records concern either; it lives on the model as a `field_validator(mode='before')`, under the rule that recovering the declared type is structural (allowed on the mirror) while reshaping meaning is semantic (kept off it). Empty strings normalize to null at the DataFrame boundary, while the models preserve `""` faithfully from the wire.
+Schema pipeline (`records/`): Schema derivation and flattening share one field walk (`records/fields.py`), so a column's name (type side) and its value (value side) cannot drift. Auto-derivation maps the closed scalar set (int, float, str, bool, `date` → `pl.Date` — added 2026-07-21 with the first date-only wire value, Motive users `joined_at` — `datetime` → tz-aware microsecond UTC, `timedelta` → microsecond Duration), enums (→`pl.String` — the model already enforces membership), and `list[scalar]` (→`pl.List`), and recurses into nested models to flatten them. A leaf the deriver cannot place — an `Any`, a `dict`, a `list` of models, a multi-arm union — raises (fail fast); the per-endpoint `schema_overrides` escape hatch remains the planned answer for genuine derivation gaps but is unbuilt until a real consumer needs it, at which point it is built complete (the dtype side and the value-serialization side together — a schema-only override is a half-built hatch that errors at construction). There is no runtime required-column check: Pydantic guarantees every validated record carries every declared field, and constructing the frame with the explicit derived schema makes every column present by construction — the guarantee is a test invariant, not a runtime step. Value-level wire-cleaning (a stringly value Pydantic's lax mode cannot coerce) is not a records concern either; it lives on the model as a `field_validator(mode='before')`, under the rule that recovering the declared type is structural (allowed on the mirror) while reshaping meaning is semantic (kept off it). Empty strings normalize to null at the DataFrame boundary, while the models preserve `""` faithfully from the wire.
 
 ---
 
@@ -2422,7 +2489,7 @@ fleetpull/
     registry.py    # RosterRegistry: RosterKey -> RosterDefinition (forward lookup)
   models/          # pure API mirrors per provider (Motive/Samsara ported from fleet-telemetry-hub)
     motive/        # the Motive model package — a directory per provider (§11 prose below)
-      shared.py    # DriverSummary, EldDeviceInfo — embedded shapes shared across endpoints
+      shared.py    # UserSummary, EldDeviceInfo — embedded shapes shared across endpoints
       vehicles.py  # Vehicle snapshot record (+ AvailabilityDetails / AvailabilityStatus / VehicleStatus)
       vehicle_locations.py # VehicleLocation breadcrumb record (/v3/vehicle_locations)
       driving_periods.py  # DrivingPeriod span record (/v1/driving_periods)
@@ -3402,7 +3469,12 @@ resolution (item 1, done).
    window-stamping decoder sharing the cursor verdict via the
    same-file `_cursor_page_advance` extraction). **The Samsara legacy
    wave is COMPLETE 2026-07-21** — every legacy-hub Samsara endpoint
-   is shipped.* The per-endpoint
+   is shipped. The Motive `groups`/`users` snapshot pair shipped
+   2026-07-21 per its §8 decision block (whole-population wrapped-list
+   snapshots on the vehicles template; one users dataset with the
+   `role` column carrying the role-partitioned shape; zero
+   shared-machinery changes), leaving the utilization rollup pair as
+   the only deferred Motive legacy endpoints.* The per-endpoint
    inventory and port queue are tracked in `ENDPOINTS.md` (added
    2026-07-17), updated in the same change as any endpoint addition.
 8. **Polish phase, gated on a stable public surface:** full-tree ceremony

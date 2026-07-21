@@ -3,14 +3,16 @@
 
 Walks the shared field enumeration (``records/fields.py``) and maps each
 leaf to a Polars dtype: ``int``/``float``/``str``/``bool`` to their
-obvious scalars, ``datetime`` to tz-aware microsecond UTC, ``timedelta``
+obvious scalars, ``date`` to a calendar-date column (a DATE-ONLY wire
+value carries no instant to recover -- the Motive users ``joined_at``
+precedent), ``datetime`` to tz-aware microsecond UTC, ``timedelta``
 to a microsecond ``Duration``, enums to ``String``, ``list[scalar]`` to
 ``List`` of the inner dtype. Depends only on the model class, not on any
 data, so the schema is computable before a record is fetched. A leaf the
 map cannot place raises (fail fast); there is no override path yet.
 """
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import polars as pl
 from pydantic import BaseModel
@@ -27,6 +29,7 @@ _SCALAR_TO_POLARS: dict[type, pl.DataType] = {
     float: pl.Float64(),
     str: pl.String(),
     bool: pl.Boolean(),
+    date: pl.Date(),
     datetime: pl.Datetime(time_unit='us', time_zone='UTC'),
     timedelta: pl.Duration(time_unit='us'),
 }

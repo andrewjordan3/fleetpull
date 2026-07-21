@@ -1,4 +1,4 @@
-# src/fleetpull/models/motive/idle_events.py
+# src/fleetpull/models/motive/idle_event.py
 """The Motive idle-event response model (captured 2026-07-15).
 
 One record per engine-idle interval from ``GET /v1/idle_events``. Both
@@ -21,8 +21,8 @@ from pydantic import Field
 
 from fleetpull.model_contract import ResponseModel
 from fleetpull.models.motive.shared import (
-    DriverSummary,
     EldDeviceInfo,
+    UserSummary,
     VehicleSummary,
 )
 
@@ -71,7 +71,7 @@ class IdleEvent(ResponseModel):
     rg_km: float
     rg_match: bool
     end_type: str
-    driver: DriverSummary | None = None
+    driver: UserSummary | None = None
     vehicle: VehicleSummary
     eld_device: EldDeviceInfo
     location: str

@@ -1,8 +1,9 @@
+# src/fleetpull/models/motive/vehicle.py
 """Motive vehicles-endpoint response model (``/v1/vehicles``).
 
 Holds the ``Vehicle`` record and the shapes used only by it —
 ``AvailabilityDetails`` and the ``VehicleStatus`` / ``AvailabilityStatus``
-enums. Cross-endpoint embedded shapes (``DriverSummary``, ``EldDeviceInfo``)
+enums. Cross-endpoint embedded shapes (``UserSummary``, ``EldDeviceInfo``)
 are imported from ``fleetpull.models.motive.shared``.
 
 Pure API mirrors — typed fields and nothing else. No use-case logic, no
@@ -20,7 +21,7 @@ from enum import StrEnum
 from pydantic import Field
 
 from fleetpull.model_contract import ResponseModel
-from fleetpull.models.motive.shared import DriverSummary, EldDeviceInfo
+from fleetpull.models.motive.shared import EldDeviceInfo, UserSummary
 
 __all__: list[str] = [
     'AvailabilityDetails',
@@ -151,10 +152,10 @@ class Vehicle(ResponseModel):
     created_at: datetime
     updated_at: datetime
 
-    permanent_driver: DriverSummary | None = None
+    permanent_driver: UserSummary | None = None
     availability_details: AvailabilityDetails | None = None
     eld_device: EldDeviceInfo | None = None
-    current_driver: DriverSummary | None = None
+    current_driver: UserSummary | None = None
 
     carb_ctc_test_enabled: bool | None = None
     carb_ctc_emission_status: str | None = None

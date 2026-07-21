@@ -1,11 +1,11 @@
-"""Tests for fleetpull.models.motive.vehicles."""
+"""Tests for fleetpull.models.motive.vehicle."""
 
 from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
 
-from fleetpull.models.motive.vehicles import (
+from fleetpull.models.motive.vehicle import (
     AvailabilityDetails,
     AvailabilityStatus,
     Vehicle,
@@ -106,7 +106,7 @@ class TestVehicle:
         assert vehicle.eld_device is not None
         assert vehicle.eld_device.device_id == _DEVICE_ID
         assert vehicle.current_driver is not None
-        assert vehicle.current_driver.driver_id == _DRIVER_ID
+        assert vehicle.current_driver.user_id == _DRIVER_ID
         assert vehicle.availability_details is not None
         assert (
             vehicle.availability_details.availability_status

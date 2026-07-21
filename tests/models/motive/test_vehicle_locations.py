@@ -1,11 +1,11 @@
-"""Tests for fleetpull.models.motive.vehicle_locations."""
+"""Tests for fleetpull.models.motive.vehicle_location."""
 
 from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
 
-from fleetpull.models.motive.vehicle_locations import (
+from fleetpull.models.motive.vehicle_location import (
     VehicleLocation,
     VehicleLocationType,
 )
@@ -57,7 +57,7 @@ def _canonical_record() -> JsonObject:
 
 
 def _driver_dict() -> JsonObject:
-    """A synthetic DriverSummary wire dict for the populated-driver case."""
+    """A synthetic UserSummary wire dict for the populated-driver case."""
     return {
         'id': _DRIVER_ID,
         'first_name': 'Test',
@@ -107,7 +107,7 @@ class TestVehicleLocation:
         record['driver'] = _driver_dict()
         location = VehicleLocation.model_validate(record)
         assert location.driver is not None
-        assert location.driver.driver_id == _DRIVER_ID
+        assert location.driver.user_id == _DRIVER_ID
         assert location.driver.first_name == 'Test'
         assert location.driver.email == 'tdriver@example.com'
 

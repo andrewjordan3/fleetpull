@@ -1,7 +1,8 @@
+# src/fleetpull/models/motive/shared.py
 """Motive embedded shapes shared across more than one endpoint.
 
 This module holds the per-record building blocks that appear on multiple
-Motive responses — ``DriverSummary`` and ``EldDeviceInfo`` on the vehicle
+Motive responses — ``UserSummary`` and ``EldDeviceInfo`` on the vehicle
 and vehicle-location records (and the driving-period and idle-event
 records), ``VehicleSummary`` on the driving-period and idle-event records.
 Endpoint-private sub-shapes live in their endpoint module, not here; a
@@ -16,18 +17,24 @@ from pydantic import BeforeValidator, Field
 from fleetpull.model_contract import ResponseModel, empty_str_to_none
 
 __all__: list[str] = [
-    'DriverSummary',
     'EldDeviceInfo',
+    'UserSummary',
     'VehicleSummary',
 ]
 
 
-class DriverSummary(ResponseModel):
-    """Abbreviated driver reference embedded in other Motive records.
+class UserSummary(ResponseModel):
+    """Abbreviated user reference embedded in other Motive records.
 
-    The compact driver shape that appears when a driver is referenced from
-    another entity (e.g. ``permanent_driver`` / ``current_driver`` on the
-    vehicle record). The full driver record comes from the users endpoint.
+    The compact user-account shape that appears when a user is referenced
+    from another entity: the vehicle record's ``permanent_driver`` /
+    ``current_driver``, the driving-period and idle-event ``driver``
+    references, and the group record's owner ``user``. The full record
+    comes from the users endpoint. Optionality is union-lax across the
+    carrying surfaces (a key populated on one surface may be null on
+    another -- e.g. ``username`` carries values on driver references and
+    was null on all 152 group owners); each consumer's docstring pins its
+    own surface's census.
 
     ``status`` and ``role`` are modeled as free-form ``str`` rather than
     constrained enums: Motive documents both as plain strings, fleetpull
@@ -35,7 +42,7 @@ class DriverSummary(ResponseModel):
     faithful and evolution-safe.
 
     Attributes:
-        driver_id: Motive's internal driver identifier (wire key ``id``).
+        user_id: Motive's internal user identifier (wire key ``id``).
         first_name: Driver's first name.
         last_name: Driver's last name.
         username: Login username; null when unset.
@@ -46,7 +53,7 @@ class DriverSummary(ResponseModel):
         role: Free-form user-role string; null when absent.
     """
 
-    driver_id: int = Field(alias='id')
+    user_id: int = Field(alias='id')
     first_name: str
     last_name: str
     username: str | None = None

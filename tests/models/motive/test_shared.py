@@ -1,8 +1,8 @@
 """Tests for fleetpull.models.motive.shared."""
 
 from fleetpull.models.motive.shared import (
-    DriverSummary,
     EldDeviceInfo,
+    UserSummary,
     VehicleSummary,
 )
 from fleetpull.vocabulary import JsonValue
@@ -23,9 +23,9 @@ class TestEldDeviceInfo:
         assert device.model == 'lbb-3.6ca'
 
 
-class TestDriverSummary:
+class TestUserSummary:
     def test_validates_with_free_form_status_and_role(self) -> None:
-        driver: DriverSummary = DriverSummary.model_validate(
+        driver: UserSummary = UserSummary.model_validate(
             {
                 'id': _DRIVER_ID,
                 'first_name': 'Sam',
@@ -34,12 +34,12 @@ class TestDriverSummary:
                 'role': 'whatever-role',
             }
         )
-        assert driver.driver_id == _DRIVER_ID
+        assert driver.user_id == _DRIVER_ID
         assert driver.status == 'whatever-motive-sends'
         assert driver.role == 'whatever-role'
 
     def test_optional_fields_default_none(self) -> None:
-        driver: DriverSummary = DriverSummary.model_validate(
+        driver: UserSummary = UserSummary.model_validate(
             {'id': _DRIVER_ID, 'first_name': 'Sam', 'last_name': 'Synthetic'}
         )
         assert driver.username is None

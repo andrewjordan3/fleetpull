@@ -1,8 +1,8 @@
-# src/fleetpull/models/motive/vehicle_locations.py
+# src/fleetpull/models/motive/vehicle_location.py
 """Motive vehicle-locations-endpoint response model (``/v3/vehicle_locations``).
 
 Holds the ``VehicleLocation`` breadcrumb record and the ``VehicleLocationType``
-enum used only by it. Cross-endpoint embedded shapes (``DriverSummary``,
+enum used only by it. Cross-endpoint embedded shapes (``UserSummary``,
 ``EldDeviceInfo``) are imported from ``fleetpull.models.motive.shared``.
 
 Pure API mirrors — typed fields and nothing else. No use-case logic, no derived
@@ -20,7 +20,7 @@ from enum import StrEnum
 from pydantic import Field
 
 from fleetpull.model_contract import ResponseModel
-from fleetpull.models.motive.shared import DriverSummary, EldDeviceInfo
+from fleetpull.models.motive.shared import EldDeviceInfo, UserSummary
 
 __all__: list[str] = [
     'VehicleLocation',
@@ -123,5 +123,5 @@ class VehicleLocation(ResponseModel):
     hvb_charge_source: str | None = None
     hvb_lifetime_energy_output: float | None = None
 
-    driver: DriverSummary | None = None
+    driver: UserSummary | None = None
     eld_device: EldDeviceInfo | None = None

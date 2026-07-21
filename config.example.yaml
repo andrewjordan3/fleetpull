@@ -92,6 +92,10 @@ providers:
     endpoints:
       - vehicles
       - vehicle_locations
+      - driving_periods
+      - idle_events
+      - groups
+      - users
 
     # base_url: https://api.gomotive.com   # optional; Motive's production host
     # records_per_page: 100                # optional; 1..100
