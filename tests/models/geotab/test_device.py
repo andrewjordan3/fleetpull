@@ -24,13 +24,13 @@ class TestDeviceValidation:
     def test_every_captured_shape_validates(self) -> None:
         validated = [Device.model_validate(record) for record in _ALL_SHAPES]
         assert [device.id for device in validated] == [
-            'bF7C22',
-            'bF7C19',
-            'bF7C24',
-            'bF7C1C',
-            'bF7C25',
-            'bF7C18',
-            'bF7C1F',
+            'b8E2',
+            'b8E7',
+            'b8F3',
+            'b8F4',
+            'b8F8',
+            'b91C',
+            'b9A4',
         ]
 
     def test_shape_poverty_lands_as_nulls_not_errors(self) -> None:
@@ -98,15 +98,15 @@ class TestDeviceFrame:
         assert frame['tmp_trailer_id'].null_count() == len(DEVICE_RECORDS)
 
     def test_absent_device_flags_blocks_land_as_nulls_in_the_frame(self) -> None:
-        # b107/b10A (no deviceFlags) and the trailer null every
-        # device_flags__* column; b101's row carries values. The trailer
+        # b8F8/b91C (no deviceFlags) and the trailer null every
+        # device_flags__* column; b8E2's row carries values. The trailer
         # also nulls custom_features__auto_hos (no customFeatures there).
         frame = models_to_dataframe(
             [Device.model_validate(record) for record in _ALL_SHAPES], Device
         )
         engine_allowed = frame['device_flags__is_engine_allowed'].to_list()
-        assert engine_allowed[0] is True  # b101, flags present
-        assert engine_allowed[-3:] == [None, None, None]  # b107, b10A, trailer
+        assert engine_allowed[0] is True  # b8E2, flags present
+        assert engine_allowed[-3:] == [None, None, None]  # b8F8, b91C, trailer
         auto_hos = frame['custom_features__auto_hos'].to_list()
         assert auto_hos[:6] == [True] * 6  # every tracked record
         assert auto_hos[-1] is None  # the trailer

@@ -2,20 +2,22 @@
 
 The windowed seek-walk boundary pair (six Trip records), the
 day-prefixed-TimeSpan record, and the zero-distance degenerate record --
-all Captured from live GeoTab and scrubbed through the established
-mapping, per the Data Hygiene convention (invented-``b`` ids -- the
-invented values, e.g. ``b6`` -> ``bF7C1C``; version tokens
-ordinally remapped preserving order; coordinates synthetic distinct
-pairs; timestamps, durations, distances, odometer, and engine-hours
-values kept VERBATIM -- they carry the arithmetic properties under
-test). The capture used ``resultsLimit: 3`` where production uses 5000.
+all Captured from live GeoTab and scrubbed before commit (entity ids
+are pure inventions carrying no mapping to any real identifier -- the
+structural properties are what the scrub preserves: ordering,
+referential integrity with the devices capture set, distinctness;
+version tokens ordinally remapped preserving order; coordinates
+synthetic distinct pairs; timestamps, durations, distances, odometer,
+and engine-hours values kept VERBATIM -- they carry the arithmetic
+properties under test). The capture used ``resultsLimit: 3`` where
+production uses 5000.
 Load-bearing properties preserved: ids strictly ascending within and
 across the page pair, page 2's request offset equal to page 1's last
 record id, versions ascending in id order, every paging-record stop
 inside ``[2026-07-06, 2026-07-13)`` (``TripSearch`` matches by STOP
 time — prediction-confirmed 2026-07-15; the starts also fell inside
 this capture's window but carry no retrieval guarantee), both driver
-variants present, and ``bF7C1C`` as the device on both sides of the page
+variants present, and ``b8F4`` as the device on both sides of the page
 boundary.
 
 Shared by the Trip model tests, the seek-decoder search-survival
@@ -77,7 +79,7 @@ TRIP_SEEK_PAGE_2_REQUEST_JSON: str = r"""
         "sort": {
             "sortBy": "id",
             "sortDirection": "asc",
-            "offset": "bF7C05"
+            "offset": "b7F3A83E5"
         },
         "credentials": {
             "database": "exampledb",
@@ -93,7 +95,7 @@ TRIP_SEEK_PAGE_2_REQUEST: dict[str, JsonValue] = json.loads(
 
 # Captured: page 1 response -- three Trips on two devices; both the
 # bare UnknownDriverId sentinel and the object-form driver appear.
-# The second record (bF7C08) is TRIP_FULL_RECORD: it carries
+# The second record (b7F3A8266) is TRIP_FULL_RECORD: it carries
 # every modeled field including the object-form driver.
 TRIP_SEEK_PAGE_1_RESPONSE_JSON: str = r"""
 {
@@ -130,11 +132,11 @@ TRIP_SEEK_PAGE_1_RESPONSE_JSON: str = r"""
             "workDrivingDuration": "00:00:00",
             "workStopDuration": "00:00:00",
             "device": {
-                "id": "bF7C13"
+                "id": "b8D9"
             },
             "driver": "UnknownDriverId",
             "version": "0000000000000201",
-            "id": "bF7C03"
+            "id": "b7F3A8210"
         },
         {
             "afterHoursDistance": 0.119007945,
@@ -168,14 +170,14 @@ TRIP_SEEK_PAGE_1_RESPONSE_JSON: str = r"""
             "workDrivingDuration": "00:00:00",
             "workStopDuration": "00:00:00",
             "device": {
-                "id": "bF7C13"
+                "id": "b8D9"
             },
             "driver": {
-                "id": "bF7C1A",
+                "id": "b4B82",
                 "isDriver": true
             },
             "version": "0000000000000202",
-            "id": "bF7C08"
+            "id": "b7F3A8266"
         },
         {
             "afterHoursDistance": 0.07463475,
@@ -209,11 +211,11 @@ TRIP_SEEK_PAGE_1_RESPONSE_JSON: str = r"""
             "workDrivingDuration": "00:00:00",
             "workStopDuration": "00:00:00",
             "device": {
-                "id": "bF7C1C"
+                "id": "b8F4"
             },
             "driver": "UnknownDriverId",
             "version": "0000000000000203",
-            "id": "bF7C05"
+            "id": "b7F3A83E5"
         }
     ],
     "jsonrpc": "2.0"
@@ -224,7 +226,7 @@ TRIP_SEEK_PAGE_1_RESPONSE: dict[str, JsonValue] = json.loads(
 )
 
 # Captured: page 2 response -- ids continue strictly ascending across
-# the boundary; b106 appears as the device on both sides of it.
+# the boundary; b8F4 appears as the device on both sides of it.
 TRIP_SEEK_PAGE_2_RESPONSE_JSON: str = r"""
 {
     "result": [
@@ -260,14 +262,14 @@ TRIP_SEEK_PAGE_2_RESPONSE_JSON: str = r"""
             "workDrivingDuration": "00:00:00",
             "workStopDuration": "00:00:00",
             "device": {
-                "id": "bF7C1C"
+                "id": "b8F4"
             },
             "driver": {
-                "id": "bF7C1E",
+                "id": "b4B67",
                 "isDriver": true
             },
             "version": "0000000000000204",
-            "id": "bF7C07"
+            "id": "b7F3A8472"
         },
         {
             "afterHoursDistance": 5.4301457,
@@ -301,14 +303,14 @@ TRIP_SEEK_PAGE_2_RESPONSE_JSON: str = r"""
             "workDrivingDuration": "00:00:00",
             "workStopDuration": "00:00:00",
             "device": {
-                "id": "bF7C1C"
+                "id": "b8F4"
             },
             "driver": {
-                "id": "bF7C1E",
+                "id": "b4B67",
                 "isDriver": true
             },
             "version": "0000000000000205",
-            "id": "bF7C04"
+            "id": "b7F3A84D9"
         },
         {
             "afterHoursDistance": 0.018614754,
@@ -342,11 +344,11 @@ TRIP_SEEK_PAGE_2_RESPONSE_JSON: str = r"""
             "workDrivingDuration": "00:00:00",
             "workStopDuration": "00:00:00",
             "device": {
-                "id": "bF7C0A"
+                "id": "b2E7A4"
             },
             "driver": "UnknownDriverId",
             "version": "0000000000000206",
-            "id": "bF7C06"
+            "id": "b7F3A8560"
         }
     ],
     "jsonrpc": "2.0"
@@ -392,11 +394,11 @@ TRIP_DAY_FORMAT_RECORD_JSON: str = r"""
     "workDrivingDuration": "00:03:55",
     "workStopDuration": "21:04:17",
     "device": {
-        "id": "bF7C0B"
+        "id": "b2E85C"
     },
     "driver": "UnknownDriverId",
     "version": "0000000000000207",
-    "id": "bF7C09"
+    "id": "b7F3A8C44"
 }"""
 
 TRIP_DAY_FORMAT_RECORD: JsonObject = json.loads(TRIP_DAY_FORMAT_RECORD_JSON)
@@ -435,14 +437,14 @@ TRIP_ZERO_DISTANCE_RECORD_JSON: str = r"""
     "workDrivingDuration": "00:00:00",
     "workStopDuration": "00:00:00",
     "device": {
-        "id": "bF7C0B"
+        "id": "b2E85C"
     },
     "driver": {
-        "id": "bF7C26",
+        "id": "b4BD1",
         "isDriver": true
     },
     "version": "0000000000000208",
-    "id": "bF7C02"
+    "id": "b7F3A8E12"
 }"""
 
 TRIP_ZERO_DISTANCE_RECORD: JsonObject = json.loads(TRIP_ZERO_DISTANCE_RECORD_JSON)
@@ -470,7 +472,7 @@ TRIP_RECORDS: list[JsonObject] = [
     *_result_records(TRIP_SEEK_PAGE_2_RESPONSE),
 ]
 
-# The designated full-shape record (page 1, second record, bF7C08):
+# The designated full-shape record (page 1, second record, b7F3A8266):
 # every modeled field present, driver in object form -- the mechanical
 # alias-trap test iterates the model's fields against it.
 TRIP_FULL_RECORD: JsonObject = TRIP_RECORDS[1]

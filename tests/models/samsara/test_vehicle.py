@@ -99,7 +99,7 @@ class TestVehicleValidation:
         assert vehicle.id == '278000000000001'
         assert vehicle.make == 'FORD'
         assert vehicle.model == 'F-550'
-        assert vehicle.vin == '4SYNTHV1N00000023'
+        assert vehicle.vin == '4SYNTHV1N00000014'
         assert vehicle.vehicle_regulation_mode == 'unregulated'
         assert vehicle.created_at_time == datetime(2019, 9, 13, 22, 32, 39, tzinfo=UTC)
         gateway = vehicle.gateway
@@ -121,7 +121,7 @@ class TestVehicleValidation:
         external = vehicle.external_ids
         assert isinstance(external, VehicleExternalIds)
         assert external.samsara_serial == 'GSYNAAA001'
-        assert external.samsara_vin == '4SYNTHV1N00000023'
+        assert external.samsara_vin == '4SYNTHV1N00000014'
 
     def test_the_assigned_driver_reference(self) -> None:
         validated = [Vehicle.model_validate(record) for record in VEHICLE_RECORDS]

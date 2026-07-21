@@ -3,14 +3,15 @@
 The three idling-rule records (the 2026-07-13 window capture), the two
 error envelopes the sort discrimination produced (2026-07-15), and the
 silent-empty response -- all Captured from live GeoTab and scrubbed
-through the Data Hygiene convention, per the Data Hygiene convention (the new
-``a``-prefix arm: ``aSYN`` + a zero-padded 19-digit counter, fixed
-width preserving captured order; device ``b5`` -> ``bF7C24``, the devices
-set's own image; versions ordinally remapped ``0x209``-``0x20b``
-preserving order; error-envelope GUIDs -> zero-GUID counters 9-10;
-timestamps, durations, distances, and the sentinel/state vocabulary
-VERBATIM -- they carry the arithmetic properties under test). The
-capture used ``resultsLimit: 3`` where production uses 5000.
+before commit (entity ids are pure inventions carrying no mapping to
+any real identifier: event ids on the ``aSYN`` + zero-padded-counter
+arm, fixed width preserving captured order; the one device reference
+keeps the devices capture set's id for it, the referential-integrity
+class under test; versions ordinally remapped preserving order;
+error-envelope GUIDs are zero-GUID counters; timestamps, durations,
+distances, and the sentinel/state vocabulary VERBATIM -- they carry
+the arithmetic properties under test). The capture used
+``resultsLimit: 3`` where production uses 5000.
 
 Load-bearing properties preserved: ``duration = activeTo - activeFrom``
 exactly on every record, including the third record's fractional-second
@@ -50,7 +51,7 @@ EXCEPTION_EVENTS_RESPONSE_JSON: str = r"""
                 "id": "RuleIdlingId"
             },
             "device": {
-                "id": "bF7C24"
+                "id": "b8F3"
             },
             "diagnostic": "NoDiagnosticId",
             "driver": "UnknownDriverId",
@@ -71,7 +72,7 @@ EXCEPTION_EVENTS_RESPONSE_JSON: str = r"""
                 "id": "RuleIdlingId"
             },
             "device": {
-                "id": "bF7C24"
+                "id": "b8F3"
             },
             "diagnostic": "NoDiagnosticId",
             "driver": "UnknownDriverId",
@@ -92,7 +93,7 @@ EXCEPTION_EVENTS_RESPONSE_JSON: str = r"""
                 "id": "RuleIdlingId"
             },
             "device": {
-                "id": "bF7C24"
+                "id": "b8F3"
             },
             "diagnostic": "NoDiagnosticId",
             "driver": "UnknownDriverId",
