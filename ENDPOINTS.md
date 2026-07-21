@@ -16,8 +16,9 @@ version-token stream and appends every emitted record into its event date's
 partition as numbered `part-NNNNN.parquet` files — stored as emitted,
 nothing ever deleted or replaced, the consumer reconciling calculated feeds
 by `(id, max version)` and active feeds by `id` (DESIGN §4). The feed
-MACHINERY is built in full and the first five feed verticals ride it
-unchanged (shipped 2026-07-21); the remaining feed queue is below.
+MACHINERY is built in full and the first nine feed verticals — waves
+one and two — ride it unchanged (shipped 2026-07-21); the remaining
+feed queue is below.
 
 ## Shipped
 
@@ -58,6 +59,10 @@ method-class quota scopes (`geotab_get` for `Get` at ~650/min,
 | `fill_ups` | `GetFeed FillUp` | feed | `date_time` | Calculated fuel-stop detections, reconciled `(id, max version)`. ESTIMATES-ONLY TENANT (DESIGN §8): no fuel-transaction integration, so every fuel value is provider-derived — `cost` 0.0 throughout, `fuelTransactions` excluded as value-unobservable (empty on 100/100; on integrated tenants it populates with a never-captured shape). The `-1.0` `derivedVolume` sentinel is mirrored verbatim; `driver` is the object-or-`UnknownDriverId` sentinel (the Trip mechanism); `confidence` a comma-joined token list kept one plain str. `resultsLimit` 10,000 — the DOCUMENTED cap, dual provenance: a 50,000 request was ACCEPTED at the 380-record population, so the cap was unprobeable. |
 | `fuel_and_energy_used` | `GetFeed FuelAndEnergyUsed` | feed | `date_time` | A WIRE-VOCABULARY name, not a plural (the driver_idle_rollups precedent — DESIGN §8). Calculated per-trip fuel/energy totals, reconciled `(id, max version)`; `FuelUsed` is NOT ported — observed identical to this surface week-wide on the probed tenant, and the provider documents THIS surface as FuelUsed's successor. The estimates-only caveat applies; `confidence` census-open (`'None'` on 1,994/2,000). `resultsLimit` 50,000. |
 | `fuel_tax_details` | `GetFeed FuelTaxDetail` | feed | `enter_time` | Calculated IFTA jurisdiction segments — the segment materializes where it begins, so `enter_time` is the event time. The version identity is the `versions` LIST of 16-hex component tokens (list[scalar]); the hourly arrays may be EMPTY lists, mirrored as such; `driver` is the object-or-sentinel mechanism. The estimates-only caveat applies. `resultsLimit` 50,000. |
+| `fault_data` | `GetFeed FaultData` | feed | `date_time` | Active with NO per-record version (the LogRecord asymmetry) — append-only-complete, reconciled by `id`. Wave-two conservative requiredness (only `id`/`dateTime`/`device` structural — DESIGN §8); the rare quartet (`diagnosticSeverity`/`riskOfBreakdown`/`severity`/`sourceAddress`, 2/2,000 each) optional scalars. `failureMode` PROVEN object-or-string; every ref rides the defensive `bare_id_to_reference` lift. `faultStates` is a wire-plural name over ONE `{effectiveStatus}` object. `resultsLimit` 50,000. |
+| `duty_status_logs` | `GetFeed DutyStatusLog` | feed | `date_time` | EDITABLE HOS log (`editDateTime` the edit trail), versioned — reconciled `(id, max version)`. `device`/`driver` PROVEN object-or-string. `annotations` reduced to a STRICT id-list (`list[str]`; elements exactly `{id}` on the census — any other shape fails loudly; the ids join the wave-three `annotation_logs` vertical). `location` promoted the shared nested-location wrapper — a `{x, y}` coordinate arm (x longitude, y latitude) or a `{formattedAddress}` address arm (the live proof found the address arm the 200-sample census missed). `resultsLimit` 50,000. |
+| `driver_changes` | `GetFeed DriverChange` | feed | `date_time` | Versioned driver-to-device assignment events, user-editable — reconciled `(id, max version)`. `driver` PROVEN object-or-string with `isDriver` riding the object arm (null exactly on string-arm rows). `resultsLimit` 50,000. |
+| `dvir_logs` | `GetFeed DVIRLog` | feed | `date_time` | Model `DvirLog` (house casing; the wire typeName keeps `DVIRLog`). Versioned certified/edited inspections — reconciled `(id, max version)`. `device`/`engineHours`/`odometer` a commonly-absent trio (205/500 each); `engineHours` modeled float per the cross-surface mixed proof. `defectList` is a wire-plural name over ONE `{id, name}` node — `children` EXCLUDED (empty on all 200 sampled nodes, element shape unobservable; revisit on a tenant with populated children). The shared nested-location wrapper (coordinate or address arm); `duration` an opaque string mirrored verbatim. `resultsLimit` 50,000. |
 
 ### Samsara
 
@@ -145,7 +150,16 @@ Not in the legacy hub (GeoTab is new in fleetpull). Two directions:
     `Trip` and `ExceptionEvent` stay on their shipped `Get` verticals;
     migrating them to the feed is a recorded evaluation item, not queue
     debt.
-  - *Tier 1:* `FaultData`, `DutyStatusLog`, `DriverChange`, `DVIRLog`.
+  - *Tier 1 — feed wave two, ALL SHIPPED 2026-07-21* (zero
+    shared-machinery changes; the DESIGN §8 wave two block carries the
+    probe-settled decisions):
+
+    | Feed entity | Endpoint | Status |
+    |---|---|---|
+    | `FaultData` | `fault_data` | **shipped 2026-07-21** (active — no per-record version) |
+    | `DutyStatusLog` | `duty_status_logs` | **shipped 2026-07-21** (editable, versioned; the strict annotations id-list) |
+    | `DriverChange` | `driver_changes` | **shipped 2026-07-21** (versioned; the proven object-or-string driver) |
+    | `DVIRLog` | `dvir_logs` | **shipped 2026-07-21** (model `DvirLog`; the `defectList.children` documented exclusion) |
   - *Tier 2:* `AnnotationLog`, `ShipmentLog`, `Audit`, `TextMessage`,
     `MediaFile`.
   - *Deferred as unobservable on the probed tenant* (no data to probe a

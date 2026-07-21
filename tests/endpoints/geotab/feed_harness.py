@@ -1,4 +1,4 @@
-"""The GeoTab feed drive-through harness the five vertical test modules share.
+"""The GeoTab feed drive-through harness the feed vertical test modules share.
 
 Runs one REAL feed leaf end-to-end over synthetic envelopes: the leaf's
 own spec builder composes the seeded first request, the real
