@@ -1,8 +1,16 @@
 # fleetpull — Design Document
 
-**Status:** Design settled through the two-verb public API (§10) and config-driven sync. Shipped end-to-end: the `fetch` API; `Sync(config_path).run()`; the yaml-run CLI (`fleetpull sync <config>`) and the per-endpoint `metadata.json` projection (both 2026-07-17); work-unit planning with crash resume, the three-grain concurrency ladder, and the per-provider fan-out executor; and the full endpoint inventory ENDPOINTS.md tracks as the manifest of record — the Motive and Samsara legacy waves are COMPLETE (2026-07-21), and the GeoTab `Get` verticals ship beside the feed wave below. The GeoTab feed MACHINERY is built in full (2026-07-21: the append-log storage cell, the kind-guarded token commit, the per-page feed drive, the `GEOTAB_FEED` rate class, the shared `GetFeed` spec builder, and the `FeedEndpoint` catalog identity — §3/§4/§5/§14); feed wave one shipped 2026-07-21 (`log_records`, `status_data`, `fill_ups`, `fuel_and_energy_used`, `fuel_tax_details` — the first APPEND_LOG datasets); feed wave two shipped 2026-07-21 (`fault_data`, `duty_status_logs`, `driver_changes`, `dvir_logs` — the Tier 1 entities, again zero machinery changes); feed wave three shipped 2026-07-21 (`annotation_logs`, `shipment_logs`, `audits`, `text_messages`, `media_files` — the Tier 2 entities, again zero machinery changes; `text_messages` and `media_files` anchor `event_time_column` on `sent`/`from_date` for want of a `dateTime` key, and `text_messages` is append-only like FaultData), and trips ships windowed until its feed vertical lands (§8). See §15 for run status and the build roadmap.
-**Name:** `fleetpull` — final. Describes exactly what the package does and nothing more (PyPI availability confirmed 2026-06-10).
-**Relationship to fleet-telemetry-hub:** New package, not a rewrite. fleet-telemetry-hub remains in production untouched while fleetpull is built.
+This document is the design of record: it describes what fleetpull *is* and why each
+piece is shaped the way it is. It tells the story of how a decision was reached only
+where that reasoning still earns its keep. §15 states what ships and what is deferred.
+
+**Name:** `fleetpull` — describes exactly what the package does and nothing more.
+**Relationship to the legacy package:** fleetpull is a new package, not a rewrite. A
+legacy in-house telematics package — covering Motive and Samsara only — is the porting
+source for the provider-API abstraction layer (endpoint definitions, HTTP client
+patterns, response models); fleetpull carries that layer further, across all three
+providers and a broader endpoint inventory, and drops the legacy orchestration and
+schema-unification layers entirely (the "Dropped" list in §1).
 
 ---
 
@@ -20,10 +28,9 @@ the raw API responses as is reasonable.
   not assuming which endpoints are useful: an endpoint is never excluded
   because no known consumer wants it, only deferred until its vertical is
   built (or excluded for a documented practicality reason, e.g. a shape the
-  schema pipeline cannot yet honestly type). fleet-telemetry-hub seeds the
+  schema pipeline cannot yet honestly type). The legacy package seeds the
   port order; it is a bootstrap aid, not the scope ceiling — fleetpull
-  implements more endpoints than its predecessor ever did. (Scope principle
-  settled 2026-07-17.)
+  implements more endpoints than its predecessor ever did.
 - Dtype coercion and structural normalization (flattening) so output is predictable
 - DataFrame output via programmatic API and CLI
 - Config-driven incremental updates across multiple endpoints
@@ -38,7 +45,7 @@ the raw API responses as is reasonable.
 - Semantic / event-id deduplication (payload-variant collapsing belongs to consumers)
 - Loading into warehouses — the package extracts and lightly transforms; it never performs a load step. Downstream systems (BigQuery et al.) consume the parquet externally.
 
-**Salvaged from fleet-telemetry-hub** — the provider-API abstraction layer (endpoint definitions, HTTP client patterns, response models), not the predecessor's orchestration or schema-unification layers, which the "Dropped" list below covers:
+**Salvaged from the legacy package** — the provider-API abstraction layer (endpoint definitions, HTTP client patterns, response models), not the predecessor's orchestration or schema-unification layers, which the "Dropped" list below covers:
 
 - `EndpointDefinition` abstraction (self-describing endpoints: auth, pagination, request building, response parsing)
 - Provider-agnostic HTTP client patterns (retry/backoff, pagination transparency, proxy/SSL handling)
@@ -46,7 +53,7 @@ the raw API responses as is reasonable.
 - Pydantic response model library for Motive and Samsara (ported as-is; they stay pure API mirrors)
 - Config/credentials handling patterns
 
-**Dropped from fleet-telemetry-hub:** unified schema, flatten functions in
+**Dropped from the legacy package:** unified schema, flatten functions in
 `operations/`, merge logic, `TelemetryPipeline` / `PartitionedTelemetryPipeline`
 orchestrators.
 
@@ -60,7 +67,7 @@ orchestrators.
 | Concurrency | **Threads** (`ThreadPoolExecutor`), not asyncio | Work is IO-bound HTTP; async infects every consumer-facing signature. Threads keep per-fetch code synchronous and simple. |
 | Validation/config | Pydantic 2.x, `frozen=True`, `extra='forbid'`, `validate_default=True` | House standard. |
 | Operational state | **SQLite** (WAL mode), single db at dataset root | Source of truth for watermarks/cursors, run ledger, work units. See §5. |
-| HTTP | httpx with explicit timeouts, retry with backoff, resilience to corporate TLS-intercepting proxies (Zscaler-class) | Carried over from fleet-telemetry-hub. |
+| HTTP | httpx with explicit timeouts, retry with backoff, resilience to corporate TLS-intercepting proxies (Zscaler-class) | Carried over from the legacy package. |
 | IANA tz database | **tzdata** declared as a runtime dependency | Windows and slim Linux images ship no system IANA database, and stdlib `zoneinfo` then requires the `tzdata` package — without it the first tz-aware Polars extraction fails with `ZoneInfoNotFoundError`. Surfaced by the live Windows run; declared explicitly rather than trusted to the platform. |
 
 ---
@@ -98,8 +105,8 @@ data/
 - `single` — one parquet file; a merge reads the whole file, applies the `SyncMode`'s write semantics, and rewrites it. Fine for low-volume endpoints (on the order of 10–15k rows/day or less). Snapshot endpoints are always `single` — a current-state snapshot has no event-time dimension to partition on.
 - `date_partitioned` — hive-style `date=YYYY-MM-DD` partitions; a merge touches only the partitions the fetch window overlaps. Required for breadcrumb-scale endpoints. Hive layout is read natively by BigQuery external tables and `pl.scan_parquet`.
 - `append_log` — hive-style `date=YYYY-MM-DD` partitions holding numbered
-  `part-NNNNN.parquet` files that only ever accumulate (2026-07-21, the feed
-  machinery). Every run appends new part files into the event-date partitions
+  `part-NNNNN.parquet` files that only ever accumulate. Every run appends
+  new part files into the event-date partitions
   its records belong to (`next = max existing part number + 1`, scanned at
   write; the atomic temp-then-rename discipline as everywhere); nothing is
   ever deleted or replaced. Feed endpoints only — the pairing is exclusive
@@ -109,8 +116,8 @@ data/
   snapshot semantic would corrupt an accumulate-only layout). Hive reads
   glob `*.parquet`, so the numbered parts read exactly like `part.parquet`.
 
-`metadata.json` is a **generated human-readable snapshot** (shipped
-2026-07-17): after each successful endpoint run, the runner projects the run's
+`metadata.json` is a **generated human-readable snapshot**: after each
+successful endpoint run, the runner projects the run's
 committed facts — its counts and resolved window, plus a cursor read-back from
 the store — into a `MetadataSnapshot` that `storage/metadata.py` renders and
 atomically writes as `<endpoint>/metadata.json`. It is never read by the
@@ -119,8 +126,8 @@ divergence. The write is post-commit and best-effort: an `OSError` logs at
 ERROR and the committed run stands — a stale file the next successful run
 rewrites beats failing a committed run over a cosmetic projection.
 
-**Realized structure (`snapshot`+`single`, `watermark`+`date_partitioned`, and
-`feed`+`append_log` built).** Each `(StorageKind, SyncMode)` cell is its own
+**The storage cells (`snapshot`+`single`, `watermark`+`date_partitioned`, and
+`feed`+`append_log`).** Each `(StorageKind, SyncMode)` cell is its own
 `DatasetWriter` — fused per cell, not composed from an injected merge, because the
 write semantic depends on both axes at once (a floored watermark write *replaces*
 under date partitioning but *clears and appends* under a single file). `select_writer`
@@ -134,13 +141,13 @@ stored-as-emitted record, §4).
 Storage is stateless — parquet only, no SQLite, no watermark commit (the
 orchestrator sequences those after a successful `finalize`, §5); the
 `metadata.json` render/write primitive lives in `storage/metadata.py`, but the
-facts it projects are the orchestrator's. The single-file family (`SingleFileWriter` → `SnapshotWriter`), the
+facts it projects are the orchestrator's. The three writer families are the single-file family (`SingleFileWriter` → `SnapshotWriter`), the
 date-partitioned watermark cell (`PartitionedWriter` → `WatermarkPartitionedWriter`),
 and the append-log feed cell (`FeedAppendWriter`, `storage/append.py` — deliberately
 NOT in either family: each `write` is durable on return, one new numbered part per
 event date present, because the feed drive's per-page crash order needs the page's
-parquet on disk before its token commits, §14) are built. The leaf
-primitives the writers compose: `split_by_date` (`storage/splitting.py`: a frame →
+parquet on disk before its token commits, §14). The leaf
+primitives these writers compose: `split_by_date` (`storage/splitting.py`: a frame →
 per-UTC-date sub-frames), `date_partition_segment`
 (`paths/partitions.py`: the `date=YYYY-MM-DD` segment; its strict inverse was
 deleted with no production caller — the segment grammar is pinned by a direct
@@ -165,9 +172,8 @@ the orchestrator's, next.
 **There is no merge function — the combine lives in each writer.** The earlier
 design injected a `MergeFn` per `SyncMode` and applied it inside a `Layout`; both
 are gone. Each cell's writer owns its own combine: a snapshot returns this run's
-frame, a feed appends new part files and never reads or touches prior ones (the
-2026-07-21 append-log design superseded the sketched concat-and-dedup feed cells —
-deduping against prior data would require rewriting landed files, exactly what the
+frame, a feed appends new part files and never reads or touches prior ones (deduping
+against prior data would require rewriting landed files, exactly what the
 append-only invariant forbids), a watermark single-file
 clears the window (`~in_window`) and appends, a watermark date-partitioned replaces
 each covered partition and prunes the empty ones. Window-clearing is therefore not a
@@ -179,12 +185,12 @@ the matrix below.
 whether the partition grain equals the window grain.** The full mechanism matrix,
 `StorageKind` × `SyncMode`:
 
-| layout × mode | clear-and-write mechanism | reads parquet? | status |
+| layout × mode | clear-and-write mechanism | reads parquet? | cell |
 |---|---|---|---|
-| `snapshot` / `single` | overwrite the file | no | built |
-| date-window / `single` | lazy `scan_parquet` + `~in_window` filter + concat + rewrite | yes (`in_window` here) | not built |
-| date-window / `date_partitioned` | delete covered `date=` folders + write the fetched partitions | **no parquet reads** | built (`vehicle_locations`) |
-| feed / `append_log` | append the next `part-NNNNN.parquet` per touched date; never read, rewrite, or delete | **no parquet reads** | built (2026-07-21) |
+| `snapshot` / `single` | overwrite the file | no | the snapshot cell |
+| date-window / `single` | lazy `scan_parquet` + `~in_window` filter + concat + rewrite | yes (`in_window` here) | **deferred** — the one unbuilt cell (§15) |
+| date-window / `date_partitioned` | delete covered `date=` folders + write the fetched partitions | **no parquet reads** | the watermark cell (`vehicle_locations` and every windowed endpoint) |
+| feed / `append_log` | append the next `part-NNNNN.parquet` per touched date; never read, rewrite, or delete | **no parquet reads** | the feed cell |
 
 *(The earlier sketched feed rows — `feed / date_partitioned` and `feed /
 `single``, both read-concat-dedup-rewrite — were superseded by the append-log
@@ -309,8 +315,8 @@ eviction hysteresis — append-only is the degenerate (never-evict) case, and fo
 permanent, absent-means-empty keys like vehicle ids the counter is an efficiency
 lever (stop fetching long-retired vehicles), not a correctness one. The pure
 reconcile/staleness logic, the `RosterStore`, and the roster refresh coordinator
-(when to list, the cold-start guard) are built, and the fan-out loop is closed
-by the orchestration entry (`run_endpoint`, §14): a declared binding resolves
+(when to list, the cold-start guard) are the roster machinery, and the fan-out
+loop is closed by the orchestration entry (`run_endpoint`, §14): a declared binding resolves
 its key through the `RosterRegistry`, refreshes via the coordinator, reads the
 members from the store, and fans out — the caller sees none of it. Roster
 registration is explicit construction at the composition root
@@ -330,25 +336,16 @@ tagged union:
 - `DateWatermark` — Motive/Samsara style: resume from `watermark - lookback`.
 - `FeedToken` — GeoTab `GetFeed` style: resume from `fromVersion`/`toVersion` token. No date windows exist for these endpoints.
 
-*Amendment (2026-07-13, the trips vertical): the provider↔strategy pairing
-above is per-endpoint, not per-provider — the earlier working rationale
-"GeoTab's incremental story is feeds only" is superseded. Windowed `Get`
-(`TripSearch` date bounds riding the seek walk) is GeoTab's history/backfill
-and utilization-delivery path today, because the watermark arm is built,
-live-proven, and its window-refetch semantics absorb Trip recalculation
-within the lookback horizon — while the feed arm (the runner arm, the append
-writer cells, token-commit crash ordering, and the calculated-feed
-reconcile/tombstone design) is unbuilt with open design questions. Feeds
-remain the future incremental mechanism, and they CAN be seeded historically
-via `search.fromDate` (June-verified bootstrap; §8's own recorded finding) —
-only the bare, unseeded `GetFeed` positions its cursor at now. Accepted
-residual: a Trip recalculation arriving beyond the lookback horizon is
-missed by the windowed path and will be caught when the feed arm lands.
-`GeotabConfig` now carries the watermark knobs (`lookback_days` /
-`cutoff_days`). [Update 2026-07-21: the feed MACHINERY is now built in full
-— the feed record below, §14's per-page drive, §3's append-log cell — and
-the open design questions above are settled; the recalculation residual
-stands until the Trip feed vertical itself ships.]*
+**The provider↔strategy pairing is per-endpoint, not per-provider** — GeoTab uses both
+carriers. Windowed `Get` (`TripSearch` date bounds riding the seek walk) is its
+history/backfill and utilization-delivery path: the window-refetch semantics absorb
+Trip recalculation within the lookback horizon, and `GeotabConfig` carries the watermark
+knobs (`lookback_days` / `cutoff_days`). `GetFeed` is its go-forward incremental
+mechanism (the feed record below, §14's per-page drive, §3's append-log cell); feeds can
+be seeded historically via `search.fromDate`, and only a bare, unseeded `GetFeed`
+positions its cursor at now. Accepted residual: a Trip recalculation arriving beyond the
+lookback horizon is missed by the windowed path until the Trip feed vertical itself
+ships.
 
 These two carriers live in `incremental/` — a pure, dependency-free leaf, so
 an endpoint can name a strategy without importing the SQLite layer.
@@ -404,7 +401,8 @@ date**: requests and partitions are day-granular, so the effective window must b
 day-aligned on both bounds and every covered date refetched in full — the
 floored-window invariant the partitioned writer's wholesale replacement and prune
 are safe under (an unfloored `23:59:59` start once covered its boundary date by a
-one-second sliver that replacement then destroyed — §15 roadmap item 1). Flooring
+one-second sliver that replacement then destroyed — the window-granularity
+defect this flooring closes). Flooring
 makes lookback read as "re-cover N whole days before the watermark's day"; arms
 (2)/(3) are midnight-aligned by construction, so the floor binds on arm (1). The
 rule is for snapshot/point-event endpoints; duration/span endpoints (e.g. HOS
@@ -421,7 +419,7 @@ the endpoint as a permanent caught-up — is deliberately not baked into these
 helpers; it lands in the orchestrator that adopts them.
 
 Each endpoint definition declares which strategy it uses. This is the single
-biggest architectural improvement over fleet-telemetry-hub, whose
+biggest architectural improvement over the legacy package, whose
 `latest_data_date - lookback` assumption cannot represent GeoTab.
 
 **Merge semantics (watermark endpoints): delete-by-window, then append.**
@@ -460,7 +458,7 @@ dedup cannot remove them because the re-emitted copy carries drifted timestamps
 normalization**: filter the incoming frame to records whose start falls in the
 window before appending, so each cross-boundary event is anchored to the single
 window that owns its start and is never double-counted at a window's leading
-edge. This is the mechanism carried over from fleet-telemetry-hub.
+edge. This is the mechanism carried over from the legacy package.
 
 **Consequence — coverage may bleed slightly before `start`.** A trip that
 started before `start` but was returned by an overlap fetch is dropped from the
@@ -469,8 +467,8 @@ earlier window that owns its start. File coverage therefore extends slightly
 before a given window's `start`. This is intended. Do **not** "fix" it by
 clamping start times to the window — that would discard the authoritative copy.
 
-**The feed record (settled 2026-07-21 — the feed machinery build; wire facts
-from the 2026-07-21 live probe session).** The protocol, as probed:
+**The feed record (wire facts from the 2026-07-21 live probe session).** The
+protocol, as probed:
 
 - `GetFeed` is a JSON-RPC POST (the Get family's transport): `params`
   `{credentials, typeName, fromVersion?, resultsLimit, search?}`; the result
@@ -482,15 +480,15 @@ from the 2026-07-21 live probe session).** The protocol, as probed:
 - **Seeding**: `search={'fromDate': <RFC3339>}` on the FIRST call starts the
   feed at a version covering all entities with date >= `fromDate` — proven to
   the second on `LogRecord` and `StatusData` DESPITE the provider docs
-  claiming those types' search is ignored (**docs falsified by wire**,
-  2026-07-21; encode probed behavior, never documented behavior alone). A
+  claiming those types' search is ignored (**docs falsified by wire**;
+  encode probed behavior, never documented behavior alone). A
   seeded page may also include records BEFORE the seed date (probed: 13/50
   Trip records predated it) — append storage simply stores them.
 - **Continuation**: `fromVersion` = the prior page's `toVersion`; a page of
   exactly `resultsLimit` records continues, a short page is terminal (the
   decoder's rule). At head, `data=[]` arrives with `toVersion` UNCHANGED
   (probed) — so an exactly-full final page costs one extra empty call and
-  terminates safely (§13's accepted residual).
+  terminates safely (the accepted residual recorded below).
 - **Re-emission**: modified old data resends under a newer version (docs +
   probes); a per-record `version` rides calculated feeds, `LogRecord`
   carries none. `resultsLimit` maxes at 50,000 (per-type caps lower for some
@@ -518,8 +516,7 @@ cell, because deduping against prior data would require reading and
 rewriting landed part files — exactly what the append-only invariant (§14's
 I3) forbids.
 
-*Accepted residual (dated 2026-07-21, closing the earlier open question):
-unsignaled removals.* A calculated record the system removes may simply stop
+*Accepted residual: unsignaled removals.* A calculated record the system removes may simply stop
 re-emitting rather than send a tombstone; such a record persists in
 append-only storage until the consumer reconciles against the live system.
 Handling it any other way would require the event-id logic §6 places out of
@@ -543,12 +540,11 @@ Rules:
 - Transactions are tiny: claim unit → commit; finish unit → commit. **Never hold a transaction across an HTTP call.**
 - SQLite is local-disk only; not designed for network filesystems.
 
-**Status: the `state/` layer is built and tested in full** — `StateDatabase` (WAL,
-application-id stamping, integrity check), the v1 forward-only migration (`cursors`
+**The `state/` layer** comprises `StateDatabase` (WAL,
+application-id stamping, integrity check), the forward-only migration runner (`cursors`
 / `runs` / `work_units`), `CursorStore`, `RunLedger` / `RunStatus`, and
-`WorkUnitStore` with its claim queue. The orchestrator that sequences these
-against fetch and storage (§14) is likewise built in full — all three arms,
-the feed arm since 2026-07-21.
+`WorkUnitStore` with its claim queue. The orchestrator sequences these
+against fetch and storage (§14).
 
 **Crash-safety ordering:** write parquet first (temp file + atomic rename),
 commit watermark/cursor second. A crash between the two causes a refetch on the
@@ -581,7 +577,7 @@ data (per-vehicle breadcrumbs over months) is kept in bounds by smaller date
 windows, not by a streaming rewrite of the merge. The page loop streams; the
 write unit is the buffer boundary. Accumulating an entire endpoint's window into
 one frame before writing is forbidden: it is the unbounded-memory failure
-fleet-telemetry-hub avoided for its single-file utilization output by pushing the
+the legacy package avoided for its single-file utilization output by pushing the
 read-delete-append-write into DuckDB, and fleetpull achieves the same bound
 structurally by making the chunk the write unit.
 
@@ -610,16 +606,16 @@ has been persisted for this (provider, endpoint)" — nothing more. The store ne
 fabricates a cursor and never interprets absence; the resume-on-absence decision
 lives above it (see resume precedence below). Two writes, one per arm, both
 kind-guarded *inside* their statements — so a cursor row can never silently
-change arm, in either direction (the kind-guard doctrine, made total
-2026-07-21; `tests/state/test_cursors.py`'s `TestKindGuardBothDirections`
-pins both): `advance_watermark_forward` (added 2026-07-20 with the
+change arm, in either direction (the kind-guard doctrine is total;
+`tests/state/test_cursors.py`'s `TestKindGuardBothDirections`
+pins both): `advance_watermark_forward` (the
 prefix-advance rule below) is the watermark arm's write, carrying the
 strictly-forward monotonicity guard beside the kind guard — the recorded
 exception to the dumb-store stance, because the prefix rule's concurrent
 per-completion commits cannot enforce monotonicity race-free from outside the
 statement (a read-compare-write in the caller can interleave a stale read
-into a backward write). `commit_feed_token` (added 2026-07-21 with the feed
-arm) is the feed arm's write: kind-guarded **last-write-wins**, with
+into a backward write). `commit_feed_token` is the feed arm's write:
+kind-guarded **last-write-wins**, with
 monotonicity deliberately left OUT of the store. The lexical guard was
 considered and declined on two grounds: token opacity is doctrine (§8's
 probe-settled decision 4 — the observed 16-hex fixed-width encoding would
@@ -638,7 +634,7 @@ a standing arm-flip footgun.
 
 **Watermark semantics: observed-data-only and monotonic.** A `DateWatermark` is
 the maximum event timestamp actually seen; it is set only from observed data and
-only ever moves forward — since 2026-07-20 enforced by
+only ever moves forward, enforced by
 `advance_watermark_forward`'s in-statement strictly-forward guard (the
 watermark arm's only write path). An empty fetch — or one returning nothing
 newer than the current watermark — writes no cursor. A watermark is never
@@ -655,7 +651,7 @@ append-only sequential, so persisting the latest never skips a future record. Th
 empty-window/no-cursor problem is exclusively a `DateWatermark` concern; the feed
 arm always has a cursor to write.
 
-**The four feed invariants (decided 2026-07-21 — the feed machinery build).**
+**The four feed invariants.**
 The per-page drive's load-bearing invariants, each with its tripwire (the
 prefix-advance record's format — any change that violates one must
 consciously break its test):
@@ -666,12 +662,12 @@ consciously break its test):
    `tests/orchestrator/test_runner_feed.py::TestPerPageCrashOrder::
    test_each_pages_parquet_is_on_disk_when_its_token_commits` — an ordering
    recorder at the commit seam counts the rows already on disk at the exact
-   interleaving point. *Durability hardened 2026-07-21:* the original
-   durable-rename recipe fsynced the temp file and the target's parent
-   only — but a page opening a NEW `date=` partition (or an endpoint's
-   first-ever write) creates directories whose own entries live one level
-   up, un-fsynced, so power loss could drop the whole new directory while
-   the fsynced token survived. The recipe now fsyncs the full created
+   interleaving point. *Durable-directory fsync:* fsyncing the temp file
+   and the target's parent alone is insufficient — a page opening a NEW
+   `date=` partition (or an endpoint's first-ever write) creates directories
+   whose own entries live one level up, un-fsynced, so power loss could drop
+   the whole new directory while the fsynced token survived. The recipe
+   therefore fsyncs the full created
    chain: the parent, every newly created ancestor, and the first
    pre-existing ancestor (`storage/atomic.py::_durable_directory_chain`,
    computed before the `mkdir` while the missing set is observable);
@@ -783,9 +779,7 @@ under concurrency because WAL serializes writers (no app-level lock) — runs it
 and marks it `done` or `failed`. Lifecycle: `pending → claimed → done | failed`;
 `failed` units are re-served on a later pass, unconditionally — there is no
 attempt cap (`attempt_count` still increments at claim, so crashes count, and
-stays recorded and narrated). The cap machinery was removed outright
-(2026-07-21, the structural audit): the orchestrator had only ever passed a
-deliberately never-binding cap (`2**31 - 1`), because
+stays recorded and narrated). There is no cap machinery, because
 a finite cap would convert a persistent failure into a silently skipped unit — a
 coverage hole behind an advancing watermark — where an always-claimable poison
 unit instead fails the endpoint loudly on every invocation, the fail-loud
@@ -800,8 +794,8 @@ optionally fanned across many partition keys — as one process, so at startup a
 heartbeat, sound because the only constraint is not running two invocations
 against one state database at once (concurrent invocations are out of scope).
 
-**The prefix-advance watermark rule — parallel unit execution (decided
-2026-07-20).** A windowed endpoint's work units now drive
+**The prefix-advance watermark rule — parallel unit execution.** A windowed
+endpoint's work units drive
 `sync.backfill_unit_workers` at a time (default 4; `1` is the serial path,
 inline with no pool). Activation rationale: the per-unit transactions were
 already independent by construction — each unit owns its run-ledger row, its
@@ -853,8 +847,7 @@ be returned. Such a hole is unreachable today because, and only because:
    behind an advancing prefix (the fail-loud record above; `claim_next` takes
    no cap at all).
 3. **Row deletion is confined to the planning site's release-then-enqueue
-   pairing** (corrected 2026-07-21 from "never deleted" — the correction
-   record below). `release_done_units` runs only inside residual planning —
+   pairing.** `release_done_units` runs only inside residual planning —
    after the claim loop drained, so every row is `done` and
    watermark-committed — scoped to `done` rows fully inside the residual
    window, and the very next statement re-tiles that window hole-free. A
@@ -887,7 +880,7 @@ logged and each incrementing `attempt_count`. Accepted as recorded.
 
 **Scope: `DATE_PARTITIONED` watermark cells only.** Parallel units are legal
 under the single-writer invariant on two legs, both load-bearing: every
-shipped watermark cell is date-partitioned with disjoint whole-day unit
+watermark cell is date-partitioned with disjoint whole-day unit
 windows (midnight-aligned, contiguous tiling — no two units share a
 partition), and the concurrently claimable set is one contiguous plan
 (enqueue-after-drain, invariant 1). A future (`SINGLE`, `WatermarkMode`) cell
@@ -953,7 +946,7 @@ The orchestrator never touches the limiter. Quota limits are therefore
 respected regardless of caller: config runner, manual Python, tests,
 notebooks, custom user executors.
 
-### Per-provider executors (built: `orchestrator/executors.py` + `orchestrator/fanout.py`)
+### Per-provider executors (`orchestrator/executors.py`, `orchestrator/fanout.py`)
 
 A single shared thread pool + blocking `request_slot()` would cause
 cross-provider starvation: a Motive 429 penalty parks workers holding pool
@@ -993,23 +986,20 @@ allowed to finish and their results discarded (a discarded piece's own
 failure is logged, never raised over the first), and the run fails by
 re-raising the first exception — the same loud outcome as the serial loop.
 
-Non-goals of this cut, revised: provider-parallel activation was recorded
-here as deferred ("awaits a second ported provider" — the executors were
-per-provider by construction, which was all the shaping this cut did); with
-three providers shipped it activated 2026-07-20 at the queue-per-provider
-grain — the record below. The non-goal still standing: page-fanning within
-one member's chain awaits envelope verification and will be recorded with
-its own design when it lands.
+The executors are per-provider by construction, and provider-parallel `Sync` runs one
+queue per provider on that shaping (the record below). One non-goal still stands:
+page-fanning within one member's chain awaits envelope verification and will be
+recorded with its own design when it lands.
 
-**Provider-parallel `Sync` (activated 2026-07-20).** `Sync.run` carves the
+**Provider-parallel `Sync`.** `Sync.run` carves the
 selection into one queue per enabled provider — feeders then consumers,
 config order within each, so queue order equals the retired serial order
 (feeders never cross providers) — and runs each queue on its own worker in
 a context-managed `ThreadPoolExecutor` sized to the enabled-provider count;
 each worker renames its thread to the provider so stack traces attribute
 cleanly, and a single enabled provider degenerates to one worker with the
-serial loop's exact behavior (amended 2026-07-20: endpoints within a queue
-now run staged-concurrent — the intra-provider record below).
+serial loop's exact behavior (endpoints within a queue
+run staged-concurrent — the intra-provider record below).
 Activation is unconditional — no config knob:
 the queues were already independent by construction (per-provider fetch
 pools and clients, per-scope limiters, provider-scoped rosters,
@@ -1026,9 +1016,9 @@ order within each provider, provider config order across providers (§10's
 the within-provider half as queue order). The `sync finished` elapsed time
 stays the run's wall clock — now the slowest queue, not the queues' sum.
 
-Accepted residual (recorded at activation): a KeyboardInterrupt landing while the main thread joins the queue workers abandons the remaining joins, so the client/pool context managers can close while a worker still fetches -- noisy worker tracebacks and bounded exit latency, never corruption (the per-unit parquet -> ledger -> done-mark -> prefix-commit ordering with unit-gating keeps state sound, exactly the crash story §5/§14 tell). The same window existed under the serial loop; signal hardening is polish-phase work (§15 item 8).
+Accepted residual (recorded at activation): a KeyboardInterrupt landing while the main thread joins the queue workers abandons the remaining joins, so the client/pool context managers can close while a worker still fetches -- noisy worker tracebacks and bounded exit latency, never corruption (the per-unit parquet -> ledger -> done-mark -> prefix-commit ordering with unit-gating keeps state sound, exactly the crash story §5/§14 tell). The same window existed under the serial loop; signal hardening is deferred polish-phase work (§15).
 
-**Intra-provider endpoint concurrency (activated 2026-07-20).** The third
+**Intra-provider endpoint concurrency.** The third
 grain completes the concurrency ladder: providers run concurrently (the
 record above), endpoints run concurrently *within* a provider — feeders
 barriered ahead of consumers — and units / fan-out members run
@@ -1099,7 +1089,7 @@ the refresh coordinator's job at fan-out time.
   optimization, never a correctness dependency.
 - *Duplicate-name validation.* `ProviderConfig.endpoints` rejects
   duplicated names at validation, naming them: a duplicated endpoint
-  would now run twice — concurrently, against itself.
+  would run twice — concurrently, against itself.
 
 ### Acquisition protocol
 
@@ -1133,7 +1123,7 @@ class QuotaScopeLimiter:
 The clock is injected (`fleetpull.timing.Clock`) so limiter tests are
 deterministic.
 
-### Retry policy (implemented: `config/retry.py`, `network/retry/decision.py`)
+### Retry policy (`config/retry.py`, `network/retry/decision.py`)
 
 Pure policy the client consults after each retryable failure — no loop, no
 sleep, no state. The answer travels as a frozen `RetryDecision`
@@ -1203,7 +1193,7 @@ fresher one another thread just prepared with. `prepare()` is called
 fresh for every HTTP attempt — every page, every retry — symmetric with
 token-per-attempt.
 
-### GeoTab session lifecycle (implemented: `network/auth/`)
+### GeoTab session lifecycle (`network/auth/`)
 
 GeoTab authenticates by session: `Authenticate` returns a session id and a
 resolved host; the session lives ~14 days but can die early (password
@@ -1216,7 +1206,7 @@ change; a 100-concurrent-session LRU cap per account).
 - **No disk persistence:** a session id is a bearer-equivalent secret, and at one process per scheduled run the steady-state session count stays far below GeoTab's 100-session cap.
 - Passwords are `SecretStr`, extracted only inside the real `authenticate_fn`; the manager never reads the secret and never logs session ids.
 
-### The real authenticator (implemented: `network/auth/authenticate.py`)
+### The real authenticator (`network/auth/authenticate.py`)
 
 A single-concern, single-shot, loop-free function behind a factory
 (`build_geotab_authenticator(http_config, limiter_registry, quota_scope)`)
@@ -1231,7 +1221,7 @@ which passes `QuotaScope.GEOTAB_AUTHENTICATE` as that name.
 - **v1 postures, with re-litigation triggers:** Authenticate outcomes arrive in HTTP 200 per verification, so a non-200 is the API not speaking its protocol — loud-and-typed beats a retry loop against the 10/min auth quota (trigger: first observed Authenticate 5xx in production). An unknown error type fails loud rather than guessing retryability (trigger: `OverLimitException` seen here despite the local limiter).
 - **`ThisServer` resolution:** the result's `path` is either the literal `ThisServer` (use the host we called — `config.server`) or an alternate host (use it, logged at INFO as a redirect — handled-not-assumed, since no capture shows one). `ThisServer` is a GeoTab protocol sentinel held as a module `Final[str]`, never user config — no operator should set it.
 - **Dedicated Authenticate quota scope:** Authenticate is rate-limited at a fixed 10/min, outside the per-provider tiering; the composition root configures a dedicated scope in the registry, and an unconfigured scope propagates `UnknownQuotaScopeError` naturally (no catching).
-- **Boundary seam:** the `_Authenticate*` Pydantic models validate the inbound wire response (`strict=True`, `extra='ignore'`); the function returns the existing frozen `AuthenticationResult` dataclass built from the validated fields. Pydantic at the boundary, dataclass within — a Pydantic model is never returned into the program's interior. Every inbound read flows through a slice model (the Prompt-12 structural rule); transport exceptions propagate raw and untyped (the client owns prepare-time transport-failure classification).
+- **Boundary seam:** the `_Authenticate*` Pydantic models validate the inbound wire response (`strict=True`, `extra='ignore'`); the function returns the existing frozen `AuthenticationResult` dataclass built from the validated fields. Pydantic at the boundary, dataclass within — a Pydantic model is never returned into the program's interior. Every inbound read flows through a slice model (the boundary-slice rule); transport exceptions propagate raw and untyped (the client owns prepare-time transport-failure classification).
 
 ### Response classification, single-producer
 
@@ -1293,7 +1283,7 @@ construct `HTTPStatus` from an arbitrary code — `HTTPStatus(code)` raises
 `ValueError` on nonstandard statuses (e.g. 522) and a classifier must
 classify every status, not crash on one.
 
-### Page-decoder contract (implemented: `network/contract/page_decoder.py`, `decoders/`)
+### Page-decoder contract (`network/contract/page_decoder.py`, `decoders/`)
 
 The client owns the page loop and stays blind to its mechanics — pagination
 and record extraction alike — the way it is auth-blind and classification-blind:
@@ -1364,8 +1354,8 @@ and do not belong in `models/`.
 (`'fromVersion'`, `'page_no'`, `'after'`, the Authenticate body keys)
 are module-private `Final[str]` constants. Enums model closed sets that
 code dispatches over (`ResponseCategory`); nothing dispatches over a
-wire token. **Constants-scope precedent** (it governs the endpoint
-prompts): wire-token constants are colocated with their consuming logic
+wire token. **Constants-scope precedent** (it governs every endpoint
+binding): wire-token constants are colocated with their consuming logic
 at the tightest scope that genuinely shares them — module-private
 within a provider (a token used by both `first_request` and `advance`
 is one constant), never centralized across providers. Token coincidence
@@ -1384,1183 +1374,664 @@ tolerates both being sent — the strategy always strips);
 `resultsLimit` is read from the sent body, so strategy-versus-endpoint
 divergence is structurally impossible.
 
-### GeoTab probe-settled decisions (2026-07-09)
+### Probe-settled decisions
 
-Settled as design by the live probe session (the captured rows in the
-observed-behaviors table below); the build prompts implement them.
+Every endpoint binding is settled against direct wire probes, and the load-bearing
+reasoning — why each binding encodes what it does — is recorded per surface below,
+against the evidence in the observed-behaviors table that follows. A handful of
+principles recur across every surface; they are stated once here and cited by the
+per-surface blocks rather than restated.
 
-1. **Device harvest mechanism: sort-seek paging by `id` ascending.** The
-   initial request carries the `sort` object (`sortBy: "id"`) with a null
-   `offset`; each advance sets `offset` to the last returned id; termination
-   is the empty result list; `lastId` is never sent with id-sort (docs:
-   `ArgumentException`). Rationale: the silent 5,000 cap makes a single
-   uncursored `Get` unsound for any cappable entity, so `SinglePageDecoder`
-   is ruled out for capped `Get` entities and a seek-paging Get decoder
-   joins the PageDecoder family.
-2. **Completeness guard: `GetCountOf` beside every Device harvest.** The
-   harvest streams unbuffered while a running record count accumulates;
-   after the terminal page one `GetCountOf` fires through the same client
-   and quota scope, and a mismatch raises `ProviderResponseError` naming
-   both counts — the run fails loudly, staging is discarded so the prior
-   parquet stands, and the next scheduled run is the retry. Rationale:
-   silent truncation must be loud; the same doctrine family as the
-   empty-listing reconcile guard (§13). Placement, settled at the build:
-   the guard is driver-layer, declared on the definition
-   (`EndpointDefinition.completeness_check`, an optional narrow Protocol
-   whose GeoTab implementation is `GetCountOfCheck`) and honored by the
-   single-fetch driver — the runner, the entry, and every orchestrator
-   module stay provider-agnostic. Snapshot-scoped by construction: an
-   expected-count comparison is meaningful only against a complete listing
-   — a windowed harvest is deliberately partial and a fan-out run is
-   per-member, so either pairing is rejected at definition construction.
-   (Amended 2026-07-13: the original refetch-once and its buffering were
-   dropped — a mismatch fails the run and the next scheduled run is the
-   retry; exact-match with no tolerance number is unchanged.)
-3. **Rate posture: self-limit at the header-advertised per-class budgets**,
-   regardless of whether GeoTab is enforcing yet; GeoTab's rate-limit config
-   defaults cite the captured headers, and no ramp probe is needed — the
-   headers are the probe. Runtime posture is unchanged: the reactive control
-   loop stands and the headers stay unconsumed at runtime (the table row
-   below); they informed the configured budgets, nothing else.
-4. **Feed semantics: the bootstrap is *ingested-since*.** Date watermarks
-   are never derived from feed `dateTime`s — the version-order capture (the
-   feed is version-ordered, with `dateTime` dipping before the requested
-   `fromDate`) is the empirical justification for `FeedToken` opacity
-   (`incremental/cursor.py`, §4/§5): the token is the only sound resume
-   coordinate. Date-partitioned feed storage assigns partitions per-record
-   and tolerates event-time disorder by construction.
-5. **Accepted residual: the exactly-full-final-page feed edge.** When the
-   final feed page holds exactly `resultsLimit` records, the decoder issues
-   one extra call that returns empty — the worst case is one empty
-   `GetFeed` per sync. Accepted, not open; recorded in §13 with this
-   rationale.
+**Shared principles.**
 
-### GeoTab `exception_events` design decisions (2026-07-15)
+- **Census scope: a tenant census proves shapes PRESENT, never shapes ABSENT.** Every
+  presence/absence count below is a tenant-scoped observation at capture time, never a
+  data-semantics claim and never another tenant's shape. Two consequences bind every
+  block. (1) *Conservative requiredness* — only the structural identity is required
+  (an entity's `id`, its event-time/partition field, its `version` where the type
+  carries one, and the primary entity ref), and every other field stays optional even
+  when census-total, because a later record or another tenant may omit it. (2) *Every
+  reference field rides `bare_id_to_reference`* (the string-or-object coercion: a bare
+  sentinel id like `"UnknownDriverId"` becomes the ref's `id`, an object arm keeps its
+  keys) — including refs a census saw only as objects, because the census cannot prove
+  the string arm absent. The live-proof backstop earns this posture: an at-scale walk
+  has four times found an arm a bounded census missed (StatusData's `controller`
+  string-or-object arm, the DutyStatusLog/DVIRLog nested-location address arm, and two
+  before them). Where a census IS whole-population and uniform (the Motive wrapped-list
+  walks, the wave-one feed full-page pulls) requiredness may be whole-walk instead of
+  structural — noted per block.
 
-Settled conversationally from the 2026-07-13 ExceptionEvent capture set;
-the paging arm was selected by the 2026-07-15 discrimination probes (the
-observed-behaviors rows below).
+- **Encode probed behavior, never documented behavior alone.** Provider docs are
+  falsified by wire repeatedly: GeoTab `GetFeed` seeding via `search.fromDate` works on
+  `LogRecord`/`StatusData` despite docs claiming their search is ignored; Motive honored
+  a documented-required parameter as inert and did not enforce a documented rate limit.
+  A binding's parameters and expectations are settled against probes (or the legacy
+  package's production fetcher), never the docs page alone.
 
-1. **`exception_events` ships as the second windowed GeoTab endpoint on the
-   trips template** — windowed watermark, date-partitioned, the shared
-   provider `lookback_days`/`cutoff_days` knobs. The captured
-   mutation-after-creation envelope (observed-behaviors row below) sits
-   well inside a one-day lookback. **Paging resolved (2026-07-15):**
-   the discrimination probes found id-sort unsupported on this type
-   outright (the observed-behaviors row), so the seek template is
-   structurally unavailable and the bisection fallback (decision 3)
-   ships. Version/date sortability, which the ArgumentException
-   revealed, is banked as feed-design input, not a paging arm here.
-2. **Version one ships the unfiltered stream — no rule-filter config
-   knob.** Three reasons, in force order: the captured silent-empty hazard
-   means a typo'd rule id reads as a permanently empty dataset, never an
-   error; validating a filter without an extra API call reduces to a
-   closed proven-set (one rule today), which serves nobody; and rule
-   selection on the delivered stream is a one-expression consumer-side
-   operation, which is where selection belongs (§1's no-presumption
-   stance). If server-side filtering later shows real need, the knob
-   arrives with proven-set config validation — fail-fast at config load,
-   no referent-validation API call.
-3. **The bisection fallback, designed and banked.** If sort is unusable
-   for this type: fetch the unit's window at the endpoint's
-   `resultsLimit`; a page of exactly the requested limit is the overflow
-   signal (a return-type condition) — discard it, halve the window,
-   recurse left-to-right; a minimum-width window still returning a full
-   page raises `ProviderResponseError`. Placement: a
-   `BisectingWindowDriver` beside the single-fetch driver at the
-   request-driver seam (§14) — fetch grain decouples from write grain, so
-   work units and the delete-by-window merge stay whole-day and
-   storage/state are untouched. Rejected placements: a bisecting page
-   decoder (decoders are stateless; the recursion's pending-halves stack
-   has nowhere to live) and work-unit splitting (breaks the
-   FIFO-by-unit-id watermark-truth invariant and the midnight-alignment
-   guard).
-4. **Bisection is cap-gated per entity type.** The silent `Get` cap is
-   Captured on Device only and appears in no GeoTab documentation. Seek
-   paging never depends on the cap — it terminates on the empty page, so
-   the requested limit is merely a page-size preference — but bisection's
-   overflow signal is sound only where the endpoint honors requests up to
-   the asked size: a lower silent cap would make every page look partial
-   and overflow undetectable. Bisection therefore ships for a type only
-   after that type's cap behavior is captured (done for ExceptionEvent —
-   the observed-behaviors row below).
-   Corollary: `resultsLimit` values stay per-leaf constants carrying
-   per-type provenance comments — two leaves declaring 5,000 are two
-   per-type facts that currently coincide, not one fact stated twice —
-   and the value is flagged in-code as a strong candidate for a user
-   config knob.
-5. **The event-time column is resolved (2026-07-15): `active_from`.**
-   The window-matching pair found OVERLAP matching (the
-   observed-behaviors row) — retrieval supersets start-anchored
-   ownership, so every record whose `activeFrom` falls in a chunk's UTC
-   window is guaranteed returned by that chunk's fetch, the existing
-   post-fetch window filter assigns single ownership, and no wire-window
-   pad is needed. Edge records fetched by a neighboring chunk are
-   filtered out there and kept by their owner — the Samsara-settled
-   normalization pattern, at zero new machinery.
+- **Vocabularies stay plain `str` unless the API 400-enforces the value on OUTPUT.** A
+  census-closed value set (an observed `{'active','deactivated'}`, `{'On','Off','Idle'}`)
+  is not evidence-closed — a mirror must absorb vocabulary growth, so an enum would crash
+  on it. The bar is met only where the API rejects a bad value loudly, and even then only
+  on the axis it enforces: Samsara `driverActivationStatus` and `filterBy` are enums
+  because a bad value returns HTTP 400 on INPUT; the same surfaces' OUTPUT assignment
+  types and stat states stay plain `str` (the `eldExemptReason` lesson — and the
+  `assignmentType` census-closed `{static,HOS}` that a week-wide live proof broke with a
+  third value `driverApp`).
 
-### Motive `driving_periods` / `idle_events` probe-settled decisions (2026-07-15)
+- **`resultsLimit` / `limit` values are per-leaf constants with per-type provenance.**
+  Two leaves declaring 5,000 are two per-type facts that coincide, not one fact stated
+  twice. Where a probe structurally cannot reach a cap (the population never approaches
+  it), the DOCUMENTED figure stands (FillUp's 10,000, a 50,000 request accepted only
+  because the tenant holds 380 records); absent a documented lower cap and absent probe
+  evidence either way, the 50,000 GetFeed protocol maximum stands. Several Samsara
+  surfaces prove `limit` inert (the server pages at its own fixed size) — the declared
+  value then documents the observed page size, not a working knob. The value is flagged
+  in-code as a strong candidate for a user config knob.
 
-Settled by the 2026-07-15 live probe session (the captured rows above); the
-port build prompt implements them.
+- **Window anchoring is probed per endpoint, never assumed — and overlap supersets
+  start-anchored ownership.** Distinct retrieval anchors are observed even between
+  sibling endpoints: GeoTab Trip matches on `stop`, Motive `driving_periods` on `start`
+  (UTC), Motive `idle_events` on OVERLAP at COMPANY-LOCAL day boundaries, GeoTab
+  ExceptionEvent and Samsara v1 `trips` / `driver_vehicle_assignments` on OVERLAP,
+  Samsara `idling_events` on `start` (UTC). For an overlap- or end-anchored surface,
+  retrieval supersets the start-anchored ownership the storage layer wants, so the
+  binding sets `event_time_column` to the start/routing field and the runner's
+  post-fetch window filter assigns each record to the single chunk owning its anchor —
+  the §4 start-anchored normalization, at zero new machinery and no wire pad. A
+  start-anchored surface coincides natively and the filter is pure hygiene; a
+  timezone-ambiguous overlap surface (Motive `idle_events`) instead pads its wire window
+  one day each side and lets the true UTC window trim (a one-day pad covers any account
+  zone on earth). A range cap that sits far outside the default backfill chunk needs no
+  builder guard — a chunk raised past it earns the provider's own loud 400.
 
-1. **Both port as windowed watermark, date-partitioned, fleet-wide** (no
-   fan-out), offset-paginated through the existing Motive wrapped-list
-   decoder family; `event_time_column='start_time'` on both — start was
-   never observed null (in-progress records null their *end* fields), and
-   for `driving_periods` the retrieval anchor and the routing anchor
-   coincide natively.
-2. **`idle_events` pads its wire window one day on each side and the true
-   UTC window does the trimming.** The leaf's spec builder writes
-   `start_date − 1` / `end_date + 1` onto the wire; the resume window, the
-   post-fetch window filter, and the writer-side partition tripwire all
-   keep the true UTC window, so every record lands in exactly one chunk
-   (the §4 start-anchored normalization rule, generalized
-   timezone-agnostic — a one-day pad covers any account timezone on
-   earth). Rejected: deriving the account zone from `/v1/companies`
-   `time_zone` — the field-to-window linkage is unverified (Motive's
-   rollup-timezone documentation covers returned timestamps on rollup
-   endpoints, not window interpretation on raw-event endpoints), the
-   Rails-style display name needs a maintained mapping plus DST handling,
-   and overlap-matching makes the client-side filter mandatory anyway, so
-   precision buys nothing over the pad.
-3. **Backfill chunking bounds at a ≤ 30-day date delta on both endpoints.**
-   `driving_periods` enforces it loudly; applying the same bound to
-   `idle_events` keeps wide-window latency (observed 12–18 s) inside the
-   configured HTTP read timeout (`HttpConfig.read_timeout_seconds`,
-   default 30 s — global, not per-endpoint; a user running wide backfill
-   chunks raises it in config).
-4. **The rollup endpoints stay unported** (`vehicle_utilization`,
-   `driver_utilization`): superseded in the legacy package, and their
-   documented company-local rollup timestamps make them a modeling hazard
-   with no consumer. *Amended 2026-07-17: reframed from excluded to
-   deferred under the endpoint-breadth scope principle (§1) — "no
-   consumer" is no longer a scope argument. The company-local timestamp
-   semantics become a documentation obligation on the mirror (verbatim
-   timestamps, the timezone caveat in the model docstring) plus a
-   window-matching probe question, not an exclusion. Same reframe for
-   the legacy `groups` and `users` endpoints. All queue behind the
-   Samsara wave (§15 item 7).* *Amended 2026-07-21: the rollup pair
-   shipped as `vehicle_utilizations` / `driver_idle_rollups` — the
-   obligation discharged per their §8 decision block.*
+- **The rollup grain is the request window (`fixed_unit_days`).** A rollup surface
+  returns one row per entity per REQUESTED window, and day units are not a lossless
+  decomposition of wider ones — Samsara fuel-energy proved non-additivity directly
+  (178/267 additive, 89/267 mismatched across four metrics). The unit width is therefore
+  part of the row's MEANING and must never float with configuration, so such a binding
+  declares `WatermarkMode.fixed_unit_days` (validated >= 1): the window planner tiles at
+  exactly that width, ignoring `sync.backfill_chunk_days`. Rows carry no event-time key,
+  so a window-stamping decoder synthesizes `windowStart`/`windowEnd` from the SENT spec's
+  own bounds (wire-truthful — exactly what was asked of the provider) and the stamp
+  becomes `event_time_column`; a sent spec missing a bound raises loudly. Vehicle
+  presence still unions across day windows, so per-day fetching loses no entity.
 
-### Samsara `drivers` probe-settled decisions (2026-07-20)
+- **Zero shared-machinery changes is the boringness criterion.** A vertical that ships
+  on declarations alone — a `SyncMode`/`StorageKind`/`event_time_column` set, a shared
+  spec builder parameterized per leaf, an existing decoder, a quota scope — proves the
+  seams were cut right. New machinery is called out where it exists and is the exception.
 
-Settled by the 2026-07-20 live probe session (the captured rows below); the
-drivers build implements them.
+**GeoTab `Get` and feed foundations (probed 2026-07-09).**
 
-1. **One dataset: the complete listing is active ∪ deactivated, and the
-   `driverActivationStatus` column carries the split.** The default listing
-   is only the active set (45% of the population invisible to it), so
-   completeness requires both sweeps. Rejected: splitting into two
-   endpoints (`drivers_active` / `drivers_deactivated`) — the partition is
-   a provider filter quirk over one entity, not two entities; two datasets
-   would push the union onto every consumer and double the state surface
-   for no semantic gain.
-2. **The sweep is DECLARED, not implemented: `request_shape=ParamSweep`,
-   resolved to the existing fan-out driver at the shared seam.** The
-   member-agnostic `FanOutRequestDriver` fans one cursor chain per declared
-   value with the sweep's param as the member key — no new decoder, no new
-   driver. Rejected: a sweeping *decoder* (a Samsara decoder that would
-   iterate statuses inside the page walk) — request cardinality belongs to
-   the driver seam (§14's unification), the decoder sees exactly one chain
-   by contract, and a per-provider sweeping decoder would not generalize
-   to the next provider's partitioned listing, where the fan-out driver
-   already does.
-3. **Model = union-of-observed with the Device/User list-block exclusion.**
-   The `tags` list (441/460) and `eldSettings.rulesets` (190/460) are
-   list-of-object blocks the §9 pipeline does not represent — excluded and
-   recorded in the model docstring; `externalIds` was never observed in
-   832 records and is unmodeled as *unobserved*, not excluded. Only `id`
-   is required: per-key presence was fully enumerated on the active sweep
-   only (the deactivated sweep matched structurally), so the
-   always-present-in-capture keys stay optional.
-4. **No completeness check.** Continuation is explicit per page (the
-   cursor contract, proven per-type) and the sweep vocabulary is
-   API-enforced — every malformed `driverActivationStatus` value returns a
-   loud HTTP 400, never a silent empty listing — so there is nothing a
-   provider-side count would guard that the walk and the enum closure do
-   not already make loud.
+1. *Device harvest is sort-seek paging by `id` ascending* — the initial request carries
+   `sort {sortBy: "id"}` with a null `offset`, each advance sets `offset` to the last
+   returned id, termination is the empty result list; `lastId` is never sent with id-sort
+   (`ArgumentException`). The silent 5,000 `Get` cap makes a single uncursored `Get`
+   unsound for any cappable entity, so `SinglePageDecoder` is ruled out for capped `Get`
+   entities and a seek-paging Get decoder joins the family.
+2. *A `GetCountOf` completeness guard sits beside every snapshot Get harvest.* The
+   harvest streams unbuffered while a running count accumulates; after the terminal page
+   one `GetCountOf` fires through the same client and quota scope, and a mismatch raises
+   `ProviderResponseError` naming both counts — the run fails loudly, staging is discarded
+   so the prior parquet stands, and the next scheduled run is the retry (no in-run
+   refetch, no tolerance number). The guard is driver-layer, declared on the definition
+   (`EndpointDefinition.completeness_check`, a narrow Protocol whose GeoTab implementation
+   is `GetCountOfCheck`) so the orchestrator stays provider-agnostic. It is snapshot-scoped
+   by construction: an expected-count comparison is meaningful only against a complete
+   listing, so a windowed or fan-out pairing is rejected at definition construction.
+3. *Rate posture is self-limiting at the header-advertised per-class budgets*, regardless
+   of whether GeoTab enforces yet — the captured `X-Rate-Limit-*` headers ARE the probe
+   and inform the configured budgets; they stay unconsumed at runtime (the reactive
+   control loop stands, §7).
+4. *Feed bootstrap is ingested-since, not occurred-since.* The feed is version-ordered,
+   with `dateTime` dipping before the requested `fromDate`, so date watermarks are never
+   derived from feed `dateTime`s — the `FeedToken` is the only sound resume coordinate and
+   stays opaque (§4). Date-partitioned feed storage assigns partitions per record and
+   tolerates event-time disorder by construction.
+5. *Accepted residual: the exactly-full-final-page feed edge* — a final page holding
+   exactly `resultsLimit` records costs one extra empty `GetFeed` (worst case one per sync
+   per feed endpoint). Accepted, not open (§4's feed record).
 
-### Samsara `trips` probe-settled decisions (2026-07-20)
+**GeoTab `exception_events` — windowed with a bisection fallback (probed 2026-07-13/15).**
 
-Settled by the 2026-07-20 live probe session (the captured rows below); the
-trips build implements them.
+- Ships as a windowed watermark / `DATE_PARTITIONED` endpoint on the trips template (the
+  shared provider `lookback_days`/`cutoff_days`); the captured mutation-after-creation
+  envelope sits well inside a one-day lookback. `event_time_column='active_from'` —
+  retrieval is overlap-anchored (a shared-principle case), so start routing needs no wire
+  pad.
+- *Paging is bisection, not seek:* id-sort is unsupported on this type outright
+  (`ArgumentException` — "Can not sort by id. Supported sortable fields are version,
+  date."), so the seek template is structurally unavailable. The fallback: fetch the unit
+  window at the endpoint's `resultsLimit`; a page of exactly the requested limit is the
+  overflow signal (a return-type condition) — discard it, halve the window, recurse
+  left-to-right; a minimum-width window still returning a full page raises
+  `ProviderResponseError`. It lives in a `BisectingWindowDriver` beside the single-fetch
+  driver at the request-driver seam (§14), so fetch grain decouples from write grain and
+  work units / delete-by-window stay whole-day. Rejected: a bisecting page decoder
+  (decoders are stateless — the pending-halves stack has nowhere to live) and work-unit
+  splitting (breaks the FIFO-by-unit-id watermark-truth invariant and midnight alignment).
+- *Bisection is cap-gated per entity type.* The overflow signal is sound only where the
+  endpoint honors requests up to the asked size; a lower silent cap would make every page
+  look partial. The silent `Get` cap is captured on Device and (for this type) on
+  ExceptionEvent — `GetCountOf` 304,716 against a bare `Get`'s exactly 5,000 — so
+  bisection ships for a type only after its cap behavior is captured. Seek paging never
+  depends on the cap (it terminates on the empty page).
+- *Version one ships the unfiltered stream — no rule-filter knob.* The silent-empty hazard
+  means a typo'd rule id reads as a permanently empty dataset; validating a filter without
+  an extra API call reduces to a one-member proven set; and rule selection on the delivered
+  stream is a one-expression consumer-side operation (§1's no-presumption stance). A
+  server-side filter arrives, if ever, with proven-set config validation.
 
-1. **The legacy v1 surface is the only surface, and it is structurally
-   per-vehicle — the roster machinery's first cross-provider consumer.**
-   `GET /v1/fleet/trips` is the one live path (the modern candidates 404:
-   `/fleet/trips`, `/beta/fleet/trips`, `/preview/fleet/trips`) and
-   `vehicleId` is REQUIRED (a loud HTTP 400 when omitted), so the binding
-   ships windowed watermark / `DATE_PARTITIONED` / SAMSARA scope /
-   `event_time_column='start_time'` with `request_shape=RosterFanOut(
-   roster=RosterKey(SAMSARA, 'vehicle_ids'), member_key='vehicleId')` — the
-   Motive vehicle_locations template, crossed to a second provider with no
-   machinery change.
-2. **A new `VEHICLE_IDS_ROSTER` declared beside its feeder**
-   (`endpoints/samsara/vehicles.py`, the Motive precedent verbatim:
-   `source_endpoint='vehicles'`, `source_column='id'` — the vehicles
-   frame's flattened top-level id — 1-day max age, eviction threshold 3;
-   discovered by the registry walk, no registration). On inactive
-   coverage, honestly: the 2026-07-17 capture proves the feeder lists
-   unplugged units, so present-but-inactive vehicles stay fanned over;
-   whether Samsara ever delists a removed vehicle was not probed, and the
-   eviction hysteresis is what retires a member the listing stops
-   returning.
-3. **The leaf builder merges the fan-out member as a QUERY parameter**
-   (the drivers-leaf precedent, not the Motive path-template one) plus the
-   resume window as `startMs`/`endMs` epoch milliseconds —
-   `int(timestamp * 1000)` of the tz-aware bound, `require_utc`-guarded at
-   the serialization point. The half-open `[start, end)` to inclusive-wire
-   mismatch at the millisecond boundary is absorbed by
-   overlap-supersets-ownership plus the runner's post-fetch start filter
-   (documented on the builder). The 90-day cap needs no builder guard:
-   default 7-day backfill chunks sit far inside, and a
-   `backfill_chunk_days` raised past 90 earns the provider's own loud 400
-   — the Motive driving_periods stance.
-4. **Model = the full-census mirror with epoch-ms type recovery.**
-   `start_time`/`end_time` are tz-aware UTC datetimes RECOVERED from the
-   wire's epoch-millisecond ints by a mode='before' validator — type
-   recovery is structural and belongs on the mirror (the GeotabTimeSpan
-   precedent); aliases `startMs`/`endMs`, the field names dropping the
-   unit suffix because the recovered type carries it (naming ownership).
-   Everything else mirrors verbatim under unit-suffixed names; `driverId`
-   0 is the UNASSIGNED sentinel, mirrored untouched;
-   `assetIds`/`codriverIds` (observed ONLY EMPTY across all 725) are typed
-   `list[int]` — the int-id family in the `list[scalar]` form the §9
-   derivation represents (it has no tuple form). Address blocks and the
-   geocoded strings are the PII-adjacent fields — capture fixtures are
-   fully synthetic.
-5. **No completeness check** — windowed, deliberately partial (the
-   standing snapshot-only rule).
+**Motive `driving_periods` / `idle_events` — the fleet-wide event pair (probed 2026-07-15).**
 
-### Samsara `idling_events` probe-settled decisions (2026-07-20)
+- Both port as windowed watermark / `DATE_PARTITIONED`, fleet-wide (no fan-out),
+  offset-paginated through the Motive wrapped-list decoder, on a shared fleet-date-range
+  spec builder; `event_time_column='start_time'` on both — start was never observed null
+  (in-progress records null their END fields).
+- *`driving_periods` is UTC start-anchored* (retrieval and routing coincide).
+  *`idle_events` is overlap-anchored at COMPANY-LOCAL day boundaries* — so it pads its wire
+  window one day each side (`start_date - 1` / `end_date + 1`) and the true UTC window does
+  the trimming (the timezone-agnostic pad, a shared-principle case). Rejected: deriving the
+  account zone from `/v1/companies` `time_zone` — the field-to-window linkage is unverified,
+  the display-name mapping needs a maintained table plus DST handling, and overlap-matching
+  makes the client-side filter mandatory anyway, so precision buys nothing.
+- *Chunking bounds at a <= 30-day date delta on both.* `driving_periods` enforces it with a
+  loud provider 400; `idle_events` (which honored a 35-day window) takes the same bound to
+  keep wide-window latency (observed 12-18 s) inside the global HTTP read timeout
+  (`HttpConfig.read_timeout_seconds`, default 30 s; a wider backfill raises it in config).
+  Never generalize a per-endpoint cap across siblings — the cap is real on
+  `driving_periods`, absent on `idle_events`.
 
-Settled by the 2026-07-20 live probe session (the captured rows below); the
-idling_events build implements them.
+**Samsara `drivers` — the two-sweep population (probed 2026-07-20).**
 
-1. **The Motive driving_periods template on the Samsara cursor decoder —
-   the first windowed+cursor pairing, composed entirely from existing
-   parts.** Windowed watermark / `DATE_PARTITIONED` / SAMSARA scope /
-   `event_time_column='start_time'`, with the fleet-wide default
-   `SingleFetch` shape (events carry per-record asset attribution —
-   `asset: {id: int}` on every record — so there is no fan-out and the
-   binding declares nothing). Retrieval is START-anchored on UTC (the
-   captured row), so the retrieval anchor and the routing anchor coincide
-   natively: no wire pad, and the runner's post-fetch window filter is
-   pure hygiene (the driving_periods situation).
-2. **The leaf spec builder renders the resume window as RFC3339
-   `startTime`/`endTime`** via `require_date_window` and the timing
-   codec's `to_iso8601`; the decoder owns `limit`/`after` — its
-   `first_request` merges `limit=200` (the probed per-endpoint cap, a
-   per-leaf `Final` with provenance), and because the `after` advance
-   merges onto the SENT spec, the window parameters persist across every
-   page of the walk (the mechanism proven live on the drivers sweep, now
-   carrying a window instead of a status). The sub-3-months range cap
-   needs no builder guard: default 7-day backfill chunks sit far inside,
-   and a `backfill_chunk_days` raised past the cap earns the provider's
-   own loud JSON 400 — the Motive driving_periods stance.
-3. **Duration stays `duration_milliseconds: int`** — a verbatim
-   unit-suffixed mirror. No timedelta recovery: the value is directly
-   consumable, and recovery would presume a use (the wire has NO end key
-   — the interval is start plus duration).
-4. **No completeness check** (windowed, deliberately partial — the
-   standing snapshot-only rule); **no enum for `ptoState`** — only
-   `'inactive'` was observed in 2,200 records, but the value set is not
-   closed by evidence (unlike `driverActivationStatus`'s 400-proven
-   closure), so the field is a plain `str` with the openness documented
-   on the model.
+- *One dataset: the complete listing is active ∪ deactivated, and the
+  `driverActivationStatus` column carries the split.* The default listing is the active
+  set only (45% of the 832-driver population invisible to it), so completeness needs both
+  sweeps. Rejected: two endpoints — the partition is a provider filter quirk over one
+  entity, and two datasets would push the union onto every consumer.
+- *The sweep is DECLARED, not implemented: `request_shape=ParamSweep`*, resolved to the
+  existing member-agnostic fan-out driver at the shared seam (one cursor chain per declared
+  status value, the sweep param as the member key) — no new decoder, no new driver.
+  Rejected: a sweeping decoder (request cardinality belongs to the driver seam, and it
+  would not generalize to the next provider's partitioned listing).
+- *Model = union-of-observed with the Device/User list-block exclusion.* `tags` (441/460)
+  and `eldSettings.rulesets` (190/460) are list-of-object blocks the §9 pipeline does not
+  represent — excluded, recorded on the model; `externalIds` (never observed in 832
+  records) is unmodeled as unobserved, not excluded. Only `id` is required (the
+  conservative posture, presence enumerated on the active sweep, the deactivated sweep
+  matching structurally).
+- *No completeness check:* continuation is explicit per page and the sweep vocabulary is
+  API-enforced (a malformed `driverActivationStatus` returns a loud 400, never a silent
+  empty listing).
 
-### Samsara `addresses` probe-settled decisions (2026-07-20)
+**Samsara `trips` — the roster machinery's first cross-provider consumer (probed 2026-07-20).**
 
-Settled by the 2026-07-20 live probe session (the captured rows below); the
-addresses build implements them.
+- *The legacy `GET /v1/fleet/trips` is the only surface* (the modern candidates 404) and
+  `vehicleId` is REQUIRED (a loud 400 when omitted), so trips is structurally per-vehicle:
+  windowed watermark / `DATE_PARTITIONED` / SAMSARA / `event_time_column='start_time'` with
+  `request_shape=RosterFanOut(roster=RosterKey(SAMSARA,'vehicle_ids'), member_key='vehicleId')`
+  — the Motive `vehicle_locations` template crossed to a second provider with no machinery
+  change. Retrieval is overlap-anchored (shared-principle case; a 60-second window strictly
+  inside a trip returned it).
+- *A `VEHICLE_IDS_ROSTER` is declared beside its feeder* (`endpoints/samsara/vehicles.py`;
+  `source_endpoint='vehicles'`, `source_column='id'`, 1-day max age, eviction threshold 3;
+  discovered by the registry walk). The feeder lists inactive/unplugged units, so
+  present-but-inactive vehicles stay fanned; whether Samsara ever delists a removed vehicle
+  was not probed, and the eviction hysteresis retires a member the listing stops returning.
+- *The leaf builder merges the fan-out member as a QUERY parameter* (the drivers precedent,
+  not the path-template one) plus the resume window as `startMs`/`endMs` epoch milliseconds
+  (`int(timestamp*1000)` of the `require_utc`-guarded bound; the half-open-to-inclusive-wire
+  mismatch is absorbed by overlap-supersets-ownership plus the post-fetch start filter). The
+  90-day cap needs no builder guard (shared principle).
+- *Model = the full-census mirror with epoch-ms type recovery.* `start_time`/`end_time` are
+  tz-aware UTC datetimes recovered from the wire's epoch-ms ints by a `mode='before'`
+  validator (type recovery is structural, belongs on the mirror — the GeotabTimeSpan
+  precedent); aliases `startMs`/`endMs`, the field names dropping the unit suffix the
+  recovered type carries. `driverId` 0 is the UNASSIGNED sentinel, mirrored untouched;
+  `assetIds`/`codriverIds` (observed only empty) are typed `list[int]` (the §9
+  list-of-scalar form). Address blocks and geocoded strings are PII-adjacent — fixtures are
+  fully synthetic.
+- *No completeness check* (windowed, deliberately partial).
 
-1. **The vehicles template verbatim: a plain snapshot on the standard
-   cursor contract.** Snapshot mode / `SINGLE` storage / SAMSARA scope /
-   the default `SingleFetch` shape / `StaticGetSpecBuilder` on
-   `/addresses` / the unchanged `SamsaraCursorPageDecoder` — no roster
-   sourced, no roster consumed, no window, and no completeness check
-   (continuation is explicit per page, the standing cursor-contract
-   rule). `limit` is 512, THIS endpoint's probed tier: limit=512
-   returned HTTP 200 and limit=513 a loud HTTP 400 — the
-   vehicles/drivers tier, NOT idling's 200 (the per-endpoint limit-tier
-   rule, honored by probing rather than assuming).
-2. **Optionality follows the vehicles posture.** The walk was the whole
-   population (1 page, 25 records — the complete address set), so the
-   seven 25/25 keys (`id`, `name`, `createdAtTime`, `formattedAddress`,
-   `latitude`, `longitude`, `geofence`) are REQUIRED and `addressTypes`
-   (20/25) is optional. `createdAtTime` is a tz-aware UTC datetime
-   (millisecond ISO-8601 on the wire, Pydantic's standard parse).
-3. **Two exclusions, both the Device/User list-of-objects precedent.**
-   `tags` (9/25) is excluded exactly as on vehicles/drivers. `geofence.
-   polygon` (24/25) is excluded WHOLESALE with the precedent applied one
-   level down: its ONLY key is `vertices`, a list of
-   `{latitude, longitude}` objects, so an emptied polygon model would
-   mirror nothing. The top-level `latitude`/`longitude` still carry the
-   address's center point on every record, so a polygon-fenced address
-   keeps its location while the boundary awaits the list-of-structs
-   derivation vertical. `AddressGeofence` therefore models `circle` and
-   `settings` only, both optional.
-4. **`circle`/`polygon` mutual exclusivity is mirrored, not enforced.**
-   The capture shows them mutually exclusive (1 vs 24, never both), but
-   both stay independent optionals with NO XOR validator — mirror, never
-   interpret; enforcing a constraint the provider owns would turn a
-   provider change into a fleetpull crash for no consumer's benefit.
+**Samsara `idling_events` — the first windowed+cursor pairing (probed 2026-07-20).**
 
-### Samsara `vehicle_stats_history` probe-settled decisions (2026-07-20)
+- The Motive `driving_periods` template on the Samsara cursor decoder, composed from
+  existing parts: windowed watermark / `DATE_PARTITIONED` / SAMSARA /
+  `event_time_column='start_time'`, fleet-wide `SingleFetch` (events carry per-record
+  `asset {id: int}` attribution, so no fan-out). Retrieval is UTC START-anchored (coincides
+  natively).
+- The leaf builder renders the resume window as RFC3339 `startTime`/`endTime`; the decoder
+  owns `limit`/`after` — `first_request` merges `limit=200` (THIS surface's probed cap, NOT
+  the 512 tier — a per-leaf `Final`), and the `after` advance merges onto the SENT spec so
+  window params persist across the walk. The sub-3-months range cap needs no builder guard
+  (shared principle).
+- *Duration stays `duration_milliseconds: int`* — a verbatim unit-suffixed mirror, no
+  timedelta recovery (the wire has no end key — the interval is start plus duration — and
+  recovery would presume a use). `ptoState` stays plain `str` (only `'inactive'` observed,
+  not evidence-closed).
+- *No completeness check.*
 
-Settled by the 2026-07-20 live probe session (the captured rows below); the
-vehicle-stats build implements them.
+**Samsara `addresses` — the whole-population snapshot (probed 2026-07-20).**
 
-1. **ONE legacy endpoint ships as THREE: `engine_states`, `gps_readings`,
-   `odometer_readings`.** The three stat types of
-   `GET /fleet/vehicles/stats/history` carry fully DISJOINT reading
-   schemas — `{time, value: str}` vs `{time, value: int}` vs the
-   seven-key gps shape — so the drivers decision-1 reasoning ("one
-   entity, one dataset") lands on the SPLIT side here: the `types`
-   param selects among genuinely different entities, not a provider
-   filter quirk over one entity, and a merged dataset would be a
-   union of disjoint schemas every consumer must re-split. Each
-   endpoint requests exactly its own type (`types=engineStates` /
-   `gps` / `obdOdometerMeters`), a FIXED param baked into its spec.
-2. **The grain is the READING.** Wire records are per-vehicle, each
-   nesting one reading-series array per requested type; the §9
-   pipeline represents scalars, not list-of-objects — and unlike the
-   tags/eldSettings exclusions the series IS the endpoint's entire
-   payload, so exclusion is not an option: the stored grain must be
-   the reading. One flat record per series element, with the vehicle's
-   identity synthesized onto each.
-3. **The unnesting is a DECODER: `SamsaraVehicleSeriesPageDecoder`,
-   COMPOSING `SamsaraCursorPageDecoder` by delegation** — the one
-   machinery addition of the triple. The cursor walks the VEHICLE axis
-   within the fixed window (probe-proven: zero vehicle-id overlap
-   across three consecutive pages), so pagination is exactly the
-   standard cursor contract, delegated verbatim to an inner cursor
-   decoder (`first_request` untouched; the advance — including the
-   continuation-without-cursor truncation guard — passed through),
-   while `decode_page` unnests each vehicle's series into flat records
-   carrying synthesized `vehicleId`/`vehicleName`/`vehicleSerial`/
-   `vehicleVin` keys (sourced from `id`/`name` and the `externalIds`
-   object's literal dotted `samsara.serial`/`samsara.vin` keys), each
-   synthesized ONLY when its source is present (the omit-absent-keys
-   posture), reading keys winning any collision — impossible by
-   census, the synthesized names having been chosen collision-free
-   against every observed series key. Rejected: inheritance (it would
-   couple the unnesting to the cursor decoder's internals, against the
-   family's independence idiom) and duplication (the cursor mechanics
-   are per-type-proven wire truth that would drift as two copies).
-   The decoder is Samsara-stats-specific by evidence, not a generic
-   flattener.
-4. **The windowed leaf is the idling_events species at the 512 tier.**
-   Windowed watermark / `DATE_PARTITIONED` / SAMSARA scope /
-   `event_time_column='time'` / the fleet-wide `SingleFetch` default —
-   vehicle attribution is decoder-synthesized per reading, so no
-   fan-out and no roster. One shared `SamsaraVehicleStatsSpecBuilder`
-   serves all three leaves (the Motive `_spec_builders` promotion
-   precedent, arriving with three users at birth), rendering RFC3339
-   `startTime`/`endTime` plus the fixed `types`; `limit` is 512,
-   probed on THIS surface (512 → 200, 513 → 400 — the vehicles/drivers
-   tier, NOT idling's 200; the per-endpoint tier rule). Retrieval is
-   READING-TIME anchored on the half-open `[start, end)` window
-   (probe: a 12:00–13:00Z window returned min 12:00:03.062Z, max
-   12:59:56.881Z), so retrieval and routing coincide natively, no wire
-   pad exists, and the runner's window filter is pure hygiene.
-5. **Engine-state `value` stays a plain `str`.** The observed
-   vocabulary is exactly `{'On', 'Off', 'Idle'}`, but that closure is
-   census-only: the API 400-enforces the `types` INPUT vocabulary
-   (`types=bogusType` → `Invalid stat type(s)`) yet does not enforce
-   output state values, so the enum bar is unmet (the eldExemptReason
-   lesson; the drivers `driverActivationStatus` enum was kept only
-   because the API 400-enforced it). The vocabulary is documented on
-   the model instead.
-6. **`vehicle_serial`/`vehicle_vin` are OPTIONAL.** 74/74 presence on
-   the one censused mixed-type page is not a whole-population oath
-   (the drivers conservative posture), and the vehicles surface proves
-   `externalIds` variance exists in this fleet; the decoder's
-   omit-absent-keys synthesis makes absence a missing key, landing
-   None. `vehicle_id`/`vehicle_name`/`time` plus each type's series
-   core (engine/odometer `value`; the seven always-present gps keys)
-   are REQUIRED — census-always-present on their axes.
-7. **No completeness check** (windowed, deliberately partial — the
-   standing snapshot-only rule); the API-enforced `types` input
-   vocabulary means a typo'd stat type can never read as an empty
-   dataset, and only carrier vehicles are returned per type (no
-   empty-array padding observed), so an empty page is honestly empty.
+- The vehicles template verbatim: snapshot / `SINGLE` / SAMSARA / `SingleFetch` /
+  `StaticGetSpecBuilder` on `/addresses` / the unchanged cursor decoder — no roster, no
+  window, no completeness check. `limit` is 512 (THIS surface's probed tier: 512 -> 200,
+  513 -> 400 — the vehicles/drivers tier, NOT idling's 200; the per-endpoint tier rule,
+  honored by probing not assuming).
+- The full walk was the whole population (25 records, one page), so the seven 25/25 keys
+  (`id`, `name`, `createdAtTime`, `formattedAddress`, `latitude`, `longitude`, `geofence`)
+  are required and `addressTypes` (20/25) is optional. `createdAtTime` is tz-aware UTC.
+- *Two exclusions, the Device/User list-of-objects precedent.* `tags` (9/25) excluded as
+  elsewhere. `geofence.polygon` (24/25) is excluded WHOLESALE (its only key is `vertices`,
+  a list of `{latitude, longitude}` objects — an emptied polygon model would mirror
+  nothing); the top-level `latitude`/`longitude` still carry the center point, so a
+  polygon-fenced address keeps its location while the boundary awaits the list-of-structs
+  vertical. `AddressGeofence` therefore models `circle` and `settings` only, both optional.
+- *`circle`/`polygon` mutual exclusivity is mirrored, not enforced* (capture shows 1 vs 24,
+  never both) — both stay independent optionals with no XOR validator (mirror, never
+  interpret; enforcing a provider-owned constraint would turn a provider change into a
+  fleetpull crash for no consumer's benefit).
 
-### Samsara `location_stream` probe-settled decisions (2026-07-20)
+**Samsara `vehicle_stats_history` — one legacy endpoint, three reading-grain datasets (probed 2026-07-20).**
 
-Settled by the 2026-07-20 live probe session (the captured rows above);
-the asset_locations build implements them. The heading keeps the legacy
-hub's `location_stream` name for greppability; the shipped endpoint is
-**`asset_locations`**.
+- *Ships as THREE endpoints — `engine_states`, `gps_readings`, `odometer_readings` — because
+  the three stat types carry fully DISJOINT reading schemas* (`{time, value: str}` vs
+  `{time, value: int}` vs the seven-key gps shape). Here the drivers "one entity, one
+  dataset" reasoning lands on the SPLIT side: the `types` param selects genuinely different
+  entities, and a merged dataset would union disjoint schemas every consumer must re-split.
+  Each endpoint bakes its own `types` (`engineStates` / `gps` / `obdOdometerMeters`).
+- *The grain is the READING.* Wire records are per-vehicle, each nesting one reading-series
+  array per type; the §9 pipeline represents scalars, not list-of-objects, and the series IS
+  the payload (unlike the tags/eldSettings exclusions, exclusion is not an option) — so one
+  flat record per series element, the vehicle's identity synthesized onto each.
+- *The unnesting is a DECODER: `SamsaraVehicleSeriesPageDecoder`, composing
+  `SamsaraCursorPageDecoder` by delegation* — the one machinery addition. The cursor walks
+  the VEHICLE axis within the fixed window (probe-proven: zero vehicle-id overlap across
+  three consecutive pages), so pagination is the standard cursor contract delegated verbatim
+  (including the continuation-without-cursor truncation guard), while `decode_page` unnests
+  each vehicle's series into flat records carrying synthesized
+  `vehicleId`/`vehicleName`/`vehicleSerial`/`vehicleVin` keys (from `id`/`name` and the
+  `externalIds` object's literal dotted `samsara.serial`/`samsara.vin` keys), each
+  synthesized only when its source is present, reading keys winning any (census-impossible)
+  collision. Rejected: inheritance (couples the unnesting to the cursor decoder's internals)
+  and duplication (the cursor mechanics would drift as two copies).
+- *The windowed leaf is the idling_events species at the 512 tier* (`event_time_column='time'`,
+  fleet-wide `SingleFetch` — vehicle attribution is decoder-synthesized). One shared
+  `SamsaraVehicleStatsSpecBuilder` serves all three leaves (three users at birth), rendering
+  the RFC3339 window plus the fixed `types`. Retrieval is reading-time anchored on
+  `[start, end)` (coincides natively).
+- *Engine-state `value` stays plain `str`* — observed `{'On','Off','Idle'}` is census-only;
+  the API 400-enforces the `types` INPUT vocabulary but not output state values (shared
+  principle). *`vehicle_serial`/`vehicle_vin` are OPTIONAL* — 74/74 on one page is not a
+  whole-population oath, and the vehicles surface proves `externalIds` variance in this
+  fleet; the omit-absent synthesis lands None on absence. `vehicle_id`/`vehicle_name`/`time`
+  plus each type's series core (engine/odometer `value`; the seven always-present gps keys)
+  are required (census-always-present on their axes).
+- *No completeness check* — the API-enforced `types` input means a typo can't read as empty,
+  and only carrier vehicles are returned per type (no empty-array padding), so an empty page
+  is honestly empty.
 
-1. **The endpoint ships as `asset_locations`.** The legacy hub called
-   the surface `location_stream` (after the wire path
-   `/assets/location-and-speed/stream`); the catalog name follows the
-   name=plural-of-entity invariant — the stored entity is the
-   asset-location reading, one row per fix. The model module docstring
-   carries the legacy-name mapping.
-2. **The shape is the sanctioned new union member:
-   `BatchedRosterFanOut`.** The surface REQUIRES an id filter
-   (an id-less request is HTTP 400 `"Need to include asset IDs to
-   filter by."`) with the batch cap API-ENFORCED AT 50 (probed: 50 →
-   200; 100/200/609 → 400 `"Need to filter by 50 or less asset IDs or
-   syncTokens."`), so neither `SingleFetch` (no fleet-wide request
-   exists) nor a plain `RosterFanOut` (609 chains where 13 suffice)
-   fits. The binding declares
-   `BatchedRosterFanOut(roster=vehicle_ids, member_key='ids',
-   batch_size=50)` over the Samsara `vehicle_ids` roster — the roster
-   indirection is `RosterFanOut`'s verbatim.
-3. **The batch is TRANSPORT PACKING only.** Every record carries its
-   own `asset.id` attribution, so no member attribution rides on the
-   request mapping — unlike a `RosterFanOut` chain, whose responses
-   may not echo the requested member. Consequences, recorded not
-   hidden: the shape resolves onto the EXISTING member-agnostic
-   fan-out driver (the ParamSweep precedent — each sorted comma-joined
-   batch string is simply one member; a pure chunking helper in the
-   shape seam does the batching, the driver untouched), and the
-   fan-out progress narration counts BATCHES for this shape
-   (`members=N/13`-style lines count chains). Chunking is
-   deterministic: members sort before chunking, so identical rosters
-   always produce identical batches.
-4. **The trips retrofit question, probed and CLOSED.** `/v1/fleet/trips`
-   with a comma-joined `vehicleId` returns HTTP 400 (`rpc error: code
-   = InvalidArgument`), so trips genuinely cannot batch and stays
-   per-member `RosterFanOut`. `BatchedRosterFanOut` serves
-   asset_locations alone today, by API evidence.
-5. **The windowed leaf is the idling_events species at the 512 tier,
-   batch-fanned.** Windowed watermark / `DATE_PARTITIONED` / SAMSARA
-   scope / `event_time_column='happened_at_time'`; the leaf builder
-   renders RFC3339 `startTime`/`endTime` (the idling precedent) and
-   merges the batch binding verbatim as the `ids` query parameter (the
-   trips member-merge precedent); the standard
-   `SamsaraCursorPageDecoder` walks each chain (records are already
-   reading-grain — NO series decoder; the fat composite `endCursor`
-   passes back verbatim as `after`). `limit` is 512, probed on THIS
-   surface (512 → 200, 513 → 400 — the per-endpoint tier rule).
-   Retrieval is READING-TIME anchored on the half-open `[start, end)`
-   window (probe: 12:00–13:00Z returned min 12:00:03Z / max
-   12:59:56Z), so retrieval and routing coincide natively, no wire pad
-   exists, and the runner's window filter is pure hygiene. Vehicles is
-   the feeder (staging orders it first); no roster is sourced.
-6. **The model is the three-block census mirror, with one deliberate
-   requiredness judgment.** `happened_at_time`, `asset {id: str}` (the
-   ONLY observed asset key; a STRING — the idling_events bare-int
-   contrast, mirrored per endpoint), and the `location` core
-   (`accuracy_meters`/`heading_degrees` ints,
-   `latitude`/`longitude` floats) are all REQUIRED. The nested 300/300
-   census on a 454-record page is NOT a whole-population oath (the
-   drivers conservative posture would leave the block's fields
-   optional), but the location core is required anyway by structural
-   judgment: a location record without coordinates mirrors nothing —
-   a future record omitting them should fail loudly, never land an
-   all-null coordinate row. Recorded on the model docstring.
-7. **`location.geofence` is OBSERVED-EMPTY, not excluded; speed is
-   UNOBSERVED, not excluded.** `geofence` was present 300/300 but an
-   empty object with ZERO keys on every censused record — there is
-   nothing to mirror, so it is unmodeled (`extra='ignore'` drops it);
-   revisit on a capture showing content. No speed key appeared
-   anywhere despite the surface's name — unmodeled as unobserved;
-   revisit on a capture that shows one.
+**Samsara `asset_locations` — the first `BatchedRosterFanOut` (probed 2026-07-20).**
 
-### Samsara `driver_vehicle_assignments` probe-settled decisions (2026-07-20)
+- Ships as `asset_locations` (the legacy package's `location_stream`, after the wire path
+  `/assets/location-and-speed/stream`; the catalog name follows name=plural-of-entity, one
+  row per fix; the module docstring carries the legacy-name mapping).
+- *The shape is the sanctioned new union member `BatchedRosterFanOut`.* The surface REQUIRES
+  an id filter (an id-less request is 400 `"Need to include asset IDs to filter by."`) with
+  the batch cap API-ENFORCED AT 50 (50 -> 200; 100/200/609 -> 400), so neither `SingleFetch`
+  (no fleet-wide request exists) nor plain `RosterFanOut` (609 chains where 13 suffice) fits.
+  The binding declares `BatchedRosterFanOut(roster=vehicle_ids, member_key='ids',
+  batch_size=50)` over the Samsara `vehicle_ids` roster.
+- *The batch is TRANSPORT PACKING only.* Every record carries its own `asset.id`, so no
+  member attribution rides the request. Consequences, recorded not hidden: the shape resolves
+  onto the EXISTING member-agnostic fan-out driver (each sorted comma-joined batch string is
+  one member; a pure chunking helper does the batching), and the fan-out progress narration
+  counts BATCHES for this shape. Chunking is deterministic (members sort before chunking, so
+  identical rosters produce identical batches).
+- *The trips retrofit question is CLOSED:* `/v1/fleet/trips` with a comma-joined `vehicleId`
+  returns 400 (`rpc error: code = InvalidArgument`), so trips cannot batch and stays
+  per-member `RosterFanOut`; `BatchedRosterFanOut` serves asset_locations alone today, by API
+  evidence.
+- *The windowed leaf is the idling species at the 512 tier, batch-fanned*
+  (`event_time_column='happened_at_time'`, RFC3339 window, the standard cursor decoder walking
+  each chain — records are reading-grain, so no series decoder; the fat composite `endCursor`
+  passes back verbatim). Vehicles is the feeder (staging orders it first); no roster sourced.
+- *The model is the three-block census mirror with one requiredness judgment.*
+  `happened_at_time`, `asset {id: str}` (the only observed asset key — a STRING, the idling
+  bare-int contrast, mirrored per endpoint), and the `location` core (`accuracy_meters`/
+  `heading_degrees` ints, `latitude`/`longitude` floats) are REQUIRED. The nested 300/300
+  census is not a whole-population oath, but the location core is required by STRUCTURAL
+  judgment: a location record without coordinates mirrors nothing (recorded on the model).
+  *`location.geofence` is OBSERVED-EMPTY, not excluded* (300/300 present but zero keys —
+  nothing to mirror, `extra='ignore'` drops it; revisit on content); *speed is UNOBSERVED,
+  not excluded* (no speed key despite the surface's name — revisit on a capture showing one).
 
-Settled by the 2026-07-20 live probe session (the captured rows below);
-the driver_vehicle_assignments build implements them.
+**Samsara `driver_vehicle_assignments` — the collapsed-sweep windowed walk (probed 2026-07-20/21).**
 
-1. **ONE endpoint, `filterBy=vehicles` baked in as a FIXED param.**
-   `filterBy` is REQUIRED and API-enforced to a two-value vocabulary
-   (missing → HTTP 400; a bogus value → HTTP 400 naming
-   `'drivers'`/`'vehicles'`), but the two sweeps are ONE DATASET: full
-   24-hour walks under both values returned IDENTICAL row sets —
-   216 = 216, proven equal as sets of `(driver.id, vehicle.id,
-   startTime, endTime, assignmentType, isPassenger, assignedAtTime)`
-   tuples. The drivers decision-1 reasoning lands on the NO-SPLIT side
-   here: same entity, same rows — the axis is a traversal choice, not
-   a data partition (and not the stats triple's disjoint-schema
-   split). So one endpoint, no `ParamSweep`, no second endpoint; the
-   fixed param rides the leaf builder (the stats triple's `types`
-   idiom — a leaf builder, no new shared abstraction). Rejected:
-   sweeping both values (it would double every fetch to re-download
-   the identical rows) and a second endpoint (two datasets carrying
-   one row set would push a spurious union onto every consumer).
-2. **`results_limit=50` is documentation-by-declaration of the
-   server's OWN paging.** The server pages at a FIXED 50 records and
-   the `limit` param is PROVEN IGNORED: limit=1, 5, 100, 512, 513 —
-   and no limit at all — each returned a 50-record first page with
-   `hasNextPage: true`, and 513 was NOT rejected (no enforced tier on
-   this surface, unlike every previously probed Samsara surface). The
-   binding declares the observed page size with a provenance comment
-   stating the param is inert — the declaration documents the wire,
-   it is not a working knob.
-3. **Retrieval is OVERLAP-anchored — the trips decisions mirrored.**
-   Two adjacent day windows shared 5 midnight-spanning assignments
-   (identical tuples in both), and the later window carried 5 rows
-   whose `startTime` precedes the window start plus 2 whose `endTime`
-   is at/after the window end. Per §4 (the trips reasoning verbatim):
-   overlap retrieval supersets start-anchored ownership, so
-   `event_time_column='start_time'`, the runner's post-fetch window
-   filter assigns each assignment to the single chunk owning its
-   start, no wire pad exists, and wholesale date-partition replacement
-   absorbs midnight-spanning intervals exactly as it does for trips.
-   No empty or missing `endTime` was observed (216/216 carry both
-   bounds) — assignments were only ever observed complete, and the
-   watermark lookback absorbs late materialization (accepted
-   residual).
-4. **`assignmentType` stays a plain `str` — a decision the live proof
-   vindicated within hours.** The 24-hour census observed exactly
-   `{'static': 158, 'HOS': 58}`, but that closure was census-only: the
-   API 400-enforces `filterBy`'s INPUT vocabulary yet does not enforce
-   output assignment types, so the enum bar is unmet (the
-   eldExemptReason lesson, the engine-state `value` stance). The
-   2026-07-21 live proof's week-wide walk then surfaced a THIRD value
-   the census never saw — `driverApp` (25 of 8,042 rows, beside
-   `HOS` 5,520 and `static` 2,497) — which a census-closed enum would
-   have failed on loudly. The vocabulary is documented on the model,
-   never enforced.
-5. **The dotted `externalIds` mirror wire-verbatim on the NESTED
-   vehicle ref.** `vehicle.externalIds` carries the LITERAL DOTTED
-   wire keys `samsara.serial`/`samsara.vin` (both str, 216/216),
-   modeled with explicit `Field` aliases (the `VehicleExternalIds`
-   precedent) — unlike the stats triple's `vehicleSerial`/
-   `vehicleVin`, which are flat keys the series-unnesting DECODER
-   synthesizes; here the dotted keys are the record's own.
-   Requiredness posture: the census was TOTAL (every key 216/216),
-   but one day's two-sweep walk is not a whole-population-over-time
-   oath — the drivers conservative posture holds EXCEPT the
-   structural core (`driver`, `vehicle`, `start_time`, `end_time`,
-   and the refs' `id`s: an assignment without its parties or bounds
-   is structurally meaningless), required by structural judgment and
-   recorded on the model docstring (the asset_locations judgment).
-6. **No completeness check** (windowed, deliberately partial — the
-   standing snapshot-only rule); no range cap was probed on this
-   surface; the default 7-day chunk width is live-proven (the
-   2026-07-21 live proof's 7-day unit fetched 6,897 records clean —
-   the trips/idling wide-window acceptance family).
+- *ONE endpoint, `filterBy=vehicles` baked in as a FIXED param.* `filterBy` is REQUIRED and
+  API-enforced to `{drivers, vehicles}`, but the two sweeps are ONE DATASET: full 24-hour
+  walks under both values returned IDENTICAL row sets (216 = 216, proven equal as sets of
+  `(driver.id, vehicle.id, startTime, endTime, assignmentType, isPassenger, assignedAtTime)`
+  tuples). The axis is a traversal choice, not a data partition (contrast the stats triple's
+  disjoint-schema split), so one endpoint, no `ParamSweep`; the fixed param rides the leaf
+  builder (the stats-triple `types` idiom). Rejected: sweeping both values (doubles every
+  fetch for identical rows) and a second endpoint (pushes a spurious union onto consumers).
+- *`results_limit=50` is documentation-by-declaration of the server's OWN paging.* The server
+  pages at a fixed 50 and `limit` is PROVEN IGNORED (1, 5, 100, 512, 513, and none — each a
+  50-record first page with `hasNextPage: true`; 513 NOT rejected — no enforced tier on this
+  surface). The declaration documents the wire, not a working knob.
+- Retrieval is overlap-anchored (`event_time_column='start_time'`, shared principle; two
+  adjacent day windows shared 5 midnight-spanning assignments, and the later window carried
+  pre-start and post-end straddlers). No empty/missing `endTime` observed (216/216) —
+  assignments only ever observed complete; the watermark lookback absorbs late materialization.
+- *`assignmentType` stays plain `str` — a decision the live proof vindicated within hours.* The
+  24-hour census observed `{static:158, HOS:58}`, census-closed only (the API 400-enforces
+  `filterBy` INPUT, not output types); the 2026-07-21 week-wide live proof surfaced a THIRD
+  value `driverApp` (25/8,042) a census-closed enum would have failed on loudly.
+- *The dotted `externalIds` mirror on the NESTED vehicle ref.* `vehicle.externalIds` carries
+  the LITERAL DOTTED wire keys `samsara.serial`/`samsara.vin` (both str, 216/216), modeled
+  with explicit `Field` aliases (the `VehicleExternalIds` precedent — unlike the stats
+  triple's decoder-synthesized flat keys, these are the record's own). Requiredness is
+  conservative EXCEPT the structural core (`driver`, `vehicle`, `start_time`, `end_time`, and
+  the refs' `id`s — an assignment without its parties or bounds is meaningless), required by
+  structural judgment.
+- *No completeness check*; no range cap probed; the default 7-day chunk is live-proven (a
+  7-day unit fetched 6,897 records clean — the trips/idling wide-window acceptance family).
 
-### Samsara `vehicle_fuel_energy_reports` / `driver_fuel_energy_reports` probe-settled decisions (2026-07-21)
+**Samsara `vehicle_fuel_energy_reports` / `driver_fuel_energy_reports` — the first window-grain rollups (probed 2026-07-20/21).**
 
-Settled by the 2026-07-20/21 live probe session (the captured rows
-below); the vehicle_fuel_energy_reports / driver_fuel_energy_reports
-pair implements them.
+- *The rollup grain is the request window* (the shared-principle case, proven twice here):
+  widening a 1-day vehicle window to 2 days GREW per-vehicle metrics (47 shared / 36 grew / 11
+  equal against the 2-day window's first page of 100 reports), and NON-ADDITIVITY held — the
+  [07-18, 07-20) two-day rollup vs the sum of the two day rollups per vehicle across four
+  metrics (distance, engineRunTime, fuelConsumed, energyUsedKwh) was 178/267 additive, 89/267
+  MISMATCHED. So both bindings declare `fixed_unit_days=1` (the fixed-unit-width machinery's
+  first consumer). Vehicle presence still unions (the day windows' 145 and 242 vehicles ∪ to
+  the 267-vehicle two-day set), so per-day fetching loses no entity.
+- *Machinery A — `WatermarkMode.fixed_unit_days`* (the shared-principle declaration;
+  provider-portable in concept, Samsara-scoped in consumers today — it pre-builds the seam
+  Motive's utilization pair needs). Rejected: a per-endpoint config override (the width is a
+  provider fact, not a user choice) and a builder-side window guard (the planner is the single
+  tiling site).
+- *Machinery B — `SamsaraWindowReportPageDecoder`, the window-stamping report decoder.* The
+  envelope differs twice: the record list is NESTED (`data` is an object whose only key is the
+  per-surface report key `vehicleReports`/`driverReports`, extracted with `require_record_list`'s
+  structural loudness), and report rows carry NO event-time key, so the decoder STAMPS each
+  report with `windowStartDate`/`windowEndDate` copied verbatim from the SENT spec's
+  `startDate`/`endDate` (a missing param raises `ProviderResponseError` loudly; the stamp WINS
+  a census-impossible collision — it is the row's required time identity, the inverse of the
+  series decoder's reading-keys-win order). Pagination is the standard cursor contract (3
+  pages/267 reports at scale), sharing the extracted `cursor_page_advance` verdict with
+  `SamsaraCursorPageDecoder`; the report decoder lives in `decoders/samsara_reports.py`. The
+  stamped `window_start` becomes `event_time_column`.
+- *`results_limit=100` is the assignments placebo posture* (`limit` proven ignored — 512, 513,
+  10 all returned 3 pages/267 reports, 513 not rejected; the server pages at its own ~100).
+- *The `startDate`/`endDate` naming quirk rides the shared family builder* — these surfaces take
+  `startDate`/`endDate` param NAMES (unlike every other Samsara vertical's `startTime`/`endTime`)
+  while accepting full RFC3339 datetimes despite the names. One `SamsaraFuelEnergyReportSpecBuilder`
+  serves both leaves (only the path varies).
+- *Requiredness: whole-walk for the metric core, structural for identity.* `vehicle.energyType`
+  (only `'fuel'` observed) and the cost block's `currencyCode` (only `'USD'`) are census-open
+  plain `str`s. The metric core (eight metrics + `estFuelEnergyCost`) is required on the
+  whole-walk posture (71/71 vehicle, 47/47 driver — total censuses; a per-window rollup surface
+  has no absence mechanism to be conservative about); the window stamps and the entity ref (+
+  its `id`) are required structurally. The vehicle ref's dotted `externalIds` mirrors via
+  explicit aliases; the driver arm never showed `externalIds` (unmodeled as unobserved).
+  NON-ADDITIVITY is documented on both model module docstrings: day rows must not be summed.
+- *Naming:* the `_reports` suffix per name=snake-plural-of-model
+  (`VehicleFuelEnergyReport`/`DriverFuelEnergyReport` — the entity IS a report, a per-window
+  rollup row); the legacy package's `vehicle_fuel_energy`/`driver_fuel_energy` mapping is in
+  `ENDPOINTS.md`.
+- *No completeness check; no roster; no range cap probed* (the fixed 1-day unit sits far inside
+  any plausible cap).
 
-1. **THE ROLLUP GRAIN IS THE REQUEST WINDOW — proven twice, and it
-   forces the fixed 1-day unit declaration.** Both surfaces roll their
-   metrics up over exactly the requested window: (1) widening a 1-day
-   vehicle window to 2 days GREW per-vehicle metrics — comparing the
-   1-day walk's 71 vehicles against the 2-day window's FIRST PAGE (100
-   reports; a page-1 sample, not the full 267-vehicle walk): 47
-   vehicles shared, 36 grew, 11 equal; (2) NON-ADDITIVITY — comparing the
-   [07-18, 07-20) two-day rollup against the sum of the two day
-   rollups per vehicle across 4 metrics (distance, engineRunTime,
-   fuelConsumed, energyUsedKwh) found 178/267 additive and 89/267
-   MISMATCHED. Day units are NOT a lossless decomposition of wider
-   windows: each row is the provider's answer for exactly its window,
-   nothing else, and rows fetched at different unit widths are
-   different data. Consequence: the unit width is part of the ROW'S
-   MEANING, and row semantics must never float with user
-   configuration — a `backfill_chunk_days` change would silently
-   change what every subsequent row *is*. The pair therefore declares
-   the day grain on the binding (decision 2). The vehicle-presence
-   union DOES hold (the two day windows' 145- and 242-vehicle sets
-   union to the two-day walk's 267), so per-day fetching loses no
-   entity.
-2. **Machinery A — `WatermarkMode.fixed_unit_days`, the fixed-unit-
-   width declaration.** An optional `int | None` field on the mode
-   (validated >= 1 when set): when declared, the runner's window
-   planner tiles the endpoint's resume window into units of EXACTLY
-   this many days, ignoring `sync.backfill_chunk_days`; the config
-   knob remains the default for every endpoint that leaves it `None`.
-   The declaration wins because it encodes row semantics, not
-   transaction sizing — the one concern `backfill_chunk_days` was
-   never allowed to carry. Rejected: a per-endpoint config override
-   (the width is a provider fact settled by probe, not a user choice)
-   and a builder-side guard on the window width (the planner is the
-   single tiling site; guarding downstream would leave config still
-   deciding the tiling). Provider-portable in concept, Samsara-scoped
-   in consumers today — this pre-builds exactly the seam Motive's
-   deferred utilization pair (documented company-local rollups, §15
-   item 7's queue) needs when it arrives. Both fuel-energy bindings
-   declare `fixed_unit_days=1` with the provenance comment.
-3. **Machinery B — `SamsaraWindowReportPageDecoder`, the
-   window-stamping report decoder.** The pair's envelope differs from
-   every flat cursor surface twice over, and both differences live in
-   one decoder (`records_key`, `report_key`, `results_limit`):
-   the record list is NESTED — `data` is an OBJECT whose only key is
-   the per-surface report key (`vehicleReports` / `driverReports`),
-   each a list of report objects, extracted with the same
-   structural-violation loudness `require_record_list` gives flat
-   lists — and report rows carry NO event-time key of any kind, so the
-   decoder STAMPS each report with synthesized
-   `windowStartDate`/`windowEndDate` keys copied VERBATIM from the
-   SENT spec's own `startDate`/`endDate` params (wire-truthful: it is
-   exactly what was asked of the provider; the stats triple's
-   synthesized-identity-keys precedent, sourced from the sent spec
-   rather than the record). A sent spec lacking either param raises
-   `ProviderResponseError` loudly — a wiring bug surfaced, never
-   silently unstamped rows. The stamp WINS a (census-impossible) key
-   collision — it is the row's REQUIRED time identity, the inverse of
-   the series decoder's reading-keys-win order where the synthesized
-   keys are auxiliary. Pagination is the standard cursor contract
-   (real at scale: 3 pages/267 reports on the 2-day vehicle window),
-   shared with `SamsaraCursorPageDecoder` by extracting the cursor
-   verdict (the hasNextPage/endCursor/promised-continuation guard and
-   the `after` merge) both decoders use — stated once in
-   `decoders/samsara.py` (extracted same-file at shipping; the
-   2026-07-21 structural remediation made it the public
-   `cursor_page_advance` and moved this report decoder to the
-   `samsara_reports.py` sibling, which imports the verdict); the
-   existing decoder's behavior is byte-equivalent and its tests
-   unchanged. `first_request` injects
-   `limit` exactly as the cursor decoder does. The stamped
-   `window_start` becomes `event_time_column`, so each day unit's rows
-   route to exactly their `date=` partition.
-4. **`results_limit=100` is documentation-by-declaration of the
-   server's OWN paging — the assignments placebo posture.** The
-   `limit` param is PROVEN IGNORED: limit=512, 513, and 10 on the
-   same 2-day window all returned identical paging (3 pages, 267
-   reports), and 513 was NOT rejected (no enforced tier). The server
-   pages at its own ~100-report size (the 1-day driver window showed
-   `hasNextPage: true` at 100 reports), which the declaration
-   documents.
-5. **The `startDate`/`endDate` naming quirk rides the shared family
-   builder.** These surfaces take `startDate`/`endDate` param NAMES —
-   unlike every other probed Samsara vertical's `startTime`/`endTime`
-   — while accepting full RFC3339 datetimes despite the names (probed
-   with `T00:00:00Z` values; a 1-hour window also returned 200, 61
-   reports). One `SamsaraFuelEnergyReportSpecBuilder` in the
-   provider's `_spec_builders` module serves both leaves (only the
-   path varies — the stats-triple promotion precedent, two users at
-   birth), mapping the resume window exactly as the sibling windowed
-   builders map their bounds.
-6. **Census-open vocabularies stay plain `str`s; requiredness is
-   whole-walk for the metric core, structural for identity.**
-   `vehicle.energyType` (observed only `'fuel'`) and the cost block's
-   `currencyCode` (observed only `'USD'`) were sampled at 100 reports
-   each — census-open, never API-enforced on output, so plain strings
-   (the eldExemptReason lesson). The metric core (eight metrics +
-   `estFuelEnergyCost`) is REQUIRED on the whole-walk posture (71/71
-   vehicle, 47/47 driver — total censuses; a per-window rollup surface
-   has no absence mechanism to be conservative about); the window
-   stamps and the entity ref (+ its `id`) are required STRUCTURALLY —
-   a rollup row without its window or its entity is meaningless. The
-   vehicle ref's dotted `externalIds` mirrors via explicit aliases
-   with single-key independence (the assignments precedent); the
-   driver arm never showed `externalIds` anywhere — unmodeled as
-   unobserved. NON-ADDITIVITY is documented on both model module
-   docstrings: day rows MUST NOT be summed to reproduce a wider
-   window's rollup.
-7. **The naming decision: the `_reports` suffix, per the
-   name=snake-plural-of-model invariant.** The models are
-   `VehicleFuelEnergyReport` / `DriverFuelEnergyReport` (the entity IS
-   a report — a per-window rollup row, not a fuel-energy reading), so
-   the endpoints are `vehicle_fuel_energy_reports` /
-   `driver_fuel_energy_reports`. The legacy hub called these
-   `vehicle_fuel_energy` / `driver_fuel_energy`; the mapping is
-   recorded in `ENDPOINTS.md`.
-8. **No completeness check** (windowed, deliberately partial — the
-   standing snapshot-only rule); no roster sourced or consumed (both
-   surfaces are fleet-wide with per-record entity attribution); no
-   range cap was probed on this family (the fixed 1-day unit sits far
-   inside any plausible cap anyway).
+**Motive `groups` / `users` — whole-population snapshots (probed 2026-07-21).**
 
-### Motive `groups` / `users` probe-settled decisions (2026-07-21)
+- Both port as plain whole-population snapshots on the vehicles template (`SINGLE`,
+  `SnapshotMode`, `SingleFetch`, the shared static-GET builder, the Motive wrapped-list decoder
+  bound with each endpoint's wrapper keys — `groups`/`group`, `users`/`user` — at
+  `records_per_page`, 50 and 100 both honored live). No roster, no window, zero machinery
+  changes.
+- *Whole-population censuses drive requiredness* (the whole-walk posture, not the conservative
+  one): `/v1/groups` walked in full (152 records, 4 pages at 50) → every modeled `Group` field
+  required, nullability per census (`parent_id` null on roots — the groups form a tree;
+  `GroupOwnerRef.email` null-or-value). `/v1/users` walked in full (2,665 records, 27 pages at
+  100).
+- *The users shape is perfectly role-partitioned, and stays ONE dataset — the `role` column
+  carries the split.* `role='driver'` (2,359) carries a driver-only block on top of the shared
+  block; `admin` (32) and `fleet_user` (274) carry the shared block only; zero partial-presence
+  keys within any role. This is the Samsara drivers reasoning with the split INVERTED — there
+  the partition was a filter quirk (two sweeps, one dataset); here it is one population with a
+  role-dependent shape (one fetch, one dataset) — so splitting into per-role endpoints would
+  push the union onto every consumer and triple the state surface. Driver-only keys are OPTIONAL
+  (absent, not null, on non-drivers), nullability per the census inside the driver role. The
+  always-present partition, exactly: 22 keys on every record (20 modeled), +3 on
+  `admin`/`fleet_user` (all never-populated), +39 on drivers (38 modeled). `joined_at` is a
+  DATE-ONLY wire value (`YYYY-MM-DD`; 34/2,359 populated), recovered as `date | None` (the one
+  driver key whose value evidence arrived after the presence census — the deriver's
+  `date` -> `pl.Date` addition).
+- *Never-populated keys are EXCLUDED as value-unobservable* (`external_ids`/`phone_ext`
+  everywhere; `expires_at`/`phone2`/`phone_country_code2` on non-drivers;
+  `associated_dispatcher_id` on drivers) — no honest dtype exists, so modeling one would be
+  doc-driven invention; `extra='ignore'` makes exclusion "don't model it", and they join when a
+  capture types them (contrast `joined_at`, value-observed hence modeled). The `/v1/groups`
+  owner-ref `username`/`driver_company_id` sub-keys (null on all 152) are NOT excluded: the
+  owner ref rides the shared `UserSummary` (renamed from `DriverSummary`, now carrying three
+  surfaces) where both keys are value-observed on the driving-period/idle-event driver refs —
+  they simply read null here.
+- *Census-open vocabularies stay plain `str`* (`role`, `status`, `duty_status`, `eld_mode`,
+  `cycle`, `violation_alerts` — the UserSummary posture) — census-closed, not API-enforced on
+  output.
 
-Settled by the 2026-07-21 live probe session (the captured rows below —
-one session for the pair); the port build implements them.
+**Motive `vehicle_utilizations` / `driver_idle_rollups` — the rollup pair completing the Motive legacy queue (probed 2026-07-21).**
 
-1. **Both port as plain whole-population snapshots on the vehicles
-   template** — `StorageKind.SINGLE`, `SnapshotMode`, `SingleFetch`, the
-   shared static-GET builder, and the existing Motive wrapped-list
-   decoder bound with each endpoint's wrapper keys (`groups`/`group`,
-   `users`/`user`) at the configured `records_per_page` (50 and 100 both
-   honored live). No roster, no window, zero shared-machinery changes.
-2. **Whole-population censuses drive requiredness.** `/v1/groups` was
-   walked in full (152 records, 4 pages at 50): every key present on
-   all 152, so every modeled `Group` field is required, nullability per
-   census (`parent_id` null on roots — the groups form a tree;
-   `GroupOwnerRef.email` null-or-value). `/v1/users` was walked in full
-   (2,665 records, 27 pages at 100): the shared block, present on every
-   record of every role, is required (nullable exactly where null was
-   observed); see decision 3 for the rest.
-3. **The users shape is perfectly role-partitioned, and it stays ONE
-   dataset — the `role` column carries the split.** `role='driver'`
-   records (2,359) carry a driver-only key block on top of the shared
-   block; `admin` (32) and `fleet_user` (274) records carry exactly the
-   shared block; ZERO partial-presence keys within any role. This is
-   the Samsara drivers decision-1 reasoning with the split inverted:
-   there the partition was a provider filter quirk over one entity
-   (two sweeps, one dataset); here it is one population with a
-   role-dependent record shape (one fetch, one dataset) — splitting
-   into per-role endpoints would push the union onto every consumer and
-   triple the state surface for no semantic gain. On the model the
-   driver-only keys are OPTIONAL (absent, not null, on non-drivers),
-   with nullability per the census inside the driver role. The
-   always-present partition, exactly: 22 keys on every record (20
-   modeled), `admin`/`fleet_user` add 3 of their own (all
-   never-populated), drivers add 39 (38 modeled). `joined_at` is a
-   DATE-ONLY wire value (`YYYY-MM-DD`; a whole-population value census
-   found 34 of 2,359 drivers populated), recovered as `date | None` —
-   the one driver key whose value evidence arrived after the presence
-   census.
-4. **Never-populated keys are EXCLUDED as value-unobservable.** Six
-   `/v1/users` keys were present but never populated across the whole
-   population (`external_ids` and `phone_ext` on every record;
-   `expires_at`, `phone2`, `phone_country_code2` on the
-   `admin`/`fleet_user` shape; `associated_dispatcher_id` on the driver
-   shape) — no honest dtype exists, so modeling one would be doc-driven
-   invention (the driving_periods `source`/`*_hvb_*` precedent). They
-   join the models when a capture types them; `extra='ignore'` makes
-   exclusion exactly "don't model it". Contrast `joined_at`
-   (value-OBSERVED, hence modeled). The `/v1/groups` owner-ref
-   `username`/`driver_company_id` sub-keys — null on all 152 group
-   records — are NOT excluded: the owner ref rides the shared
-   `UserSummary` (the `shared.py` promotion rule; renamed from
-   `DriverSummary` with its `user_id` field, since the compact-user
-   shape now carries three surfaces), and both keys are value-observed
-   on the driving-period/idle-event driver references, so the
-   value-unobservable rationale dissolves under the shared shape —
-   they simply read null on this surface.
-5. **Census-open vocabularies stay plain `str`.** `role`
-   (`driver`/`admin`/`fleet_user`) and `status` (`active`: 1,020 /
-   `deactivated`: 1,645) are census-closed only, NOT API-enforced on
-   output — nothing rejects a new value loudly, so an enum would crash
-   on vocabulary growth a mirror must absorb; likewise `duty_status`,
-   `eld_mode`, `cycle`, and `violation_alerts` (the UserSummary
-   posture).
+- *The rollup grain is the request window — the Samsara fuel-energy species on Motive wire.*
+  Rows carry NO date/time identity; `start_date`/`end_date` take DATE-ONLY labels, INCLUSIVE on
+  both ends (`start_date=end_date` -> one day's rollup; a six-label span -> a six-day rollup, one
+  row per entity per window). Both bindings declare `fixed_unit_days=1` — the SECOND consumer of
+  the machinery, riding the seam the fuel-energy pair pre-built. Additivity was NOT probed here;
+  the do-not-sum posture is carried on both docstrings as PRECEDENT (Samsara 89/267), explicitly
+  marked precedent-based rather than probed.
+- *The company-local obligation is discharged as documentation, never a conversion.* The
+  account's `/v1/companies` zone is UTC-5 and the date labels are interpreted in COMPANY-LOCAL
+  days, so a unit's rows are company-local-day rollups mirrored verbatim; nothing pads, trims, or
+  converts (there is no row event time to trim — the window IS the label pair). The caveat rides
+  both model docstrings. This closes the deferral the driving_periods/idle_events block recorded.
+- *Machinery: `MotiveWindowReportPageDecoder`* — the `SamsaraWindowReportPageDecoder` design
+  mirrored onto the Motive envelope (standard wrapped-list extraction + page-numbered offset
+  verdict, shared with `MotiveWrappedListPageDecoder` by delegation from `decoders/motive_reports.py`)
+  plus the stamp (`windowStartDate`/`windowEndDate` from the sent `start_date`/`end_date`, stamp
+  winning any collision, a missing param raising loudly). The stamping helper is PROMOTED into
+  `decoders/_window_stamp.py` (two providers at birth — the synthesized keys are our own
+  provider-uniform vocabulary, a principled exception to the decoders' blast-radius rule; only the
+  param NAMES vary per provider). The window mapping reuses the shared `MotiveFleetDateRangeSpecBuilder`
+  at pad 0 (no new builder). Stamps parse through `MotiveWindowStamp` — the date label lifted to
+  its UTC-midnight instant (the partition key IS the company-local-day label; a routing
+  representation, never a timezone conversion); `event_time_column='window_start'`.
+- *The two populations are asymmetric — mirrored, not normalized.* The vehicle arm returns the
+  WHOLE fleet regardless of window (1-day = 6-day = 1,466): inactive vehicles ride with zeroed
+  metrics and a free-text `message` status string (plain `str`, no vocabulary claim), so the
+  metric core has no absence arm and is REQUIRED. The driver arm returns only DRIVERS WITH
+  ACTIVITY (13 on a quiet Sunday, 653 across six days). Metric dtypes mirror each arm's own wire
+  — floats (vehicle) vs bare-INT durations (driver). `last_located_at` (vehicle arm, str-or-None)
+  mirrors verbatim as a string (value format unprobed, rollup timestamps documented
+  company-local).
+- *Shared shapes: `UserSummary`'s fourth surface, `VehicleSummary`'s third — and the NULL-driver
+  bucket.* The driver arm's `driver` ref is the shared 8-key `UserSummary`, NULLABLE (99/100
+  populated, 1 NULL — an unattributed rollup bucket the provider emits, mirrored as a null ref).
+  The vehicle arm's ref is the shared `VehicleSummary`; `vin` is null on some rows, so the shared
+  shape widened `vin` to nullable under the union-lax posture (each consumer's docstring pins its
+  own census).
+- *Naming: the wire's own vocabulary.* The driver surface's ENVELOPE vocabulary is
+  `driver_idle_rollups`/`driver_idle_rollup` (not its `/v2/driver_utilization` path), shipped as
+  `driver_idle_rollups` (`DriverIdleRollup`); the vehicle arm's is
+  `vehicle_utilizations`/`vehicle_utilization`, shipped as `vehicle_utilizations`
+  (`VehicleUtilization`). The legacy `vehicle_utilization`/`driver_utilization` mapping is in
+  `ENDPOINTS.md`.
+- *No completeness check; no roster; offset pagination; no range cap probed.*
 
-### Motive `vehicle_utilizations` / `driver_idle_rollups` probe-settled decisions (2026-07-21)
+**GeoTab feed wave one — the first verticals over the feed machinery (probed 2026-07-21).**
 
-Settled by the 2026-07-21 live probe session (the captured rows below —
-one session for the pair); the port build implements them. This pair
-completes the Motive legacy queue.
+- *All five — `log_records`, `status_data`, `fill_ups`, `fuel_and_energy_used`,
+  `fuel_tax_details` — ride the feed machinery with ZERO machinery changes*: each is the
+  declaration set the machinery anticipated (`FeedMode` + `APPEND_LOG` + an `event_time_column`,
+  the shared `GeotabGetFeedSpecBuilder` with per-leaf `typeName`/`resultsLimit`, the shared
+  `GeotabFeedPageDecoder`, `QuotaScope.GEOTAB_FEED`). The first vertical wave over a machinery
+  build, proving the seams.
+- *Whole-page-total censuses drive requiredness* (the whole-walk posture: LogRecord/StatusData
+  2,000/2,000 every key, FillUp 100/100, FuelAndEnergyUsed 2,000/2,000 — large uniform censuses,
+  none showing a null), so every modeled field is required with nullable/sentinel arms exactly as
+  observed. Mixed int-or-float numerics model `float`; uniformly-int values (LogRecord `speed`)
+  mirror as bare `int` (the odometer_readings precedent); datetimes recover tz-aware per the
+  GeoTab sibling idiom. Reference blocks stay per-model (the Trip-beside-ExceptionEvent precedent)
+  so each census-driven requiredness keeps its teeth — a shared union-lax ref would demote the
+  required `id`s these censuses proved.
+- *The active/calculated split, per entity.* LogRecord and StatusData are ACTIVE
+  (append-only-complete, reconciled by `id`); StatusData carries a per-record `version` LogRecord
+  does not (mirrored as wire truth, not promoted into reconcile semantics). FillUp,
+  FuelAndEnergyUsed, FuelTaxDetail are CALCULATED (reconciled `(id, max version)`); FuelTaxDetail's
+  version identity is a `versions` LIST of 16-hex component tokens (a §9 list-of-scalar), not a
+  scalar — the consumer reads a re-emitted row's whole token list as the fresher edition.
+- *The estimates-only-tenant caveat (all three fuel models carry it verbatim).* The probed tenant
+  has NO fuel-transaction integration — every fuel value is provider-derived from telemetry, and
+  the census cannot speak for integrated tenants. Concretely on FillUp: `cost` 0.0 and
+  `productType` `'Unknown'` throughout, `fuelTransactions` an EMPTY list on 100/100 — EXCLUDED as
+  value-unobservable (it populates on integrated tenants with a shape never captured; it joins the
+  model when a capture types it, the users never-populated-keys precedent).
+- *FillUp sentinels and refs.* The observed `-1.0` `derivedVolume` (the could-not-derive marker)
+  is mirrored VERBATIM beside real volumes (nulling a sentinel would be interpretation).
+  `confidence` is a comma-joined detection-method token list kept as ONE plain string (splitting
+  would presume a use case); `tankCapacity.source` (`EstimateFuelLevel`/`DiagnosticTankCapacity`/
+  `Unknown`), `productType`, and `currencyCode` are census-open plain `str`s. The `driver` ref
+  reuses `bare_id_to_reference` (the bare `"UnknownDriverId"` lands as the ref's `id`, `isDriver`
+  null on sentinel rows) on FillUp (87/100 object) and FuelTaxDetail.
+- *FillUp's `resultsLimit` is 10,000 with DUAL PROVENANCE* — the DOCUMENTED per-type cap, which the
+  probe could not falsify or confirm (a 50,000 request was accepted only because the tenant holds a
+  380-record population that never reaches the cap). Encoding the documented figure is the
+  conservative arm of encode-probed-behavior (the shared-principle rule); the other four declare the
+  50,000 protocol maximum.
+- *`FuelUsed` is NOT ported* — observed IDENTICAL to `FuelAndEnergyUsed` (same ids, same values,
+  week-wide) and provider-documented as its predecessor; porting both would ship one dataset twice.
+  Revisit only if a tenant shows them diverging.
+- *Naming:* `fuel_and_energy_used` and `status_data` are the wire's own uncountable vocabulary (no
+  snake-plural to form — the driver_idle_rollups precedent); `log_records`, `fill_ups`,
+  `fuel_tax_details` are standard snake-plurals. `fuel_tax_details` anchors
+  `event_time_column='enter_time'` (the segment materializes where it begins); the other four anchor
+  `date_time`.
 
-1. **THE ROLLUP GRAIN IS THE REQUEST WINDOW — the Samsara fuel-energy
-   species on Motive wire.** Rows carry NO date or time identity of any
-   kind; the `start_date`/`end_date` params take DATE-ONLY labels
-   (`'2026-07-19'`), and the label pair is INCLUSIVE on both ends:
-   `start_date=end_date` returned exactly that one day's rollup, and a
-   six-label span returned a six-day rollup — one row per entity per
-   window either way. Both bindings therefore declare
-   `fixed_unit_days=1` on their `WatermarkMode` — the SECOND consumer
-   of the fixed-unit-width machinery, riding exactly the seam the
-   fuel-energy record (§5) pre-built for this pair. Additivity was NOT
-   probed on this family; the do-not-sum posture is carried on both
-   model docstrings as PRECEDENT from the provider family's only probed
-   rollup surfaces (Samsara fuel-energy: 89/267 mismatched), explicitly
-   marked precedent-based rather than probed.
-2. **The company-local obligation is discharged — as documentation,
-   never a conversion.** The account's `/v1/companies` capture carries
-   a company-local zone at a UTC−5 offset (the idle_events row above),
-   and the date labels are interpreted in COMPANY-LOCAL days — so a
-   unit's rows are the provider's company-local-day rollups, mirrored
-   verbatim. The caveat rides both model module docstrings and this
-   block; nothing pads, trims, or converts (there is no row event time
-   to trim against — the window IS the label pair). This closes the
-   deferral's documented obligation (the 2026-07-17 amendment to the
-   driving_periods/idle_events block).
-3. **Machinery: `MotiveWindowReportPageDecoder`, the Motive
-   window-stamping report decoder — the one sanctioned addition.** The
-   Samsara `SamsaraWindowReportPageDecoder` design mirrored onto the
-   Motive envelope: the standard wrapped-list extraction and
-   page-numbered offset verdict, shared with
-   `MotiveWrappedListPageDecoder` — originally via the same-file
-   `_unwrap_wrapped_list`/`_offset_page_advance` extraction; since the
-   2026-07-21 structural remediation by composing the wrapped-list
-   decoder by delegation from the `motive_reports.py` sibling (the
-   existing decoders' behavior byte-equivalent, their tests
-   unchanged), plus the stamp:
-   every unwrapped record gains `windowStartDate`/`windowEndDate`
-   copied VERBATIM from the sent spec's `start_date`/`end_date` params,
-   the stamp winning any (census-impossible) collision, a missing param
-   raising `ProviderResponseError` loudly. The stamping helper itself
-   PROMOTED into the decoders-package module
-   `decoders/_window_stamp.py` (two providers at birth — the promotion
-   rule): the synthesized keys are our own deliberately
-   provider-uniform vocabulary, not envelope logic, so sharing it is a
-   narrow, principled exception to the decoders'
-   blast-radius-over-DRY rule; only the param NAMES vary per provider
-   and each caller passes its own. The Samsara decoder now calls the
-   shared helper — behavior and message shape unchanged.
-4. **The window mapping reuses the shared
-   `MotiveFleetDateRangeSpecBuilder` — no new builder.** The prescribed
-   mapping (unit `[start, end)` → `start_date = start`'s date,
-   `end_date` = the last covered date) is exactly what the shared
-   fleet-date-range builder already renders for its event-pair
-   consumers, so both leaves bind it at pad 0 rather than duplicating
-   it; with the fixed 1-day unit both labels are the unit's day. The
-   stamps parse on the models through `MotiveWindowStamp`
-   (`models/motive/shared.py`): the date label lifted to its
-   UTC-midnight instant — the label's calendar day preserved exactly
-   (the partition key IS the company-local day label), a representation
-   for routing, never a timezone conversion. `event_time_column='window_start'`
-   routes each unit's rows to exactly their `date=` partition.
-5. **The two populations are asymmetric — mirrored, not normalized.**
-   The vehicle arm returns the WHOLE fleet regardless of window (1-day
-   total = 6-day total = 1,466): inactive vehicles ride with zeroed
-   metrics and a populated free-text `message` status string (plain
-   `str`, no vocabulary claim), so the metric core has no absence arm
-   and is REQUIRED (the fuel-energy whole-walk reasoning). The driver
-   arm returns only DRIVERS WITH ACTIVITY in the window (13 on a quiet
-   Sunday, 653 across six days). Metric dtypes mirror each arm's own
-   wire: floats on the vehicle arm, bare-INT durations on the driver
-   arm. `last_located_at` (vehicle arm, str-or-None) mirrors VERBATIM
-   as a string — its value format is unprobed and the provider's rollup
-   timestamps are documented company-local, so parsing would presume
-   what no capture has shown.
-6. **Shared shapes: `UserSummary`'s fourth surface, `VehicleSummary`'s
-   third — and the NULL-driver bucket.** The driver arm's `driver` ref
-   is EXACTLY the shared 8-key `UserSummary` (fourth carrying surface)
-   and NULLABLE: 99/100 sampled rows populated, 1 NULL — an
-   unattributed rollup bucket the provider emits beside the per-driver
-   rows, mirrored as a null ref. The vehicle arm's ref is EXACTLY the
-   shared `VehicleSummary` key set, its third surface; `vin` is null on
-   some utilization rows, so the shared shape widened `vin` to nullable
-   under the union-lax posture (the UserSummary precedent — each
-   consumer's docstring pins its own surface's census).
-7. **The naming decision: the wire's own vocabulary; the legacy mapping
-   recorded.** The driver surface's envelope vocabulary is
-   `driver_idle_rollups`/`driver_idle_rollup` — NOT its
-   `/v2/driver_utilization` path — and the endpoint mirrors the wire:
-   `driver_idle_rollups` (model `DriverIdleRollup`). The vehicle arm's
-   envelope is `vehicle_utilizations`/`vehicle_utilization`, shipped as
-   `vehicle_utilizations` (model `VehicleUtilization`). The legacy hub
-   called these `vehicle_utilization` / `driver_utilization`; the
-   mapping is recorded in `ENDPOINTS.md`.
-8. **No completeness check** (windowed, deliberately partial — the
-   standing snapshot-only rule); no roster sourced or consumed (both
-   surfaces are fleet-wide with per-record attribution); offset
-   pagination at the configured `records_per_page` (50 and 100 both
-   honored live); no range cap was probed (the fixed 1-day unit sits
-   far inside any plausible cap anyway).
+**GeoTab feed wave two — the Tier 1 entities (probed 2026-07-21).**
 
-### GeoTab feed wave one probe-settled decisions (2026-07-21)
+- *Zero machinery changes, again* — `fault_data`, `duty_status_logs`, `driver_changes`, `dvir_logs`
+  are the wave-one declaration set verbatim (`event_time_column='date_time'`). The one shared-MODEL
+  addition is the nested-location pair (below) — a model shape, not machinery. Seeding via
+  `search.fromDate` was wire-proven on all four (30-day seeded `GetFeed` pulls; nested blocks
+  sampled at 200).
+- *The conservative requiredness posture* (unlike wave one's whole-page censuses, these carry
+  partial-presence keys): STRUCTURAL only — `id`, `dateTime`, `version` where the type carries it,
+  and the primary entity ref (`device` on FaultData; `driver` on DutyStatusLog, DriverChange,
+  DVIRLog — DVIRLog's `device` is 205/500 and could not be it). Everything else optional even
+  census-total. Every reference field rides `bare_id_to_reference` — the census PROVED the mixed arm
+  on FaultData `failureMode`, DutyStatusLog `device`/`driver` (2,000/2,000 both arms), DriverChange
+  `driver` (1,114/1,114, the object arm carrying `isDriver`) → both-arm test coverage; the object-only
+  refs get the defensive lift plus a test.
+- *The version split:* FaultData carries NO per-record `version` (the LogRecord asymmetry —
+  reconciled by `id` alone); DutyStatusLog (an EDITABLE log — `editDateTime` is the edit trail),
+  DriverChange (user-editable), and DVIRLog (certified and edited after creation) carry `version` and
+  reconcile `(id, max version)`.
+- *The DutyStatusLog `annotations` id-list reduction.* Census elements carried ONLY `{id}` (200/200
+  sampled; 126/2,000 present). The records layer supports list[scalar] only (list-of-model rejects
+  loudly), so `annotations` is `list[str]` via a STRICT per-element lift: a bare string passes, an
+  element that is EXACTLY `{'id': <str>}` becomes its id, and ANYTHING else RAISES — a shape change
+  must fail, never silently drop sibling keys. The ids join the `annotation_logs` vertical (wave
+  three). The lift lives in the model module (one consumer today; it moves beside
+  `bare_id_to_reference` only if made generic).
+- *The nested-location promotion — and its two-arm correction.* The nested-location wrapper appeared
+  on DutyStatusLog (1,859/2,000) and DVIRLog (496/500) — two consumers at birth — so
+  `GeotabAddressedLocation` (with `GeotabCoordinate` and `GeotabPostalAddress`) lives in
+  `models/geotab/shared.py`. GeoTab's `x` is LONGITUDE, `y` is LATITUDE. The 200-sample census saw
+  only the `{location:{x,y}}` coordinate arm and the wrapper was first modeled coordinate-only; the
+  pre-merge live proof then walked 24,860 DutyStatusLog location blocks and found the coordinate arm
+  on 24,846 and an `{address:{formattedAddress}}` arm on 14 (mutually exclusive at scale) — the
+  FOURTH time an at-scale walk found an arm a bounded census missed. Both arms are now optional;
+  `formattedAddress` is the only observed address key (others absorbed by `extra='ignore'`). The
+  census-scope lesson earned its keep before merge.
+- *The DVIRLog `defectList.children` documented exclusion — beside the rare-quartet inclusion.*
+  `defectList` is a wire-plural name over ONE node `{children, id, name}`; `children` was an EMPTY
+  list on all 200 sampled nodes (`defectList` itself present 500/500), its element shape
+  unobservable — excluded from the model, absorbed by `extra='ignore'` (a record with populated
+  children still validates); REVISIT when a tenant shows content. By contrast FaultData's rare
+  quartet (`diagnosticSeverity` str / `riskOfBreakdown` float / `severity` str / `sourceAddress`
+  int; 2/2,000 each) stays IN as optional scalars — an observed shape is modeled however rare; only
+  the unobservable is excluded. `faultStates` mirrors as a nested model despite its plural wire name
+  (one `{effectiveStatus}` object on every one of the 200 sampled blocks; the key present
+  2,000/2,000).
+- *Cross-surface dtypes and verbatim mirrors.* Mixed int-or-float numerics model `float`. DVIRLog
+  `engineHours` was int-only on its 205 carriers but models `float` anyway (its sibling DutyStatusLog
+  proved the quantity mixed — cross-surface consistency beats a thin single-surface census). DVIR
+  `duration` is an opaque duration STRING mirrored verbatim — NOT parsed through `GeotabTimeSpan`
+  (unlike `Trip.duration`): the census saw only the wire type (`str`), never the value format, and
+  the strict parser would crash every record on an unobserved grammar. Every vocabulary-ish key
+  (`faultState`, `effectiveStatus`, `deferralStatus`, `malfunction`, `origin`, `state`, `status`,
+  `type`, `logType`) is census-open plain `str`.
+- *All four declare the 50,000 protocol-maximum `resultsLimit`* (no documented lower per-type cap
+  verified against the GetFeed reference; the census pulls used small limits, which prove nothing —
+  the FillUp dual-provenance's other arm).
 
-Settled by the 2026-07-21 live probe session (the captured rows below —
-one session for the five); the `log_records` / `status_data` /
-`fill_ups` / `fuel_and_energy_used` / `fuel_tax_details` verticals
-implement them. ALL censuses here are TENANT-SCOPED observations (the
-port discipline's standing rule): they prove the probed account's
-shapes at capture time, never data semantics and never other tenants'
-shapes.
+**GeoTab feed wave three — the Tier 2 entities, at scale (probed 2026-07-21).**
 
-1. **All five ride the shipped feed machinery with ZERO machinery
-   changes — the boringness criterion, met.** Each leaf is exactly the
-   declaration set the machinery anticipated: `FeedMode` +
-   `StorageKind.APPEND_LOG` + an `event_time_column`, the shared
-   `GeotabGetFeedSpecBuilder` (per-leaf `typeName` and `resultsLimit`
-   only), the shared `GeotabFeedPageDecoder`, and
-   `QuotaScope.GEOTAB_FEED`. Nothing under the orchestrator, network,
-   records, storage, or state layers moved — the first vertical wave
-   over a machinery build proving the seams were cut right.
-2. **Whole-page-total censuses drive requiredness.** Every census was
-   total over its page (LogRecord and StatusData 2,000/2,000 every
-   key; FillUp 100/100; FuelAndEnergyUsed 2,000/2,000; FuelTaxDetail
-   every key on all sampled records) — large uniform censuses, so
-   every modeled field is REQUIRED, with nullable/sentinel arms
-   exactly as observed (none of these surfaces showed a null). Mixed
-   int-or-float wire numerics model `float`; uniformly-int values
-   (LogRecord `speed`) mirror as bare `int` (the odometer_readings
-   verbatim-mirror precedent); datetimes recover tz-aware per the
-   GeoTab sibling idiom. Reference blocks stay per-model (the
-   Trip-beside-ExceptionEvent precedent) so each model's census-driven
-   requiredness keeps its teeth — a shared union-lax ref would demote
-   the required `id`s these censuses proved.
-3. **The active/calculated split, per entity.** LogRecord and
-   StatusData are ACTIVE feeds (append-only-complete, reconciled by
-   `id`); StatusData carries a per-record `version` that LogRecord
-   does not — mirrored as wire truth, not promoted into reconcile
-   semantics. FillUp, FuelAndEnergyUsed, and FuelTaxDetail are
-   CALCULATED (re-emitted versions, reconciled `(id, max version)`);
-   FuelTaxDetail's version identity is the `versions` LIST of 16-hex
-   component tokens (a §9 list-of-scalar) rather than a scalar — the
-   consumer reads a re-emitted row's whole token list as the fresher
-   edition.
-4. **THE ESTIMATES-ONLY-TENANT CAVEAT (all three fuel models carry it
-   verbatim).** The probed tenant has NO fuel-transaction (fuel-card)
-   integration: every fuel value on `fill_ups`,
-   `fuel_and_energy_used`, and `fuel_tax_details` is provider-derived
-   from telemetry — estimates, not transactions — and the census
-   cannot speak for integrated tenants. Concretely on FillUp: `cost`
-   0.0 on ALL records, `productType` `'Unknown'` throughout, and
-   `fuelTransactions` an EMPTY list on 100/100 — EXCLUDED as
-   value-unobservable with the integrated-tenant note (on tenants with
-   fuel-card integration it populates with a shape never captured; it
-   joins the model when a capture types it — the users
-   never-populated-keys precedent).
-5. **FillUp sentinels and vocabularies.** The observed `-1.0`
-   `derivedVolume` (the could-not-derive marker) is mirrored VERBATIM
-   beside real volumes — nulling a sentinel would be interpretation.
-   `confidence` is a comma-joined detection-method token list kept as
-   ONE plain string (splitting would presume a use case);
-   `tankCapacity.source` observed `EstimateFuelLevel` /
-   `DiagnosticTankCapacity` / `Unknown` — census-open plain strs, like
-   `productType` and `currencyCode`. The `driver` reference reuses the
-   shipped Trip string-or-object mechanism exactly
-   (`bare_id_to_reference`: the bare `"UnknownDriverId"` lands as the
-   ref's `id`, `isDriver` null exactly on sentinel rows) — on FillUp
-   (87/100 object) and on FuelTaxDetail both.
-6. **The FillUp `resultsLimit` is 10,000 with DUAL PROVENANCE.**
-   10,000 is the DOCUMENTED per-type cap; the probe could NOT falsify
-   or confirm it — a 50,000 request was ACCEPTED at the probed
-   tenant's whole 380-record population, which proves nothing about a
-   cap the population never reaches. Encoding the documented figure is
-   the conservative arm of encode-probed-behavior: where the probe is
-   structurally unable to test a limit, the documented cap stands
-   (recorded on the leaf) until a larger tenant probes it. The other
-   four leaves declare the 50,000 protocol maximum.
-7. **`FuelUsed` is NOT ported.** Observed IDENTICAL to
-   `FuelAndEnergyUsed` on the probed tenant — same ids, same values,
-   week-wide — and the provider documents `FuelAndEnergyUsed` as its
-   successor: porting both would ship one dataset twice under two
-   names. Revisit only if a tenant ever shows the surfaces diverging.
-8. **The naming decisions.** `fuel_and_energy_used` is the WIRE'S OWN
-   VOCABULARY, not a plural (the driver_idle_rollups precedent):
-   `FuelAndEnergyUsed` names a quantity, so no snake-plural exists to
-   form and the endpoint mirrors the type name verbatim. `status_data`
-   is likewise the wire's uncountable vocabulary. `log_records`,
-   `fill_ups`, and `fuel_tax_details` are the standard
-   snake-plural-of-model names. `fuel_tax_details` anchors
-   `event_time_column='enter_time'` — the segment materializes where
-   it begins; the other four anchor `date_time`.
+- *Zero machinery changes a third time* — `annotation_logs`, `shipment_logs`, `audits`,
+  `text_messages`, `media_files` are the wave declaration set, and no shared-MODEL addition either
+  (the `messageContent` block and every ref are per-leaf shapes). Walked AT SCALE (these population
+  sizes supersede any thin banked sample); all timestamps confirmed RFC3339 UTC. All five declare
+  the 50,000 protocol maximum (no lower documented cap; a SCALE census cannot probe a cap the
+  population never reaches).
+- *The conservative requiredness posture carries forward* (a SCALE census still cannot promise
+  another tenant's presence): STRUCTURAL requiredness is `id`, the event-time field (see the
+  departures below — it MUST be required and non-null because storage partitions on it), `version`
+  where the type carries one, and the primary entity ref where one is chosen. Every reference field
+  rides `bare_id_to_reference` (including census-object-only and census-string-only refs); every
+  vocabulary-ish key (`commodity`, `mediaType`, `status`, `name`, `contentType`, ...) is census-open
+  plain `str`.
+- *TWO `event_time_column` DEPARTURES — because two types carry no `dateTime` key.*
+  `annotation_logs`, `shipment_logs`, and `audits` carry `dateTime` and anchor `date_time` (the wave
+  default). But `text_messages` has NO `dateTime` key — its send instant is `sent` (25,000/25,000),
+  so it anchors `event_time_column='sent'` and `sent` is the required event-time identity; and
+  `media_files` has NO `dateTime` key — its media-start instant is `fromDate` (55/55), so it anchors
+  `event_time_column='from_date'` and `from_date` is required. These are the first feed verticals
+  whose event time is a domain field other than `dateTime`/`enter_time`.
+- *The version split — and a second append-only-complete type.* `annotation_logs`, `shipment_logs`,
+  `audits`, and `media_files` carry a per-record `version` and reconcile `(id, max version)`.
+  `text_messages` carries NO `version` key — the FaultData/LogRecord asymmetry: append-only-complete,
+  reconciled by `id` alone; its delivered/read receipts re-emit under newer FEED `toVersion` tokens
+  (the feed's own versioning, not a per-record key), stored-as-emitted.
+- *Per-vertical primary refs.* `annotation_logs` (8,857): `dutyStatusLog{id}` required (the
+  annotated log — the BACK-REFERENCE completing the wave-two loop: `DutyStatusLog.annotations` is an
+  id-list of AnnotationLog ids, and `AnnotationLog.dutyStatusLog.id` points back — the bidirectional
+  join `annotation_logs.duty_status_log__id` ↔ `duty_status_logs.annotations`), `driver{id}` optional;
+  both object-only at scale, both ride the lift. `shipment_logs` (2,771): `driver` required (the
+  log-family convention), `device` optional; `activeFrom`/`activeTo` are the shipment's active
+  window. `audits` (20,000): NO refs — the simplest vertical. `text_messages` (25,000): `device{id}`
+  optional (a message has no required primary entity). `media_files` (55): `device` (PROVEN MIXED) +
+  `driver` (string-only observed) BOTH OPTIONAL — a media file's primary entity is ambiguous (device
+  or driver), so neither is promoted.
+- *The `messageContent` `list[str]` DIRECT-FIELD decision (contrast the wave-two annotations
+  reduction).* `text_messages.messageContent` is a nested block `{contentType: str, ids: list[str]}`
+  (200/200 nested, 25,000/25,000 present — both keys required within the block); its `ids` is a PLAIN
+  `list[str]` — the elements ARE strings on the wire, so a §9 list-of-scalar DIRECT field, NOT the
+  DutyStatusLog strict id-lift (where elements were `{id}` objects needing reduction). The distinction
+  is the wire shape: string elements ride directly, object elements reduce.
+- *`media_files.device` is PROVEN MIXED at scale* (42 bare-string / 13 `{id}` object — unlike wave
+  two's mostly object-only refs) — both arms get fixture and test coverage; `driver` was string-only
+  observed (55/55) and rides the lift defensively (the census-scope lesson). Both land as `*__id`.
+- *The three `media_files` empty-container exclusions (the `defectList.children` doctrine).*
+  `metaData` (EMPTY object), `tags` (EMPTY list), and `thumbnails` (EMPTY list) — all 55 — are
+  EXCLUDED (element/content shape unobservable), absorbed by `extra='ignore'` (each pinned with an
+  absorption test); REVISIT when a tenant populates them.
+- *The thin-MediaFile-evidence caveat.* MediaFile is genuinely thin (55 records over a 730-day
+  window), so the model is conservative accordingly and the caveat rides the module docstring — the
+  census cannot speak for a tenant that uses media at volume.
 
-### GeoTab feed wave two probe-settled decisions (2026-07-21)
-
-Settled by the 2026-07-21 census session (30-day seeded `GetFeed` pulls
-— the captured rows below; presence counted over the walked
-population, nested blocks sampled at 200); the `fault_data` /
-`duty_status_logs` / `driver_changes` / `dvir_logs` verticals (the
-Tier 1 feed queue) implement them. ALL censuses here are TENANT-SCOPED
-observations (the port discipline's standing rule): they prove the
-probed account's shapes and surface behavior at capture time, never
-data semantics and never other tenants' shapes. Seeding via
-`search.fromDate` was wire-proven on all four types at census time.
-
-1. **Zero shared-machinery changes, again.** Each leaf is the wave-one
-   declaration set verbatim: `FeedMode` + `StorageKind.APPEND_LOG` +
-   `event_time_column='date_time'`, the shared
-   `GeotabGetFeedSpecBuilder` (per-leaf `typeName` and `resultsLimit`
-   only), the shared `GeotabFeedPageDecoder`, and
-   `QuotaScope.GEOTAB_FEED`. The one shared-MODEL addition is the
-   nested-location pair (decision 6) — a model shape, not machinery.
-2. **The wave-two conservative requiredness posture.** Unlike wave
-   one's whole-page-total censuses, these four surfaces carry
-   partial-presence keys (the rare quartet, the DVIR device trio,
-   `annotations`), so requiredness is STRUCTURAL only: `id`,
-   `dateTime` (the event-time identity), `version` where the type
-   carries it, and the primary entity ref — `device` on FaultData;
-   `driver` on DutyStatusLog, DriverChange, and DVIRLog (DVIRLog's
-   `device` is 205/500 and could not be it). Everything else is
-   optional EVEN where census-total: a tenant census cannot promise
-   another tenant's presence.
-3. **Every reference field rides `bare_id_to_reference` — including
-   census-object-only refs.** The StatusData census-scope lesson (the
-   wave one block) applied at build time: a tenant census cannot prove
-   the string arm absent, and the lift is structural and
-   sentinel-agnostic. The census PROVED the mixed arm on
-   FaultData.`failureMode`, DutyStatusLog.`device`/`driver`
-   (2,000/2,000 each, both arms observed), and DriverChange.`driver`
-   (1,114/1,114, the object arm carrying `isDriver`) — those get
-   both-arm test coverage; the object-only refs (controller,
-   diagnostic, the DVIR trio, and kin) get the defensive lift plus a
-   test of the lift.
-4. **The version split.** FaultData carries NO per-record `version` —
-   the LogRecord asymmetry: append-only-complete, reconciled by `id`
-   alone. DutyStatusLog (an EDITABLE log — `editDateTime` is the edit
-   trail), DriverChange (user-editable assignment events), and DVIRLog
-   (certified and edited after creation) all carry `version` and
-   reconcile `(id, max version)`.
-5. **The DutyStatusLog `annotations` id-list reduction.** Census
-   elements carried ONLY `{id}` (200/200 sampled; 126/2,000 presence).
-   The records layer supports list[scalar] only (list-of-model rejects
-   loudly), so `annotations` is `list[str]` via a STRICT per-element
-   lift: a bare string passes, an element that is EXACTLY
-   `{'id': <str>}` becomes its id, and ANYTHING else raises — a shape
-   change must fail, never silently drop sibling keys. The ids join
-   the `annotation_logs` vertical (feed wave three) for the full
-   annotation records. The lift lives in the model module (one
-   consumer today; it moves beside `bare_id_to_reference` only if
-   made generic).
-6. **The nested-location promotion — and its two-arm correction.** The
-   nested-location wrapper appeared on DutyStatusLog (1,859/2,000) and
-   DVIRLog (496/500) — two consumers at birth, the second-consumer
-   threshold — so `GeotabAddressedLocation` (with `GeotabCoordinate`
-   and `GeotabPostalAddress`) lives in `models/geotab/shared.py`.
-   GeoTab's `x` is LONGITUDE and `y` is LATITUDE. **The 200-sample
-   census saw only the `{location: {x, y}}` coordinate arm and the
-   wrapper was first modeled coordinate-only; the pre-merge live proof
-   then walked 24,860 DutyStatusLog location blocks and found the
-   wrapper carries the coordinate arm on 24,846 and an `{address:
-   {formattedAddress}}` arm on 14 (mutually exclusive at scale) — the
-   FOURTH time an at-scale walk found an arm a bounded census missed
-   (`StatusData.controller`, and the two before it).** Both arms are
-   now optional on the wrapper; `formattedAddress` is the only observed
-   address key (others absorbed by `extra='ignore'` until a walk shows
-   them). The recurring lesson is recorded again: a tenant census
-   proves shapes PRESENT, never shapes ABSENT — the live proof is the
-   backstop, and here it earned its keep before merge.
-7. **The DVIRLog `defectList.children` documented exclusion — beside
-   the rare-quartet inclusion.** `defectList` is a wire-plural name
-   over ONE node `{children, id, name}`; `children` was an EMPTY list
-   on all 200 sampled `defectList` nodes (the nested-block sample
-   depth; `defectList` itself present 500/500), its element shape
-   unobservable at this tenant, and the records layer deliberately
-   supports only observable shapes — excluded from the model, absorbed
-   wire-side by
-   `extra='ignore'` (pinned: a record with populated children still
-   validates, never crashes). REVISIT when a tenant shows populated
-   children. By contrast, FaultData's rare quartet
-   (`diagnosticSeverity` str / `riskOfBreakdown` float / `severity`
-   str / `sourceAddress` int; 2/2,000 each) stays IN the model as
-   optional scalars — an observed shape is modeled however rare; only
-   the unobservable is excluded. `faultStates` likewise mirrors as a
-   nested model despite its plural wire name (one `{effectiveStatus}`
-   object on every one of the 200 sampled `faultStates` blocks; the
-   key itself present 2,000/2,000).
-8. **Cross-surface dtypes and verbatim mirrors.** Mixed int-or-float
-   wire numerics model `float`. DVIRLog `engineHours` was int-only on
-   its 205 carriers but models `float` anyway: its sibling surface
-   (DutyStatusLog) proved the same physical quantity mixed, and
-   cross-surface dtype consistency beats a thin single-surface census.
-   DVIR `duration` is an opaque duration STRING mirrored verbatim —
-   NOT parsed through `GeotabTimeSpan` despite `Trip.duration` doing
-   so: the census observed only the wire type (`str`), never the value
-   format, and the strict TimeSpan parser would crash every record on
-   an unobserved format that differs (contrast Trip's probe-confirmed
-   grammar). The conservative mirror holds until a probe settles the
-   format. Every vocabulary-ish key (`faultState`,
-   `effectiveStatus`, `deferralStatus`, `malfunction`, `origin`,
-   `state`, `status`, `type`, `logType`) is census-open — plain strs,
-   never enums.
-9. **All four declare the 50,000 protocol-maximum `resultsLimit`.**
-   The docs list no lower per-type cap for these types (verified
-   against the GetFeed reference 2026-07-21), and the census pulls
-   used small limits, which prove nothing about caps — the FillUp
-   dual-provenance lesson's other arm: absent a documented lower cap
-   and absent probe evidence either way, the protocol maximum stands.
-
-### GeoTab feed wave three probe-settled decisions (2026-07-21)
-
-Settled by the 2026-07-21 SCALE census (walked AT SCALE, not the thin
-banked 30-day sample — these numbers supersede any smaller sample; the
-captured population sizes below); the `annotation_logs` /
-`shipment_logs` / `audits` / `text_messages` / `media_files` verticals
-(the Tier 2 feed queue) implement them. ALL censuses here are
-TENANT-SCOPED observations (the port discipline's standing rule): they
-prove the probed account's shapes and surface behavior at capture time,
-never data semantics and never other tenants' shapes. ALL timestamp
-fields were confirmed RFC3339 UTC (Z-suffixed) — parsed tz-aware.
-
-1. **Zero shared-machinery changes, a third time.** Each leaf is the
-   wave-one/-two declaration set: `FeedMode` + `StorageKind.APPEND_LOG`
-   + an `event_time_column`, the shared `GeotabGetFeedSpecBuilder`
-   (per-leaf `typeName` and `resultsLimit` only), the shared
-   `GeotabFeedPageDecoder`, and `QuotaScope.GEOTAB_FEED`. Nothing under
-   the orchestrator, network, records, storage, or state layers moved —
-   and no shared-MODEL addition either (unlike wave two's
-   nested-location pair): the `messageContent` block and every ref
-   model are per-leaf shapes. All five declare the 50,000
-   protocol-maximum `resultsLimit` (no lower documented per-type cap;
-   the SCALE census cannot probe a cap the population never reaches —
-   the FillUp dual-provenance lesson's other arm).
-
-2. **The wave-two conservative requiredness posture carries forward.**
-   A tenant SCALE census still cannot promise another tenant's
-   presence, so STRUCTURAL requiredness is limited to `id`, the
-   event-time field (see decision 3 — it MUST be required and non-null
-   because storage partitions on it), `version` WHERE THE TYPE CARRIES
-   ONE (decision 4), and the primary entity ref where one is chosen
-   (decision 5). Every other field is optional even where census-total.
-   Every reference field rides `bare_id_to_reference` — including the
-   census-object-only and census-string-only refs — on the StatusData
-   census-scope lesson (a tenant census cannot prove the absent arm
-   absent). Every vocabulary-ish key (`commodity`, `mediaType`,
-   `status`, `name`, `contentType`, ...) is census-open plain str,
-   never an enum.
-
-3. **TWO event_time_column DEPARTURES — because two types carry no
-   `dateTime` key.** `annotation_logs`, `shipment_logs`, and `audits`
-   carry `dateTime` and anchor `event_time_column='date_time'` (the
-   wave-one/-two default). But **`text_messages` has NO `dateTime` key**
-   — its send instant is `sent` (25,000/25,000), so it anchors
-   `event_time_column='sent'` and the model's `sent` field is required
-   (the event-time identity). And **`media_files` has NO `dateTime`
-   key** — its media-start instant is `fromDate` (55/55), so it anchors
-   `event_time_column='from_date'` and `from_date` is required. These
-   are the first feed verticals whose event time is a domain field
-   other than `dateTime`/`enter_time`.
-
-4. **The version split — and a second append-only-complete type.**
-   `annotation_logs`, `shipment_logs`, `audits`, and `media_files` all
-   carry a per-record `version` and reconcile `(id, max version)` (the
-   editable/calculated-feed stance). **`text_messages` carries NO
-   `version` key** — the FaultData/LogRecord asymmetry: append-only
-   storage is trivially complete and the consumer reconciles by `id`
-   alone. Its delivered/read receipts DO re-emit a message under newer
-   FEED `toVersion` tokens and are stored-as-emitted — the feed's own
-   versioning, not a per-record `version` key.
-
-5. **Per-vertical primary-ref choices.**
-   - `annotation_logs` (8,857): refs `driver{id}` + `dutyStatusLog{id}`,
-     both object-only at scale, both ride the lift. Primary ref
-     `dutyStatusLog` (the annotated log — the annotation's subject)
-     required; `driver` optional. `dutyStatusLog` is the
-     BACK-REFERENCE completing the wave-two loop: `DutyStatusLog.
-     annotations` is an id-list of AnnotationLog ids, and
-     `AnnotationLog.dutyStatusLog.id` points back to the DutyStatusLog
-     (the bidirectional join `annotation_logs.duty_status_log__id` ↔
-     `duty_status_logs.annotations`).
-   - `shipment_logs` (2,771): refs `device{id}` + `driver{id}`, both
-     object-only at scale, both ride the lift. Primary ref `driver`
-     (the log-family convention) required; `device` optional.
-     `activeFrom`/`activeTo` are the shipment's active window.
-   - `audits` (20,000): NO refs at all — the simplest vertical, no ref
-     models. Required: `id`, `dateTime`, `version`.
-   - `text_messages` (25,000): ref `device{id}` optional (a message has
-     no required primary entity). Required: `id`, `sent`.
-   - `media_files` (55): refs `device` (PROVEN MIXED, decision 7) +
-     `driver` (string-only observed), both ride the lift, BOTH OPTIONAL
-     — a media file's primary entity is ambiguous (it may attach to a
-     device or a driver), so neither is promoted. Required: `id`,
-     `from_date`, `version`.
-
-6. **The `messageContent` list[str] DIRECT-FIELD decision (contrast the
-   wave-two annotations reduction).** `text_messages.messageContent` is
-   a nested block `{contentType: str, ids: list[str]}` (200/200 nested,
-   25,000/25,000 present) — both keys required WITHIN the block on the
-   nested-block-required convention. Its `ids` is a PLAIN `list[str]`:
-   the elements ARE strings on the wire, and the records layer supports
-   `list[scalar]` directly, so this is a §9 list-of-scalar DIRECT field
-   — NOT the DutyStatusLog `annotations` strict id-lift, where the
-   elements were `{id}` OBJECTS needing reduction. The distinction is
-   the wire shape: string elements ride directly, object elements
-   reduce.
-
-7. **`media_files.device` is PROVEN MIXED at scale — both arms
-   covered.** The SCALE census walked 42 bare-string and 13 `{id}`
-   object device arms (proven mixed, unlike wave two's mostly
-   object-only refs), so `device` gets BOTH-arm fixture and test
-   coverage; `driver` was string-only observed (55/55) and rides the
-   lift defensively (the census-scope lesson — a census cannot prove
-   the object arm absent). Both land as `*__id`.
-
-8. **The three `media_files` empty-container exclusions (the
-   `defectList.children` doctrine).** `metaData` (EMPTY object on all
-   55), `tags` (EMPTY list on all 55), and `thumbnails` (EMPTY list on
-   all 55) are EXCLUDED from the model: their element/content shape is
-   unobservable at this tenant, the records layer supports only
-   observable shapes, and `extra='ignore'` absorbs them wire-side (each
-   pinned with an absorption test — a record populating any of the
-   three still validates). REVISIT when a tenant populates them.
-
-9. **The thin-MediaFile-evidence caveat.** MediaFile is genuinely thin
-   at this tenant — 55 records over a 730-day window — so the model is
-   conservative accordingly and the caveat is recorded on the module
-   docstring. Every arm above is what those 55 records showed; the
-   census cannot speak for a tenant that uses media at volume.
-
-### The exception hierarchy (implemented: `exceptions.py`)
+### The exception hierarchy (`exceptions.py`)
 
 The operational errors consumers catch, mirroring the classification
 vocabulary and inheriting its closure invariant: **a new exception type is
@@ -2592,7 +2063,7 @@ response material (headers, bodies, request specs, credentials-adjacent
 values) — every instance is safe to log. Pickling is deliberately
 unsupported (keyword-only fields break `BaseException`'s positional-args
 reconstruction): fleetpull concurrency is threads, and exceptions never
-cross a process boundary in this package. The client prompt wires the raise
+cross a process boundary in this package. The client wires the raise
 sites: FATAL classifications → `ProviderResponseError`, exhausted retry
 budgets → `RetriesExhaustedError`, failed auth paths →
 `AuthenticationError`.
@@ -2696,7 +2167,7 @@ budgets → `RetriesExhaustedError`, failed auth paths →
 | Samsara | Driver fuel-energy report census (47/47): the vehicle arm's metric core + `estFuelEnergyCost` verbatim, with `driver {id: str, name: str}` instead of the vehicle block — and NO `externalIds` anywhere on the driver arm (never observed; unmodeled as unobserved) (captured 2026-07-21). |
 | Motive | 401 body is `{"error_message": ...}`; the documented /vehicle_locations limit was not observed to enforce — generic 429 posture. |
 | Motive | `/v3/vehicle_locations/{vehicle_id}` verified live: envelope `{"vehicle_locations": [{"vehicle_location": {...}}]}`, `located_at` is UTC ISO-8601 (`Z`-suffixed), one non-paginated page per fetch (so `SinglePageDecoder` fits), and a single per-vehicle fetch spans multiple calendar dates (the sample crossed two) — confirming `split_by_date`'s multi-partition output is load-bearing in production, not a theoretical edge: one fetch genuinely fans into several partitions. |
-| Motive | `/v3/vehicle_locations/{vehicle_id}` date bounds pinned by direct probing: day-granular `start_date`/`end_date` are honored inclusively on both bounds — a single-day request returns that full day, a two-day request both complete days. The documented 3-month maximum range is real: long backfills will eventually need request chunking (a range limit, unrelated to the §15 item-1 window defect). |
+| Motive | `/v3/vehicle_locations/{vehicle_id}` date bounds pinned by direct probing: day-granular `start_date`/`end_date` are honored inclusively on both bounds — a single-day request returns that full day, a two-day request both complete days. The documented 3-month maximum range is real: long backfills will eventually need request chunking (a range limit, unrelated to the window-granularity defect). |
 | Motive | `updated_after` on `/v3/vehicle_locations/{vehicle_id}`: documented as required, observably optional and inert — omitting it and supplying it produced byte-identical responses. It remains a candidate ingestion-time CDC hook for the late-upload gap (§13). |
 | Motive | The collection endpoint `/v3/vehicle_locations` (no vehicle id) is a different animal: a last-known-location roster snapshot that ignores date parameters and serves active vehicles only (~1,029 vehicles vs the full harvest's 1,460). It is not a history source and must not be conflated with the per-vehicle history endpoint. |
 | Motive | `/v1/driving_periods` window matching is START-anchored on UTC days: across a 10,366-record two-day window, zero returned periods start before the window's UTC midnight while ends freely spill past the window's right edge (62 right-straddlers observed; end-anchoring and overlap both falsified). Retrieval anchor = `start_time` (captured 2026-07-15). |
@@ -2729,7 +2200,7 @@ derivation for free.
 
 Flattening: default ON, double-underscore-joined. Nested objects flatten to double-underscore-joined columns (`parent__child`, `parent__child__leaf`); a top-level field keeps its bare name. The join is double because field names themselves contain single underscores — a single separator is ambiguous about the level boundary and would let a top-level field collide with a nested one — and the prefix is applied uniformly (never conditionally on collision), so a column name is a stable function of the access path rather than something that can silently rename when an unrelated field is added. Arrays cannot flatten without exploding rows; default representation is `pl.List` of the inner scalar, overridable per endpoint. The line is structural, never semantic.
 
-Schema pipeline (`records/`): Schema derivation and flattening share one field walk (`records/fields.py`), so a column's name (type side) and its value (value side) cannot drift. Auto-derivation maps the closed scalar set (int, float, str, bool, `date` → `pl.Date` — added 2026-07-21 with the first date-only wire value, Motive users `joined_at` — `datetime` → tz-aware microsecond UTC, `timedelta` → microsecond Duration), enums (→`pl.String` — the model already enforces membership), and `list[scalar]` (→`pl.List`), and recurses into nested models to flatten them. A leaf the deriver cannot place — an `Any`, a `dict`, a `list` of models, a multi-arm union — raises (fail fast); the per-endpoint `schema_overrides` escape hatch remains the planned answer for genuine derivation gaps but is unbuilt until a real consumer needs it, at which point it is built complete (the dtype side and the value-serialization side together — a schema-only override is a half-built hatch that errors at construction). There is no runtime required-column check: Pydantic guarantees every validated record carries every declared field, and constructing the frame with the explicit derived schema makes every column present by construction — the guarantee is a test invariant, not a runtime step. Value-level wire-cleaning (a stringly value Pydantic's lax mode cannot coerce) is not a records concern either; it lives on the model as a `field_validator(mode='before')`, under the rule that recovering the declared type is structural (allowed on the mirror) while reshaping meaning is semantic (kept off it). Empty strings normalize to null at the DataFrame boundary, while the models preserve `""` faithfully from the wire.
+Schema pipeline (`records/`): Schema derivation and flattening share one field walk (`records/fields.py`), so a column's name (type side) and its value (value side) cannot drift. Auto-derivation maps the closed scalar set (int, float, str, bool, `date` → `pl.Date` — the date-only wire value, e.g. Motive users `joined_at` — `datetime` → tz-aware microsecond UTC, `timedelta` → microsecond Duration), enums (→`pl.String` — the model already enforces membership), and `list[scalar]` (→`pl.List`), and recurses into nested models to flatten them. A leaf the deriver cannot place — an `Any`, a `dict`, a `list` of models, a multi-arm union — raises (fail fast); the per-endpoint `schema_overrides` escape hatch remains the planned answer for genuine derivation gaps but is unbuilt until a real consumer needs it, at which point it is built complete (the dtype side and the value-serialization side together — a schema-only override is a half-built hatch that errors at construction). There is no runtime required-column check: Pydantic guarantees every validated record carries every declared field, and constructing the frame with the explicit derived schema makes every column present by construction — the guarantee is a test invariant, not a runtime step. Value-level wire-cleaning (a stringly value Pydantic's lax mode cannot coerce) is not a records concern either; it lives on the model as a `field_validator(mode='before')`, under the rule that recovering the declared type is structural (allowed on the mirror) while reshaping meaning is semantic (kept off it). Empty strings normalize to null at the DataFrame boundary, while the models preserve `""` faithfully from the wire.
 
 ---
 
@@ -2738,15 +2209,15 @@ Schema pipeline (`records/`): Schema derivation and flattening share one field w
 Two verbs, deliberately not a family. `fetch` is the programmatic convenience
 verb for embedding fleetpull inside another program; `sync` is the
 config-driven verb for running it as a pipeline. The fluent / method-chaining
-surface previously penciled in for this section is **retired** — a decision
-from the roadmap item 3 design pass, not drift. Chaining earns its complexity
+surface previously penciled in for this section is **retired** — a settled
+design decision, not drift. Chaining earns its complexity
 when a call site composes many options; the settled design's whole point is
 that `fetch` has almost no options to compose and `sync`'s options live in a
 file, not in code, so the chain had nothing left to chain.
 
 **`fetch` — the programmatic convenience verb.** Minimal arguments: an
 endpoint identity from the public catalog, one `auth=` parameter, and little
-else — as built (`fleetpull/api/`, the top-tier public-surface package), one
+else — in `fleetpull/api/` (the top-tier public-surface package), one
 keyword flag: `use_truststore` (default False, named identically to the
 `HttpConfig` field it coerces into — the auth-ingress
 simple-shape-to-rich-internal pattern applied to transport posture, present
@@ -2766,7 +2237,7 @@ a windowed result grows with window width and fleet activity — unbounded by
 anything the caller controls in memory. The exposed subset is a *type*, not a
 runtime allowlist: identity types encode sync mode, and `fetch`'s signature
 accepts only snapshot-typed identities, so handing it a windowed identity
-fails mypy — backed, as built, by a runtime exposure guard (the first
+fails mypy — backed by a runtime exposure guard (the first
 statement of `fetch` raises `ConfigurationError` naming the endpoint and its
 mode, before any client construction), because the convenience verb's
 audience includes notebooks where mypy never runs. Starting narrow is the
@@ -2793,7 +2264,7 @@ agnosticism principle (§14) survives — the catalog is organized by provider,
 the behavior is not. The module is static and committed, not codegen; the
 drift protection is a two-way parity discipline test against the discovery
 registry (every exposed identity resolves; every intended-public endpoint
-appears), built with the catalog in roadmap item 5. An `available_endpoints`
+appears). An `available_endpoints`
 enumeration rides along as the catalog's manifest.
 
 **Casing.** Provider namespaces are CapWords (`Endpoints.Motive`): they are
@@ -2816,8 +2287,8 @@ time. Ingress immediately coerces every accepted shape into the internal
 `SecretStr`-carrying auth, so nothing loggable survives past the boundary —
 the same lax-boundary-strict-interior posture `SyncConfig` already takes
 coercing string dates and paths. An `auth` whose provider mismatches the
-endpoint identity's provider is a `ConfigurationError`. Settled 2026-07-09:
-profile construction takes a `ProviderProfileContext` (HTTP config, limiter
+endpoint identity's provider is a `ConfigurationError`. Profile construction
+takes a `ProviderProfileContext` (HTTP config, limiter
 registry, clock) alongside the identity and the credential — the union of
 composition-root collaborators a provider's auth machinery draws on (GeoTab's
 session stack consumes all three; Motive ignores it). The context grows only
@@ -2849,12 +2320,11 @@ keeps catching it. Every other exception type is internal and renameable.
 (`Path` or `str`); a `run()` method returning `None`; failure signaled by
 raising. Endpoints inside one sync run and commit independently — a sibling's
 failure never halts the others. The YAML schema *is* sync's API: designing
-sync means designing the config schema, so sync's full vocabulary is
-deliberately deferred to roadmap item 6, where the schema and the programmatic
-shell (`Sync(path).run()`) are designed as one unit. `fetch` was separable and
-designed first because its vocabulary does not depend on the schema.
+sync is designing the config schema, so the schema (the settled-schema
+paragraph below) and the programmatic shell (`Sync(path).run()`) are one
+unit. `fetch` is separable because its vocabulary does not depend on the schema.
 
-**`Sync`, as built (`fleetpull/api/sync.py`).** Construction is validation
+**`Sync` (`fleetpull/api/sync.py`).** Construction is validation
 only: the config loads via `from_yaml`, every selected endpoint name is
 checked against the public catalog (the validation deliberately absent below
 the `api` tier), and zero enabled providers raises — a sync that syncs
@@ -2866,7 +2336,7 @@ registries, the limiter registry from the precedence-resolved provider
 configs, and per-provider client profiles through the auth ingress (which
 accepts the config's `SecretStr` directly). Endpoints run as one staged
 queue per enabled provider, the queues concurrent (§7's provider-parallel
-and intra-provider records, both 2026-07-20): per provider, the selection
+and intra-provider records): per provider, the selection
 carves by feeder-hood — `sourced_by` non-empty, never a user-facing key —
 into feeders and consumers, config order within each; stage 1 runs the
 feeders concurrently among themselves, the stage join is the barrier, and
@@ -2888,9 +2358,9 @@ vertical-1 masks, injections, and post-validation rewriting are deleted, not
 deprecated). Sections: `sync` (`default_start_date` required; optional
 package-wide `lookback_days` / `cutoff_days`; optional `backfill_chunk_days`,
 default 7 — the whole-day work-unit width every windowed run's plan tiles its
-window into, §13, unless the endpoint's `WatermarkMode` declares a
+window into, §5, unless the endpoint's `WatermarkMode` declares a
 `fixed_unit_days` override, which wins — §8's fuel-energy record), `storage` (`dataset_root`
-required — its one and only home; `SyncConfig` no longer carries it), `state`
+required — its one and only home, not on `SyncConfig`), `state`
 (`database_path`, defaulting to `<dataset_root>/.fleetpull/state.sqlite3`),
 `logging` (`console_level` / `file_level` / `file_path`; either file key
 enables file logging and the missing partner is defaulted — level to DEBUG,
@@ -2918,7 +2388,7 @@ catalog lives in `api`, above `config`, so name validation happens at `Sync`
 construction. The public windowed-bound vocabulary (`start_date` /
 `end_date`) appears nowhere in this schema, by design.
 
-**Vocabulary bound now for item 6.** The public names for windowed bounds are
+**The windowed-bound vocabulary.** The public names for windowed bounds are
 `start_date` / `end_date` — never bare `start`/`end` — matching the package's
 existing `_date` vocabulary (`default_start_date`, the
 `lookback_days`/`cutoff_days` day-suffix family, and the wire parameters
@@ -2933,11 +2403,11 @@ stance above is an instance of this refusal, not a separate policy.
 
 **What survives from the old section.** `iter_records(endpoint, **params)` —
 typed iterator of Pydantic models, pagination transparent. (Renamed from
-fleet-telemetry-hub's `fetch_all`, whose "all" misleadingly suggested all
+the legacy package's `fetch_all`, whose "all" misleadingly suggested all
 endpoints rather than all pages.) This is the escape hatch for consumers who
 don't want Polars; the dataframe path is built on top of it. The old CLI
-framing is superseded: fleetpull makes no fetch-CLI commitment; the CLI story
-is the yaml-run tool over `sync` (item 6).
+framing is superseded: fleetpull makes no fetch-CLI commitment; the CLI is
+the yaml-run tool over `sync` (`fleetpull sync <config>`).
 
 ---
 
@@ -3088,7 +2558,7 @@ fleetpull/
                    #   plus VEHICLE_IDS_ROSTER (the trips fan-out's roster,
                    #   declared beside its feeder)
       drivers.py   # SamsaraDriversSpecBuilder + build_endpoint — the ParamSweep
-                   #   snapshot factory (active ∪ deactivated, §8's 2026-07-20 block)
+                   #   snapshot factory (active ∪ deactivated, §8's drivers block)
       trips.py     # SamsaraTripsSpecBuilder + build_endpoint — the per-vehicle
                    #   windowed fan-out over the v1-only surface (the roster
                    #   machinery's first cross-provider consumer, §8's trips block)
@@ -3098,11 +2568,11 @@ fleetpull/
                    #   windowed builder with per-leaf id_sort), GeotabGetFeedSpecBuilder
                    #   (the seed-or-resume GetFeed builder every feed leaf shares),
                    #   server_host, and GetCountOfCheck (underscore-prefixed so the
-                   #   registry walk skips it; renamed from _get_requests 2026-07-21)
+                   #   registry walk skips it)
       devices.py   # build_endpoint — the devices seek-paged snapshot factory
       users.py     # build_endpoint — the users seek-paged snapshot factory
       trips.py     # build_endpoint — the trips windowed (watermark) factory; the
-                   #   TripSearch date bounds ride the seek walk (§4's amendment)
+                   #   TripSearch date bounds ride the seek walk (§4)
       exception_events.py  # build_endpoint — the bisected windowed factory; composes
                    #   the windowed builder with id_sort=False (id-sort rejected
                    #   per-type, §8)
@@ -3119,7 +2589,7 @@ fleetpull/
     key.py         # RosterKey: the opaque (provider, name) handle a consumer references
     definition.py  # RosterDefinition: a key's source endpoint + column + refresh policy
     registry.py    # RosterRegistry: RosterKey -> RosterDefinition (forward lookup)
-  models/          # pure API mirrors per provider (Motive/Samsara ported from fleet-telemetry-hub)
+  models/          # pure API mirrors per provider (Motive/Samsara ported from the legacy package)
     motive/        # the Motive model package — a directory per provider (§11 prose below)
       shared.py    # UserSummary, EldDeviceInfo — embedded shapes shared across endpoints
       vehicles.py  # Vehicle snapshot record (+ AvailabilityDetails / AvailabilityStatus / VehicleStatus)
@@ -3210,7 +2680,7 @@ fleetpull/
     resume.py      # resolve_watermark_start + resolve_feed_resume — stored-cursor interpretation + its guards (§14)
     backfill.py    # plan_backfill_units: whole-UTC-day chunk -> WorkUnitSpecs (§5)
     unit_loop.py   # the concurrent, prefix-committing claim-and-drive loop over
-                   #   work units (§13's settled transaction boundary; §5's
+                   #   work units (the per-unit transaction boundary; §5's
                    #   prefix-advance rule)
     entry.py       # run_endpoint — the orchestration entry: roster-fed driver resolution, roster refresh, feeder tap (§14)
     executors.py   # FetchPoolRegistry — per-provider executors, context-managed (§7)
@@ -3234,8 +2704,8 @@ so no composition root invents rate-limit numbers. Placement for everything else
 way: the client is transport plumbing and lives at `network/client/`,
 alongside the limiter, contract, and auth it consumes; `records`, `storage`,
 `state`, and `orchestrator` are internal by the same test (consumers call
-the public API, never these) and each receives its own subpackage home when
-its prompt builds it — a single-module subpackage is the blessed shape.
+the public API, never these) and each has its own subpackage home — a
+single-module subpackage is the blessed shape.
 `exceptions.py` and `cli.py` are user-facing and stay at the root: consumers
 catch the exceptions and invoke the CLI. The hierarchy itself — members,
 consumer actions, and stances — is recorded in §8.
@@ -3295,7 +2765,7 @@ tzinfo to exercise rejection).
 
 ### The endpoints layer
 
-**A thin declarative binding, not a fat base class.** fleet-telemetry-hub's
+**A thin declarative binding, not a fat base class.** The legacy package's
 `EndpointDefinition` carried auth, pagination, request-building, and
 response-parsing on one class hierarchy. In fleetpull the network layer already
 owns those as separate strategies — auth as a per-provider `ProviderProfile`
@@ -3471,10 +2941,29 @@ lives in `state/`). The per-chunk DataFrame is a value, not a stateful component
 - Annotated locals; explicit type hints everywhere
 - No real VINs / internal fleet identifiers in committed files
 - Docstrings with Args/Returns/Raises/Side Effects
-- `logging.getLogger(__name__)` in modules that log (INFO milestones/progress, DEBUG developer detail, WARNING degraded-but-continuing, ERROR failures — settled 2026-07-17); no `print` in production code
+- `logging.getLogger(__name__)` in modules that log (INFO milestones/progress, DEBUG developer detail, WARNING degraded-but-continuing, ERROR failures); no `print` in production code
 - Explicit timeouts on all network calls; specific exception handling
 - Blast-radius minimization over DRY where coupling risk is real
 - `StrEnum` for enums
+
+**Logging policy.** Log timestamps are UTC everywhere — the `Z`-suffixed `asctime`
+(`logger/setup.py`) — so log time matches the UTC of everything the lines describe
+(windows, watermarks, partitions) and incident correlation never crosses a timezone
+boundary; local-with-offset is rejected because mixed clocks invite off-by-a-timezone
+misreadings. Handlers configure the `fleetpull` package logger only, with
+`propagate = False`, so third-party verbosity (httpx and kin) is a deliberate opt-in,
+not an accident of root configuration. Narration is INFO for milestones and progress —
+sync and endpoint start/complete, the watermark plan (window bounds and claimable
+units), per-unit completion (in completion order, nondeterministic across parallel
+unit workers, so the unit id and window bounds ride the line), the fan-out heartbeat
+every 100 members, and the feed arm's resume line (`feed run seeded` / `feed run
+resumed`) plus its `feed complete` drain (pages, rows, final token); DEBUG carries the
+per-member and per-page detail (`feed page appended`, with the page's count and token).
+INFO is never per page or per record — that is flood, not progress. Every record
+carries its thread name — queue threads `fleetpull-sync-<provider>`, endpoint tasks
+`fleetpull-sync-<provider>-<endpoint>`, fetch workers `fleetpull-<provider>-fetch` — so
+state-layer DEBUG lines carrying only run/unit ids stay attributable when providers and
+sibling endpoints interleave.
 
 **Canonical UTC (the temporal doctrine).** The interior temporal form is
 exactly one: a timezone-aware `datetime` whose `tzinfo is datetime.UTC` —
@@ -3501,155 +2990,60 @@ tzinfo-construction rules mechanically.
 
 ---
 
-## 13. Open Questions
+## 13. Design tensions and deferred decisions
 
-- GeoTab specifics pending API access: `GetFeed` semantics in practice, real rate limits, which entities map to which storage strategies (the auth model is settled — session-based, §8). *Update (2026-07-09): the live probe session closed the `GetFeed`-semantics and rate-limit halves — see §8's observed-behaviors table and probe-settled decisions. Still open: which remaining entities map to which storage strategies, and the calculated-feed questions (version re-emission shape, tombstones — the bullet below), deferred to Trip's port.* *Update (2026-07-13): Trip's mapping is settled — watermark / `DATE_PARTITIONED` on `start` (the trips vertical; §4's amendment carries the rationale and the accepted recalculation residual). Still open per entity: ExceptionEvent pends the sort-failure discrimination (§8's `GenericException` row), and User pends the driver-visibility question — a scope anomaly where trips reference driver ids invisible to the probing account, under investigation with the subsidiary.* *Update (2026-07-21): the calculated-feed questions are settled with the feed machinery — §4's feed record (seeding wire-proven despite falsifying docs, stored-as-emitted with `(id, max version)` reconciliation, unsignaled removals accepted as the dated residual) and §5's four feed invariants; the per-entity feed queue and the deferred-unobservable list live in ENDPOINTS.md.*
+The live tensions and deliberately-deferred decisions the rest of the document
+resolves against. A resolved question is not a tension: settled decisions live in
+the section they govern — feed semantics in §4/§5, the work-unit transaction
+boundary and its release-then-enqueue correction in §5/§14, the
+exactly-full-final-page feed residual (one empty `GetFeed` per sync per feed
+endpoint, from the short-page termination rule) in §4 — not here.
 
-- **Accepted residual (2026-07-09): the exactly-full-final-page feed edge.**
-  When a feed's final page holds exactly `resultsLimit` records, the
-  short-page termination rule issues one extra call that returns empty
-  `data` (with the current `toVersion`). Worst case is one empty
-  `GetFeed` per sync per feed endpoint — accepted with that rationale
-  rather than left implicitly unresolved; the empty-page terminal shape is
-  captured (§8's table). Not an open question.
-- Real rate-limit values for Motive/Samsara (YAML numbers above are placeholders)
-- Whether any endpoint actually warrants the flattening opt-out
-- Per-endpoint quota scopes for Samsara: a provider metering one endpoint apart adds a `QuotaScope` member (code), while that scope's limits stay config — a code-plus-config change, not config-only. (GeoTab's method-class scopes — `GEOTAB_GET`, `GEOTAB_FEED` (2026-07-21, ~60/min by header-decrement probe), and `GEOTAB_AUTHENTICATE`, emitted from one `GeotabConfig`'s three budget fields — are the first shipped instance of this pattern.)
+- **Rate-limit values for Motive and Samsara are placeholders.** The config numbers
+  (§7) are self-limiting defaults, not measured budgets — neither provider
+  exposes its real limit outside a 429, so the numbers err conservative until
+  production churn informs them.
 
-- **`updated_after` as an ingestion-time CDC hook (open — for the
-  incremental-strategy design conversation, not a current commitment).** The
-  late-upload gap: a vehicle offline for days uploads old-`located_at`
-  records later, and a `located_at` watermark with a fixed lookback will
-  never fetch them. Probing showed Motive accepts `updated_after` on the
-  per-vehicle history endpoint (though inert as observed, §8), making it a
-  candidate for closing that gap at ingestion time rather than by widening
-  the lookback.
+- **Whether any endpoint warrants the flattening opt-out.** Flattening is default-on
+  (§9) and the per-endpoint opt-out exists in the design, but no shipped endpoint
+  has needed it.
 
-- **Staging-clear robustness on synced/scanned filesystems (parked for the
-  polish phase, §15 roadmap item 8).** A live run on a OneDrive-synced
-  `dataset_root` failed in `clear_partition_staging` (`shutil.rmtree` →
-  `PermissionError` / `WinError 5`): the sync handler held the staging
-  directory during cleanup. Not a correctness bug — at the clear point the
-  finalized partition is expected to be already promoted, which would make
-  leftover staging cosmetic, not corrupting. The intended fix, pending
-  confirmation of that expectation: best-effort removal with a short
-  retry/backoff, degrading to a logged warning rather than crashing a run
-  whose data landed correctly. Deterministic regression test: hold an
-  external handle on the staging directory and assert retry-then-warn — no
-  OneDrive required. This is Windows reality, not OneDrive-specific: endpoint
-  antivirus scan-on-write produces the same `WinError 5` on fresh writes, in
-  exactly the corporate Windows environments fleet telematics runs in. Ships
-  with a docs note: `dataset_root` should be a real filesystem path, not a
-  live cloud-synced folder.
+- **Per-endpoint quota scopes.** A provider metering one endpoint apart from its
+  siblings adds a `QuotaScope` member (code) whose limits stay config — a
+  code-plus-config change, not config-only. GeoTab's method-class scopes
+  (`GEOTAB_GET`, `GEOTAB_FEED` at ~60/min, `GEOTAB_AUTHENTICATE`, emitted from one
+  `GeotabConfig`'s three budget fields) are the pattern's one instance today; Samsara
+  documents per-endpoint limits and is the likely next split.
 
-- **The work-unit transaction boundary (settled — the unified plan-and-drive
-  loop; its empty-roster twin was settled earlier).** *Empty roster — settled
-  and implemented:* the orchestration entry
-  reads the roster (the driver does not, §14) and short-circuits before
-  `runner.run()` — an empty roster after refresh raises `ConfigurationError`.
-  Error-by-default because a feeder that silently returned nothing is a failure
-  to surface, not an empty dataset to emit; this also keeps the writer's
-  "`write` called ≥1 time" precondition intact without a separate "tolerate
-  zero writes" path (a snapshot always yields ≥1 page-batch, a fan-out with ≥1
-  member yields ≥1 batch, and the only zero-batch case never reaches the
-  runner). The `RosterFanOut.allow_empty_roster` escape is deliberately not
-  built — it joins the binding when an endpoint genuinely needs it, not before.
-  *Transaction boundary — settled and implemented:* neither of the two
-  candidates, but the third the `WorkUnitStore` was built for — per **unit**
-  (a date chunk of the whole roster), not per run and not per member. Every
-  windowed run plans its window into `sync.backfill_chunk_days`-wide units (a
-  daily window degenerates to one unit; an endpoint whose `WatermarkMode`
-  declares `fixed_unit_days` tiles at exactly that width instead — the
-  declaration wins because a window-grain rollup row's meaning includes its
-  unit width, §8's fuel-energy record) and drives them
-  `sync.backfill_unit_workers` at a time (claims FIFO by `unit_id`, i.e.
-  ascending window order; completions in any order — amended 2026-07-20);
-  each unit is its own transaction — fetch the unit's window, finalize its
-  partitions, record its ledger row, mark it done with its folded
-  observation. The watermark advances per completion across the contiguous
-  done-prefix through the store's atomic forward-only write — §5's
-  prefix-advance record, which retired the earlier serial-ascending
-  constraint together with the per-unit advance it existed to protect; the
-  truth invariant (every persisted watermark true at every instant) now
-  rests on the prefix rule, not on completion order. Resume precedence:
-  incomplete units outrank the
-  watermark — a run re-claims and drives them first (an in-progress unit
-  found at run start is by definition orphaned, because fleetpull assumes a
-  **single driver per state database**), then plans the residual, resolved
-  exactly as the resume chain always has (watermark less lookback, floored;
-  else frontier; else anchor; cutoff trailing edge), as new units at the
-  current chunk size (the declared `fixed_unit_days` where one exists) —
-  persisted unit boundaries are honored on resume even
-  when `backfill_chunk_days` changed. A failed unit stops further claiming
-  (in-flight siblings finish and commit), returns to a claimable state with
-  nothing committed, and fails the endpoint after the workers join; the
-  completed units stand, and the next run re-claims what remains.
-  **The release-then-enqueue pairing (corrected 2026-07-21).** The record
-  here originally read "completed unit rows are kept, not pruned," blessing
-  the enqueue-collapse onto kept `done` rows with the consolation that "the
-  late-arrival margin refetch still happens whenever the window shifts."
-  That consolation was FALSE for day-aligned units and never noticed by any
-  gate: a shifted window re-tiles onto the SAME midnight-aligned unit keys,
-  so on every `fixed_unit_days=1` endpoint (and any `backfill_chunk_days=1`
-  config) the lookback overlap collapsed onto kept `done` rows on every
-  run, and the late-arrival refetch — the lookback's entire purpose on
-  mutating-rollup surfaces — silently never happened after a day's first
-  coverage. The reasoning error: the window's identity shifted, but the
-  UNITS' identities did not. Corrected: residual planning now first calls
-  `release_done_units` over the residual window (deleting `done` rows fully
-  inside it — committed history being deliberately re-covered), then
-  enqueues the fresh tiling; the same-day identical-window re-run is
-  consequently no longer a no-op but a deliberate refetch of the lookback
-  margin, which is delete-by-window idempotent. Unit-row history is not
-  provenance — the runs ledger is; a unit row inside a window being
-  re-planned is live work. Invariant 3 above carries the re-derivation;
-  the drive-level tripwire pins a done day-unit re-driving under the next
-  run's lookback.
+- **`updated_after` as an ingestion-time CDC hook (uncommitted).** The late-upload
+  gap: a vehicle offline for days uploads old-`located_at` records later, and a
+  `located_at` watermark with a fixed lookback never fetches them. Motive accepts
+  `updated_after` on the per-vehicle history endpoint (though inert as observed,
+  §8), making it a candidate for closing that gap at ingestion time rather than by
+  widening the lookback — a question for the incremental-strategy design, not a
+  current commitment.
 
-- **Logging policy (settled 2026-07-17 — pinned open during the concurrency
-  vertical so no scoped task could preempt it with ad-hoc narration).** The
-  three pinned decisions, all settled and implemented:
-  - *Timestamps are UTC everywhere* — the `Z`-suffixed `asctime`
-    (`logger/setup.py`). Everything the lines describe — windows,
-    watermarks, partitions — is UTC; log time matches data time so incident
-    correlation never crosses a timezone boundary. Local-with-offset was
-    considered (the operator reading a console lives in local time) and
-    rejected: mixed clocks invite off-by-a-timezone misreadings.
-  - *Handlers configure the `fleetpull` package logger only*, with
-    `propagate = False`. Third-party verbosity (httpx and kin) is a
-    deliberate future opt-in, not an accident of root configuration.
-  - *Narration is INFO milestones-and-progress.* The level semantics — INFO
-    for milestones and progress updates, DEBUG for movement and detail
-    geared toward a developer, WARNING for degraded-but-continuing, ERROR
-    for failures; a logger bound only in modules that log (§12, CLAUDE.md)
-    — carry this content, now built: sync start/end, endpoint
-    start/complete, the watermark plan (window bounds and claimable units),
-    per-unit completion (in completion order — nondeterministic across
-    parallel unit workers since 2026-07-20; the unit id and window bounds on
-    the line keep it attributable), the fan-out heartbeat every 100
-    members, and (2026-07-21, the feed arm) the feed resume line —
-    `feed run seeded`/`feed run resumed` with its from-date or from-version
-    — plus the `feed complete` drain line (pages, rows, final token); DEBUG
-    carries the per-member and per-page detail (`feed page appended`, with
-    the page's record count and token). INFO is never per page or per
-    record — that is flood, not progress. (The motivating incident: the
-    last live pre-narration run was ~80 minutes for two log lines.)
-  - *Every record carries its thread name* (added with provider-parallel
-    `Sync`, 2026-07-20): queue threads are `fleetpull-sync-<provider>`,
-    endpoint tasks under a queue worker are
-    `fleetpull-sync-<provider>-<endpoint>` (added with the intra-provider
-    grain, same date), and fetch workers `fleetpull-<provider>-fetch`, so
-    state-layer DEBUG lines that carry only run/unit ids stay attributable
-    at a glance when providers — and now sibling endpoints — interleave.
+- **Staging-clear robustness on synced/scanned filesystems (deferred to the polish
+  phase, §15).** A live run on a OneDrive-synced `dataset_root` failed in
+  `clear_partition_staging` (`shutil.rmtree` → `PermissionError` / `WinError 5`):
+  the sync handler held the staging directory during cleanup. This is not a
+  correctness bug — at the clear point the finalized partition is already promoted,
+  so leftover staging is cosmetic, not corrupting. The intended fix: best-effort
+  removal with a short retry/backoff, degrading to a logged warning rather than
+  crashing a run whose data landed correctly, with a deterministic regression test
+  (hold an external handle on the staging directory and assert retry-then-warn — no
+  OneDrive required). This is Windows reality, not OneDrive-specific: endpoint
+  antivirus scan-on-write produces the same `WinError 5` on fresh writes, in exactly
+  the corporate Windows environments fleet telematics runs in. A docs note stands:
+  `dataset_root` should be a real filesystem path, not a live cloud-synced folder.
 
 ---
 
 ## 14. Orchestration: the run executor, the request driver, and the client registry
 
 The layer that sequences fetch, records, storage (§3), and state (§5) into one
-endpoint's run. The network, `records/`, `storage/`, and `state/` layers are all
-built; this layer, which drives them, is built in full as well — all three
-arms, the feed drive since 2026-07-21.
+endpoint's run — it drives the network, `records/`, `storage/`, and `state/` layers
+below it through all three run arms (snapshot, watermark, feed).
 
 **The orchestrator-boundary principle: higher-level orchestrators and tools are
 polymorphic — provider-agnostic and endpoint-agnostic.** A caller invoking an
@@ -3669,7 +3063,7 @@ exactly the shape distinctions the declarations hide; what the entry
 contributes to the seam is the roster half only the stateful composition has.
 The entry never reasons about roster freshness (the refresh
 coordinator owns that policy whole), and an empty roster after refresh raises
-`ConfigurationError` — error-by-default (§13): a feeder that listed nothing is
+`ConfigurationError` — error-by-default: a feeder that listed nothing is
 a failure to surface, and the short-circuit keeps the writer's
 write-called-at-least-once precondition intact. The entry also owns the feeder
 tap (§3's Rule 1): it reverse-looks-up the rosters the definition sources
@@ -3678,8 +3072,8 @@ observer on the run — the runner hands each post-validation frame to an
 opaque `BatchObserver` hook and stays roster-blind — collecting each sourced
 roster's distinct `source_column` values (values only, never frames), and
 after the run returns `Executed` it hands each collected listing to the
-coordinator's `apply_listing` — the reconcile choke point, whose guard means
-reconciliation is no longer unconditional: **a roster is never reconciled to
+coordinator's `apply_listing` — the reconcile choke point, whose guard makes
+reconciliation conditional: **a roster is never reconciled to
 empty**. An empty listing (the provider returned nothing, or every member
 value filtered out) is a failed refresh, not a membership fact — reconciling
 it would mass-increment absence counts and, with an eviction threshold,
@@ -3726,8 +3120,8 @@ orchestration splits into three nested layers, by concern:
   so its `members=N/M` progress narration counts BATCHES for this shape,
   a deliberate, recorded consequence), and a `ParamSweep` fans its declared
   values with `member_key=param` — no separate sweep or batch driver exists.
-  `BisectingWindowDriver` (`orchestrator/bisection.py`, added
-  2026-07-15) serves capped, unsortable Gets declaring `BisectedWindowFetch`:
+  `BisectingWindowDriver` (`orchestrator/bisection.py`) serves capped,
+  unsortable Gets declaring `BisectedWindowFetch`:
   it fetches the unit window whole, halves on the exactly-full overflow
   signal down to the declared floor (then fails loudly), and filters each
   leaf's page to the records anchored in that leaf — one owner per record
@@ -3770,12 +3164,12 @@ The driver is the missing adapter between one endpoint run and one-or-many reque
 chains, and it matches grain the existing layers already have: a `SpecBuilder`
 builds one first request from `member_values`, `TransportClient.fetch_pages` drives
 one chain from one first spec, and a `DatasetWriter` accepts one-or-many frames and
-finalizes once. This resolves the §13 question on how a date partition's rows
+finalizes once. This resolves how a date partition's rows
 assemble across the per-vehicle fan-out: the driver yields per vehicle, the runner
 writes per vehicle, and `stage_shard` lands each piece to disk immediately (§3), so
 the fleet's rows for a date assemble across per-vehicle `write` calls bounded by one
-chain's records — never a RAM buffer holding the fleet. Backfill chunk sizing (§13)
-remains the one open piece.
+chain's records — never a RAM buffer holding the fleet. Backfill chunk sizing is the
+caller's planning lever (§5).
 
 **The run is constructed, not self-assembling.** The `EndpointRunner` is injected
 with four collaborators — the `ProviderClientRegistry` (client source), the
@@ -3834,8 +3228,8 @@ the same split as `process_batch` in `orchestrator/batch.py`. The per-unit trans
 `WatermarkDrive._execute_window`, in the crash order below; the unit's folded
 in-window
 maximum rides its `Executed` outcome instead of advancing anything inline.
-`WatermarkDrive.run` is the plan-and-drive loop (§13's settled record, amended
-2026-07-20): it commits the watermark prefix once at run start (the §5
+`WatermarkDrive.run` is the plan-and-drive loop (§5's prefix-advance record):
+it commits the watermark prefix once at run start (the §5
 crash-heal), drives every claimable work unit through the spine
 `backfill_unit_workers` at a time, and after each completion records the
 unit's observation at `mark_done` and re-commits the prefix — the watermark
@@ -3848,8 +3242,7 @@ ascending, completion order is free. A unit fans the whole roster, so each
 partition is replaced with every member's rows, exactly the in-full refetch
 the partitioned writer already assumes — the writer is unchanged.
 
-**Crash-safety ordering — parquet, ledger, done-mark, prefix commit
-(superseded 2026-07-20; cursor-before-completion retired).** §5 fixes
+**Crash-safety ordering — parquet, ledger, done-mark, prefix commit.** §5 fixes
 parquet-before-cursor. The executor's earlier second ordering — cursor before
 run completion — existed for the frontier-without-lookback hazard: a succeeded
 watermark run feeds `coverage_frontier` (resume arm 2, §4), arm 2 applies no
@@ -3872,7 +3265,7 @@ observation is already recorded for the heal). A crash mid-spine leaves the
 run merely `running` (diagnostic-only — the frontier filters `succeeded`).
 Snapshots are unaffected: they hold no cursor and never reach the frontier.
 
-**The feed drive — the runner's third arm (built 2026-07-21).**
+**The feed drive — the runner's third arm.**
 `FeedDrive.run` (`orchestrator/feed_drive.py`)
 drives a feed endpoint's version-token stream: (a) `resolve_feed_resume`
 interprets the stored cursor — the `FeedToken` used directly, a `FeedSeed` at
@@ -3902,7 +3295,7 @@ final `toVersion` after the last — so a crash mid-stream leaves a
 diagnostic `running` row while every completed page's parquet-and-token
 stands committed. A page with no `durable_progress` is a wiring bug (a
 non-feed decoder on a feed endpoint) and fails loudly before any write.
-Narration per §13: one INFO at start (`feed run seeded`/`feed run resumed`,
+Narration per §12: one INFO at start (`feed run seeded`/`feed run resumed`,
 with the from-date or from-version), DEBUG per page, one INFO at drain
 (`feed complete` with pages/rows/final token) ahead of the shared
 endpoint-complete line. The feed arm never touches the work-units queue
@@ -3912,7 +3305,7 @@ its first page).
 
 **Two future-time guards, one rule applied where it can surface.** The
 `CursorStore`'s only advance discipline is `advance_watermark_forward`'s
-strictly-forward guard (§5, 2026-07-20); the future-time checks stay the
+strictly-forward guard (§5); the future-time checks stay the
 watermark arm's — both in the pure helpers it calls. *Guard A*, in
 `resolve_watermark_start` before window resolution: a persisted `watermark > now` is
 corruption and raises `ConfigurationError` — otherwise a future-dated cursor becomes
@@ -3953,12 +3346,11 @@ interim.
 **Build order.** (1) `ProviderClientRegistry`; (2) `EndpointRunner` +
 `SingleRequestDriver` + `RunOutcome`, exercising the snapshot path end-to-end on
 `vehicles`; (3) the staging crash-clean; (4) the watermark arm — window resolution,
-both guards, the incremental fold, the then-current parquet -> cursor -> ledger
-ordering (since superseded by the 2026-07-20 crash-order record above), and a
-watermark stub endpoint to exercise it without fan-out. `FanOutRequestDriver` and
+both guards, the incremental fold, the crash-safety ordering (the crash-order
+record above), and a watermark stub endpoint to exercise it without fan-out. `FanOutRequestDriver` and
 the coordinator follow, wiring `vehicle_locations`'s roster fan-out shape.
 
-**Request cardinality unified (decided 2026-07-20).** `EndpointDefinition`
+**Request cardinality unified.** `EndpointDefinition`
 had accreted one optional field per cardinality pattern (`fan_out:
 FanOutBinding | None`, `window_bisection: WindowBisection | None`) with
 pairwise mutual-exclusion validators, and driver resolution was split between
@@ -3971,7 +3363,7 @@ seam (`resolve_request_driver`) both composition roots call. `ParamSweep`
 joined as the first new member under the closed-extension contract (first
 consumer: Samsara drivers, whose provider partitions the population behind a
 mandatory activation-status filter). `BatchedRosterFanOut` joined as the
-second (2026-07-20; first consumer: Samsara asset_locations, whose surface
+second (first consumer: Samsara asset_locations, whose surface
 requires an id filter under an API-enforced 50-id batch cap): its arm reads
 the roster through the same member source a `RosterFanOut` uses — handed
 the per-member fan-out the packing wraps, one roster machinery path — then
@@ -3981,319 +3373,41 @@ going forward: a new
 cardinality pattern is a new union member plus its resolution arm — never a
 new definition field, never a second resolver.
 
-## 15. Next Steps
+## 15. Build Status
 
-1. Review/amend this document
-2. Build in dependency order: `network/limits/` (done) → auth session manager (done, `network/auth/`) → request contract (done, `network/contract/`: `RequestSpec`, `AuthStrategy` + implementations, `ResponseCategory`/`ClassifiedResponse`/`ResponseClassifier`; `ProviderProfile` deliberately deferred to the client prompt — the bundle rule triggers at three traveling parameters and only two exist) → exception hierarchy (done, `exceptions.py`) → retry policy (done, `config/retry.py` + `network/retry/`) → page-decoder abstraction (done, `network/contract/page_decoder.py` + `decoders/`) → HTTP config + the real GeoTab authenticator (done, `config/http.py` + `network/auth/authenticate.py`) → `network/client/` (done) → `endpoints/shared/base.py` (done) → `records` (done) → `storage` (done: `snapshot`+`single` plus the date-partitioned/watermark writer, §3) → `state` (done in full — §5) → `orchestrator` (built in full: the run executor's snapshot arm, plan-and-drive watermark arm, and per-page feed drive (2026-07-21), the request drivers, the fan-out machinery, the unit loop, and the roster refresh — §7/§13/§14). The chain's original endpoint, `cli.py`, is superseded by the build roadmap below — the public API (§10) precedes any YAML/CLI surface.
+fleetpull is feature-complete for its current scope and readied for publication.
 
-The `network/client/` step inherits a recorded agenda: classify
-prepare-time transport exceptions (the authenticator propagates
-`httpx.TransportError` raw and loop-free by design — whether a transport
-failure during auth/prepare is retried is the client's call), wire the
-exception-hierarchy raise sites (FATAL → `ProviderResponseError`, exhausted
-budgets → `RetriesExhaustedError`, auth paths → `AuthenticationError`), and
-bundle the two per-provider dependencies that share a session lifetime
-(auth strategy, classifier) into `ProviderProfile`, leaving the per-endpoint
-page decoder and quota scope to arrive on each `fetch_pages` call.
+**Shipped.** Both public verbs — `fetch` (the snapshot-only, in-memory convenience
+verb) and `sync` (the config-driven pipeline verb) — over the full layered stack:
+the pure leaves (`config`, `vocabulary`, `timing`, `incremental`), the `network`
+transport (client, auth, per-provider classifiers and decoders, the shared limiter,
+retry policy), the generic `records` and `storage` stages (the snapshot/`single`,
+watermark/`date_partitioned`, and feed/`append_log` writer cells, §3), the SQLite
+`state` layer (cursors, run ledger, work-units claim queue, §5), and the
+`orchestrator` that sequences them — the run executor's three arms (snapshot,
+plan-and-drive watermark, per-page feed), the request drivers, the fan-out
+machinery, the unit loop, and the roster refresh coordinator (§14). The yaml-run
+CLI (`fleetpull sync <config>`) and the best-effort per-endpoint `metadata.json`
+projection (§3) ride on top, and the three-grain concurrency ladder (§7) runs
+providers, endpoints, and units/members concurrently. The endpoint inventory
+`ENDPOINTS.md` tracks as the manifest of record spans all three providers: the
+Motive and Samsara legacy waves complete, the GeoTab `Get` verticals, and the
+GeoTab feed arm — the append-log machinery plus its feed verticals.
 
-**Vertical progress.** The Motive `vehicles` snapshot vertical was proven
-complete end-to-end in June 2026 (`client → validate_records →
-models_to_dataframe → persist`, exercised by a throwaway hand-run driver).
-That driver was re-pointed through the public `fetch` surface (roadmap
-item 5), no longer persisted, and was retired with the scripts folder
-2026-07-17 — the persist-ending trace is the June proof. The Motive `vehicle_locations`
-date-partitioned/watermark vertical has run end-to-end live
-(the since-retired diagnostic driver `scripts/run_vehicle_locations.py`, on
-local disk): the incremental loop
-mechanics are live-proven — cold backfill, watermark persistence and resume
-(through the canonical-UTC serialization path), wholesale date-partition
-replacement idempotency, compaction dedup (0 duplicates across ~1.03M
-combined rows), and fan-out over a script-harvested roster. The same run
-surfaced a window-granularity defect in the resume machinery (roadmap item 1
-below); the defect was internal to fleetpull — the provider was exonerated by
-direct probing — and has since been fixed by flooring the resume window at
-resolution (item 1, done).
+**Deferred.** The genuinely-unbuilt, each carrying its recorded obligation:
 
-### The build roadmap (settled order)
-
-1. **Window-granularity fix (done — the floored resume window, §4).** Root
-   cause: the effective resume window start was computed at datetime
-   granularity (the persisted watermark, e.g. `23:59:59`, minus the lookback
-   margin) while requests and partitions are day-granular. The day-granular
-   request floored to `start_date` and fetched the full boundary day; the
-   datetime-granular post-fetch filter then kept only a seconds-wide sliver
-   of it; wholesale date-partition replacement would then overwrite the
-   boundary day's complete partition with that sliver on every steady-state
-   daily sync — silent, cumulative data destruction. The live run
-   materialized a 6-row `date=2026-06-30` sliver partition via exactly this
-   mechanism (1,029,760 + 6 = 1,029,766, to the row). The fix, delivered:
-   `resolve_resume_start` floors the chosen start to the UTC midnight of its
-   date, so the window `in_window` filters against equals the requested date
-   range and the filter's residual job is guarding provider overshoot.
-   Watermark semantics unchanged (max `located_at` of kept records). Both
-   riders shipped: the writer-side tripwire (every staged partition date must
-   lie in `window_dates(window)` — the require-inside half of the
-   normalize-at-boundary doctrine, §12), and the scope note that the rule
-   holds for snapshot/point-event endpoints only: duration/span endpoints
-   (e.g. HOS periods crossing midnight) need their own boundary policy when
-   they arrive and must not blindly reuse it (recorded on
-   `resolve_resume_start` and in §4).
-2. **Fan-out composition root (done — the orchestration entry, §14).**
-   `run_endpoint` (`orchestrator/entry.py`) resolves a definition's declared
-   roster fan-out shape through the roster machinery — registry → coordinator
-   refresh → store members → `FanOutRequestDriver` — or hands a single-chain
-   definition the single-fetch driver; the caller never sees the distinction
-   (the orchestrator-boundary principle, §14). The `vehicle_ids` roster is
-   declared beside its feeder (`endpoints/motive/vehicles.py`,
-   `VEHICLE_IDS_ROSTER`), vehicle_locations declares its shape, and the
-   (since-retired) diagnostic script composed the entry instead of
-   hand-harvesting. The
-   settled constraint holds at the feeder population: `/v1/vehicles` lists
-   inactive and retired vehicles, so the roster covers vehicles active during
-   historical windows even if inactive today. The vehicle_locations module
-   docstring now describes the real wiring. A live-run follow-up closed the
-   roster-freshness defect this composition surfaced: the staleness signal
-   (`last_success_at`) and the refresh events were decoupled — a coordinator
-   harvest was invisible to the ledger, and a runner-driven feeder run never
-   touched the roster — so now every feeder execution records a run and
-   reconciles its rosters (§3's Rules 1 and 2: the harvest records a run
-   directly, and the entry's feeder tap reconciles from the run's own
-   batches).
-3. **Public API design (done — settled per §10).** The design conversation
-   concluded: `fetch` as the snapshot-only in-memory convenience verb over a
-   typed `Endpoints` catalog, `sync` as the config-driven verb whose full
-   vocabulary is item 6's schema work, and the fluent/method-chaining
-   pattern retired.
-4. **Pre-API audit, anchored to that design (done, 2026-07-06).** The
-   audit swept the composition path the API will sit on, produced the
-   wiring inventory, the state-free fetch trace (clean — the item-5 build
-   map), and sixteen verdicted findings; audit fix wave 1 cleared
-   everything pre-item-5 (the SUCCESS-path parse escape, the rate-limit
-   config migration and runtime defaults, the roster feeder-mode guards,
-   the empty-member filter, the `JsonObject` relocation to `vocabulary/`,
-   the `ResponseModel` bound, the carrier-contract rename, and the script
-   comment drifts). The item-6-owned findings (roster discovery, the
-   state DB path key, `runs.row_count` semantics, the rate-limit YAML
-   key) closed with the Sync vertical. Both point-in-time audit reports
-   (`AUDIT.md` and the GeoTab readiness audit) were retired 2026-07-17,
-   every finding resolved and every settled fact migrated into §8's
-   observed-behaviors table and decision blocks.
-5. **Build the fetch side of the public API (§10), after the audit (done —
-   `fleetpull/api/`, 2026-07-07):** the `Endpoints` catalog (a static
-   committed module plus the two-way parity discipline test against the
-   discovery registry), the typed endpoint identities, `fetch` itself, and
-   the auth ingress coercion. The snapshot script re-pointed through the
-   verb is the audit's consumer-cost evidence, closed.
-6. **Config-YAML framework, then the YAML-run tool** — in that order, and
-   after the API: the YAML is a serialization of the API surface, and built
-   earlier it would serialize a guess. This item absorbs sync's programmatic
-   surface: the YAML schema *is* sync's API, so designing the config schema
-   and designing `Sync(path).run()` are one unit (§10). `fetch` was separable
-   and designed first because its vocabulary does not depend on the schema.
-   *The yaml-run tool shipped 2026-07-17: `fleetpull sync <config>`
-   (`cli.py` over `Sync`, a console entry point in `pyproject.toml`),
-   closing this item.*
-7. **One GeoTab endpoint end-to-end before bulk porting.** GeoTab is the
-   architectural stress test (different auth, pagination, decode); if it
-   bends the abstractions, that must surface before more Motive endpoints are
-   stamped from the existing mold. Once it proves the pattern crosses
-   providers: bulk-port the remaining Motive and GeoTab models (low-risk; can
-   run parallel to item 6). *First half shipped (2026-07-09): the `devices`
-   snapshot vertical is built end-to-end — `GeotabConfig` and the two
-   method-class scopes, the ingress `ProviderProfileContext` seam, the
-   seek-paging Get decoder, the `GetCountOf` completeness guard (probe-settled
-   decisions 1 and 2), the union-of-shapes `Device` model, `Endpoints.Geotab`,
-   and both verbs; the since-retired diagnostic driver
-   `scripts/run_geotab_devices.py` was the live proof. The abstractions held — no driver, runner, or entry change carried a
-   provider branch. The `trips` windowed vertical followed (2026-07-13),
-   proving the watermark arm crosses providers, and the `exception_events`
-   design is settled (2026-07-15; the §8 decision block, probe-gated
-   build). The Motive bulk-port began on the pattern's other side
-   (2026-07-15): `driving_periods` and `idle_events` shipped as the
-   fleet-wide event pair per their §8 decision block, on a shared
-   fleet-date-range spec builder; the remaining legacy Motive endpoints
-   (`groups`, `users`, the rollup pair) were deferred (originally recorded
-   as "deliberately unported"; reframed 2026-07-17 under the
-   endpoint-breadth scope principle, §1 — deferred, never excluded). GeoTab
-   `exception_events` shipped 2026-07-15 per its §8 decision block — the
-   first bisected endpoint (`BisectedWindowFetch` + `BisectingWindowDriver`,
-   §14; the shape was named `WindowBisection` until the 2026-07-20
-   cardinality unification). The GeoTab `users` snapshot followed (2026-07-16, id-sort and the
-   full-population shape proven live per §8's rows): the second seek-walk
-   consumer, so the walk's spec builder and `GetCountOfCheck` promoted out
-   of the devices leaf into the shared `_seek_walk` module — unified
-   2026-07-17 into `_get_requests` — renamed `_requests` 2026-07-21 when
-   the `GetFeed` builder joined it beside the windowed
-   builder. Second half, the feed arm: **the feed MACHINERY is
-   built in full 2026-07-21** — `StorageKind.APPEND_LOG` and the
-   `FeedAppendWriter` (§3), the stored-as-emitted feed record (§4), the
-   kind-guarded `commit_feed_token` and the four tripwired feed invariants
-   (§5), the runner's per-page feed drive (§14), `QuotaScope.GEOTAB_FEED`
-   with `GeotabConfig.feed_rate_limit` (~60/min, header-decrement probe),
-   the shared `GeotabGetFeedSpecBuilder`, and the `FeedEndpoint` catalog
-   identity. No feed VERTICAL ships with the machinery; the probed
-   14-vertical feed queue and the deferred-unobservable list are recorded
-   in ENDPOINTS.md, each vertical to follow the standard probe-then-build
-   discipline. Under the endpoint-breadth scope
-   principle (§1, 2026-07-17) this item's endgame widened: after the
-   Samsara onboarding (foundation, then the legacy four — `vehicles`,
-   `drivers`, `trips`, `idling/events` — then the remaining legacy six),
-   the port queue continues across all three providers — the deferred
-   Motive endpoints, the wider GeoTab entity surface, and
-   beyond-legacy endpoints per provider — endpoint by endpoint, each on
-   the proven probe-then-build vertical. Samsara `vehicles` shipped
-   2026-07-17 (the third provider's first vertical, same-day
-   probe-to-build: cursor walk proven live per §8's rows, the
-   foundation and the vertical in one branch). Samsara `drivers`
-   shipped 2026-07-20 (the second Samsara vertical and the first
-   `ParamSweep` consumer: the two-sweep activation-status listing per
-   its §8 decision block, riding the unchanged cursor decoder and the
-   member-agnostic fan-out driver). Samsara `trips` shipped 2026-07-20
-   (the third Samsara vertical and the roster machinery's first
-   cross-provider consumer: the v1-only per-vehicle windowed fan-out
-   per its §8 decision block, composed entirely from existing
-   machinery). Samsara `idling_events` shipped 2026-07-20 (the fourth
-   Samsara vertical and the first windowed+cursor pairing: the
-   fleet-wide windowed leaf on the existing cursor decoder per its §8
-   decision block, zero shared-machinery changes) — the Samsara legacy
-   four are COMPLETE 2026-07-20 (`vehicles`, `drivers`, `trips`,
-   `idling_events`). Samsara `addresses` shipped 2026-07-20 (the
-   whole-population snapshot on the 512 tier per its §8 decision
-   block, zero shared-machinery changes). The Samsara
-   `vehicle_stats_history` surface shipped 2026-07-20 as THREE
-   endpoints — `engine_states`, `gps_readings`, `odometer_readings` —
-   per its §8 decision block (one legacy endpoint, three
-   disjoint-schema entities at the reading grain; the series-unnesting
-   decoder composing the cursor decoder by delegation is the one
-   machinery addition). Samsara `asset_locations` shipped 2026-07-20
-   (the legacy `location_stream` surface, renamed per the
-   name=plural-of-entity invariant; the first `BatchedRosterFanOut`
-   consumer per its §8 decision block — the required-ids batched
-   fan-out at the API-enforced 50-id cap, the union member plus its
-   resolution arm the one machinery addition, resolving onto the
-   existing member-agnostic fan-out driver). Samsara
-   `driver_vehicle_assignments` shipped 2026-07-20 (the fleet-wide
-   windowed cursor walk with the fixed `filterBy=vehicles` param per
-   its §8 decision block — the identical-sweeps proof collapsing the
-   required traversal axis into one dataset, `results_limit=50`
-   documenting the server's own fixed paging, and the trips overlap
-   anchoring mirrored; zero shared-machinery changes). The Samsara
-   fuel-energy report pair shipped 2026-07-21 —
-   `vehicle_fuel_energy_reports` and `driver_fuel_energy_reports`, the
-   legacy hub's `vehicle_fuel_energy`/`driver_fuel_energy` renamed per
-   the name=snake-plural-of-model invariant — the first window-grain
-   rollup endpoints per their §8 decision block: the rollup grain is
-   the request window and day rollups are non-additive (89/267
-   mismatched), so the pair carries the two designed machinery
-   extensions — `WatermarkMode.fixed_unit_days` (the fixed-unit-width
-   declaration the planner honors over `sync.backfill_chunk_days`,
-   pre-building the seam Motive's deferred utilization pair needs) and
-   `SamsaraWindowReportPageDecoder` (the nested-report,
-   window-stamping decoder sharing the cursor verdict
-   `cursor_page_advance` — same-file at shipping, a
-   `samsara_reports.py` sibling since the 2026-07-21 structural
-   remediation). **The Samsara legacy
-   wave is COMPLETE 2026-07-21** — every legacy-hub Samsara endpoint
-   is shipped. The Motive `groups`/`users` snapshot pair shipped
-   2026-07-21 per its §8 decision block (whole-population wrapped-list
-   snapshots on the vehicles template; one users dataset with the
-   `role` column carrying the role-partitioned shape; zero
-   shared-machinery changes), leaving the utilization rollup pair as
-   the only deferred Motive legacy endpoints. The Motive utilization
-   rollup pair shipped 2026-07-21 — `vehicle_utilizations` and
-   `driver_idle_rollups`, the legacy hub's
-   `vehicle_utilization`/`driver_utilization` under the wire's own
-   envelope vocabulary — the Samsara fuel-energy species on Motive
-   wire per their §8 decision block: window-grain rollups with no row
-   time identity, `fixed_unit_days=1` riding the §5 machinery as its
-   second consumer (the seam built for exactly this pair), the
-   company-local-day documentation obligation discharged, and ONE
-   machinery addition — `MotiveWindowReportPageDecoder` (the
-   window-stamping mirror of the Samsara report decoder on the Motive
-   envelope, its stamping helper promoted into the shared
-   `decoders/_window_stamp.py` with two providers at birth). **The
-   Motive legacy queue is COMPLETE 2026-07-21** — every legacy-hub
-   Motive endpoint is shipped. **GeoTab feed wave one shipped
-   2026-07-21** — the five original feed entities (`log_records`,
-   `status_data`, `fill_ups`, `fuel_and_energy_used` under the wire's
-   own vocabulary, `fuel_tax_details`) as the first verticals over the
-   feed machinery, per their §8 decision block: whole-page-total
-   censuses → all-required mirrors, the estimates-only-tenant caveat
-   on the fuel three, the `FuelUsed` non-port, the FillUp 10,000
-   documented-cap dual provenance, and ZERO shared-machinery changes —
-   the machinery's first vertical wave landed on declarations alone.*
-   **GeoTab feed wave two shipped 2026-07-21** — the four Tier 1 feed
-   entities (`fault_data`, `duty_status_logs`, `driver_changes`,
-   `dvir_logs`) per their §8 decision block: the wave-two conservative
-   requiredness posture (structural identity required, everything else
-   optional even census-total), the strict DutyStatusLog annotations
-   id-list, the DVIRLog `defectList.children` documented exclusion,
-   the shared nested-location pair promoted into
-   `models/geotab/shared.py`, and again ZERO shared-machinery changes.
-   **GeoTab feed wave three shipped 2026-07-21** — the five Tier 2 feed
-   entities (`annotation_logs`, `shipment_logs`, `audits`,
-   `text_messages`, `media_files`) per their §8 SCALE-census decision
-   block: the two `event_time_column` departures (`text_messages` on
-   `sent`, `media_files` on `from_date`, both for want of a `dateTime`
-   key), the `text_messages` no-version append-only stance, the
-   `messageContent` `list[str]` direct-field decision (contrast the
-   wave-two annotations reduction), the `annotation_logs`→
-   `duty_status_logs` back-reference, the three `media_files`
-   empty-container exclusions on thin 55-record evidence, and once more
-   ZERO shared-machinery changes — the GeoTab feed queue is now empty.
-   The per-endpoint
-   inventory and port queue are tracked in `ENDPOINTS.md` (added
-   2026-07-17), updated in the same change as any endpoint addition.
-8. **Polish phase, gated on a stable public surface:** full-tree ceremony
-   audit, test-coverage audit, documentation audit, the real usage-driven
-   README, multi-platform CI (a Windows leg would have caught the
-   missing-`tzdata` failure automatically), and the parked staging
-   robustness (§13).
-
-**The `work_units` orchestration — built in full (no longer deferred).** The
-unified plan-and-drive loop is the only windowed path: the store, the chunk
-planner (`plan_backfill_units`), and the claim-and-drive loop
-(`orchestrator/unit_loop.py` composed by the runner's watermark arm) plan
-every windowed run as units and drive them `backfill_unit_workers` at a time
-with per-unit commits under the §5 prefix-advance watermark rule (§13's
-settled transaction-boundary record, amended 2026-07-20). The whole-window
-watermark arm and the never-wired no-advance per-chunk arm are deleted — the
-single-unit degenerate case is the daily run. (The old
-deferred-inventory line here read "per-provider executor and per-endpoint
-writer threads" — a conflation: the per-provider executor shipped with the
-concurrency vertical (§7) as fan-out machinery, orthogonal to backfill, and
-per-endpoint writer threads were never part of the settled design; the
-single writer per endpoint stands, §3.)
-
-**Formerly deferred, now shipped.** `metadata.json` generation shipped
-2026-07-17 (§3): the post-commit, best-effort per-endpoint projection of a
-successful run's committed facts — cosmetic, never read by the program. The
-YAML config loader, previously deferred here, became roadmap item 6 and
-shipped with the Sync vertical. The deferred inventory is empty.
-
-**The machinery structural audit — applied in full (2026-07-21).** The
-ratified structural remediation reshaped the load-bearing machinery without
-changing behavior: the run executor split along the drive seam
-(`WatermarkDrive` / `FeedDrive` over one `RunnerSpine`, with the metadata
-projection and the record-failure-without-masking stance each in their own
-module); the storage writers split along the family seam (`single_file.py` /
-`partitioned.py` under the `writers.py` routing face) with
-`storage/partition.py` -> `splitting.py` and `partitioning.py` ->
-`pruning.py` renamed to say what they do; the state layer gained the shared
-read-narrowing/parse primitives (`expect_text` / `expect_int` /
-`parse_stored_instant`) and the `StateDatabase.transaction()`
-commit-on-clean-exit wrapper (the migration runner keeps its own BEGIN-based
-transaction), the cursor store's two guarded writes deduplicated onto one
-upsert skeleton with the guard semantics byte-identical inside the SQL, the
-pure roster-reconciliation half moved to `state/reconcile.py`, and
-`claim_next`'s never-binding attempt cap was removed outright (§5's amended
-record); the declaration and network layers gained `sync_mode.py`, the
-contract's `EnvelopeFetcher` and `StrictEnvelopeSlice`, the decoder report
-families (`motive_reports.py` / `samsara_reports.py`), the generic
-provider-keyed resource registry (`registry_base.py`), the one
-`new_http_client` construction, the provider configs' credential/scope
-contracts, and the derived `available_endpoints` manifest. One considered
-refactor was DECLINED: flattening `stream_pieces`' piece-list emission —
-its only consumer (`FanOutRequestDriver`) un-flattens the one-element list
-it submits, but the second-consumer threshold governs shared-seam reshaping,
-so the seam stands until a second consumer exists; revisit then.
+- **The date-window / `single` writer cell** (§3's mechanism matrix) — the one
+  unbuilt storage cell, built when an endpoint needs single-file windowed storage,
+  under the serialize-or-reject-`backfill_unit_workers > 1` obligation §3/§5 record
+  (one shared file cannot host parallel units).
+- **The records `schema_overrides` hatch** (§9) — built complete, the dtype side
+  and the value-serialization side together, when a real derivation gap needs it; a
+  schema-only half-build is forbidden.
+- **The `updated_after` ingestion-time CDC hook** (§13) — an uncommitted candidate
+  for the late-upload gap, pending the incremental-strategy design conversation.
+- **The polish phase**, gated on a stable public surface: a full-tree ceremony
+  audit, a test-coverage audit, a documentation audit, the usage-driven README,
+  multi-platform CI (a Windows leg would have caught the missing-`tzdata` failure
+  automatically), and the staging-clear robustness fix (§13).
+- **The ongoing port queue** — endpoints beyond the legacy inventory, per provider,
+  each on the standard probe-then-build vertical, tracked in `ENDPOINTS.md`.
