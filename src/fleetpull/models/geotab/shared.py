@@ -7,10 +7,13 @@ GeoTab serializes every duration as a .NET TimeSpan string
 ``"00:03:42.3630000"``, ``"4.16:41:16"``, ``"21:04:17"``), and reference
 fields may arrive as either a bare known-id sentinel string
 (``"UnknownDriverId"``) or an object (``{"id": ..., "isDriver": true}``).
-Both shapes are structural wire facts shared across GeoTab entities
-(``Trip``, ``ExceptionEvent``, and the feed wave's ``FillUp``/``FuelTaxDetail`` today),
-so their coercions live here beside each other, consumed through
-``Annotated`` field aliases -- never as per-model parsing logic.
+Both shapes are structural wire facts shared across many GeoTab entities
+(any model with a duration or a reference field), so their coercions
+live here beside each other, consumed through ``Annotated`` field
+aliases -- never as per-model parsing logic. The consumer set is not
+enumerated here: it grows with every ported entity, so the list of
+importers (``grep`` for ``bare_id_to_reference`` / ``GeotabTimeSpan``)
+is the source of truth, not a snapshot that goes stale.
 
 The nested-location trio (``GeotabAddressedLocation`` wrapping an
 optional ``GeotabCoordinate`` and an optional ``GeotabPostalAddress``)

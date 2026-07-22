@@ -63,6 +63,11 @@ method-class quota scopes (`geotab_get` for `Get` at ~650/min,
 | `duty_status_logs` | `GetFeed DutyStatusLog` | feed | `date_time` | EDITABLE HOS log (`editDateTime` the edit trail), versioned — reconciled `(id, max version)`. `device`/`driver` PROVEN object-or-string. `annotations` reduced to a STRICT id-list (`list[str]`; elements exactly `{id}` on the census — any other shape fails loudly; the ids join the wave-three `annotation_logs` vertical). `location` promoted the shared nested-location wrapper — a `{x, y}` coordinate arm (x longitude, y latitude) or a `{formattedAddress}` address arm (the live proof found the address arm the 200-sample census missed). `resultsLimit` 50,000. |
 | `driver_changes` | `GetFeed DriverChange` | feed | `date_time` | Versioned driver-to-device assignment events, user-editable — reconciled `(id, max version)`. `driver` PROVEN object-or-string with `isDriver` riding the object arm (null exactly on string-arm rows). `resultsLimit` 50,000. |
 | `dvir_logs` | `GetFeed DVIRLog` | feed | `date_time` | Model `DvirLog` (house casing; the wire typeName keeps `DVIRLog`). Versioned certified/edited inspections — reconciled `(id, max version)`. `device`/`engineHours`/`odometer` a commonly-absent trio (205/500 each); `engineHours` modeled float per the cross-surface mixed proof. `defectList` is a wire-plural name over ONE `{id, name}` node — `children` EXCLUDED (empty on all 200 sampled nodes, element shape unobservable; revisit on a tenant with populated children). The shared nested-location wrapper (coordinate or address arm); `duration` an opaque string mirrored verbatim. `resultsLimit` 50,000. |
+| `annotation_logs` | `GetFeed AnnotationLog` | feed | `date_time` | Versioned duty-status-log annotations (8,857 records) — reconciled `(id, max version)`. COMPLETES the wave-two loop: `dutyStatusLog.id` is the BACK-REFERENCE to `duty_status_logs` (whose `annotations` id-list points here). Primary ref `dutyStatusLog` (the annotated log) required; `driver` optional. Both refs object-only at scale, both ride the defensive `bare_id_to_reference` lift. `comment` census-open. `resultsLimit` 50,000. |
+| `shipment_logs` | `GetFeed ShipmentLog` | feed | `date_time` | Versioned shipment manifests (2,771 records) — reconciled `(id, max version)`. Primary ref `driver` (the log family convention) required; `device` optional; both object-only at scale, both ride the defensive lift. `activeFrom`/`activeTo` the shipment's active window; `commodity`/`documentNumber`/`shipperName` census-open strs (`shipperName` synthetic in fixtures). `resultsLimit` 50,000. |
+| `audits` | `GetFeed Audit` | feed | `date_time` | Versioned config audit-trail entries (20,000 records) — reconciled `(id, max version)`. The SIMPLEST vertical: NO reference fields. `comment`/`name`/`userName` census-open strs (`userName` synthetic in fixtures). `resultsLimit` 50,000. |
+| `text_messages` | `GetFeed TextMessage` | feed | `sent` | Dispatch messages (25,000 records). NO per-record `version` AND NO `dateTime` (the FaultData/LogRecord asymmetry) — append-only-complete, reconciled by `id`; the event time is `sent` (25,000/25,000). Delivered/read receipts re-emit under newer FEED `toVersion`, stored-as-emitted (feed versioning, not a `version` key). `messageContent` is a NESTED block `{contentType, ids}` — `ids` a DIRECT `list[str]` (elements are strings on the wire, NOT the annotations id-object reduction). `device` optional (no required primary ref); `recipient` synthetic in fixtures. `resultsLimit` 50,000. |
+| `media_files` | `GetFeed MediaFile` | feed | `from_date` | Versioned media attachments — reconciled `(id, max version)`. THIN evidence (55 records over 730 days), so conservative. NO `dateTime` — the event time is `fromDate` (55/55). `device` PROVEN mixed object-or-string (42 str / 13 object); `driver` string-only observed; both ride the lift, BOTH refs OPTIONAL (a media file's primary entity is ambiguous). THREE documented exclusions (empty on all 55, element/content shape unobservable, `extra='ignore'` absorbs, revisit when populated): `metaData`, `tags`, `thumbnails`. `mediaType`/`name`/`solutionId`/`status` census-open. `resultsLimit` 50,000. |
 
 ### Samsara
 
@@ -160,8 +165,17 @@ Not in the legacy hub (GeoTab is new in fleetpull). Two directions:
     | `DutyStatusLog` | `duty_status_logs` | **shipped 2026-07-21** (editable, versioned; the strict annotations id-list) |
     | `DriverChange` | `driver_changes` | **shipped 2026-07-21** (versioned; the proven object-or-string driver) |
     | `DVIRLog` | `dvir_logs` | **shipped 2026-07-21** (model `DvirLog`; the `defectList.children` documented exclusion) |
-  - *Tier 2:* `AnnotationLog`, `ShipmentLog`, `Audit`, `TextMessage`,
-    `MediaFile`.
+  - *Tier 2 — feed wave three, ALL SHIPPED 2026-07-21* (zero
+    shared-machinery changes; the DESIGN §8 wave three block carries the
+    probe-settled SCALE-census decisions):
+
+    | Feed entity | Endpoint | Status |
+    |---|---|---|
+    | `AnnotationLog` | `annotation_logs` | **shipped 2026-07-21** (versioned; the `dutyStatusLog` back-reference completing the wave-two loop) |
+    | `ShipmentLog` | `shipment_logs` | **shipped 2026-07-21** (versioned; `driver` primary ref) |
+    | `Audit` | `audits` | **shipped 2026-07-21** (versioned; the simplest vertical — no reference fields) |
+    | `TextMessage` | `text_messages` | **shipped 2026-07-21** (NO version AND NO dateTime — append-only, `event_time_column='sent'`; the `messageContent` `{contentType, ids}` nested block) |
+    | `MediaFile` | `media_files` | **shipped 2026-07-21** (versioned; NO dateTime — `event_time_column='from_date'`; PROVEN mixed `device`; the three empty-container exclusions; thin 55-record evidence) |
   - *Deferred as unobservable on the probed tenant* (no data to probe a
     shape from — deferred, never excluded): `ChargeEvent`,
     `TrailerAttachment`, `IoxAddOn`, `CustomData`,
