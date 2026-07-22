@@ -14,8 +14,12 @@ member merges as a QUERY parameter -- the drivers-leaf precedent, not
 the Motive path-template one.
 
 The envelope is ``{"trips": [...]}`` with no pagination of any kind:
-one response per (vehicle, window), so the shared ``SinglePageDecoder``
-fits (the GeoTab exception_events pairing precedent). Retrieval is
+one response per (vehicle, window). The wire record does NOT echo the
+requested ``vehicleId``, so the binding pairs it with
+``SamsaraTripsPageDecoder``, which stamps every trip with the fan-out
+member's ``vehicleId`` copied off the sent spec (the report family's
+sent-spec stamp applied to a fan-out member) -- without it the stored
+row carries no vehicle identity. Retrieval is
 OVERLAP-anchored, re-verified per-type 2026-07-20 (a 60-second window
 strictly inside a trip's span returned that trip; start- and
 end-anchoring falsified -- DESIGN §4's historical record for this exact
@@ -50,7 +54,7 @@ from fleetpull.endpoints.shared import (
 )
 from fleetpull.models.samsara import Trip
 from fleetpull.network.contract import HttpMethod, RequestSpec
-from fleetpull.network.decoders import SinglePageDecoder
+from fleetpull.network.decoders import SamsaraTripsPageDecoder
 from fleetpull.roster import RosterKey
 from fleetpull.timing import require_utc
 from fleetpull.vocabulary import Provider, QuotaScope
@@ -201,7 +205,9 @@ def build_endpoint(config: SamsaraConfig) -> EndpointDefinition[Trip]:
         spec_builder=SamsaraTripsSpecBuilder(
             base_url=config.base_url, path=_TRIPS_PATH
         ),
-        page_decoder=SinglePageDecoder(records_key=_RECORDS_KEY),
+        page_decoder=SamsaraTripsPageDecoder(
+            records_key=_RECORDS_KEY, member_key=_VEHICLE_ID_PARAM
+        ),
         response_model=Trip,
         quota_scope=QuotaScope.SAMSARA,
         storage_kind=StorageKind.DATE_PARTITIONED,
