@@ -9,6 +9,15 @@ the provider's reverse-geocode metadata; when ``rg_match`` is false,
 ``location`` carries a distance-direction prefix (``"2.6 mi NW of …"``)
 instead of a bare place name — both formats mirror verbatim.
 
+The reverse-geocode PLACE fields (``city``/``state``/``rg_brg``/``rg_km``)
+are OPTIONAL: the 2026-07-15 census saw them on every record (including
+the ``rg_match: false`` ones, which still carry a nearby place), but a
+larger live pull (2026-07-22) returned all four null when the geocoder
+matched NO nearby place at all — the census-scope lesson (a bounded
+census proves a shape present, never absent). So a no-place record
+validates and mirrors the nulls rather than failing the sync loudly (the
+``veh_fuel`` null-counter precedent).
+
 The endpoint's date window is interpreted on company-local day boundaries
 and matched by overlap (DESIGN §8, captured 2026-07-15) — the reason its
 endpoint leaf pads the wire window; nothing about that reaches this
@@ -43,11 +52,14 @@ class IdleEvent(ResponseModel):
             when the vehicle reports no fuel counters.
         lat: Event latitude.
         lon: Event longitude.
-        city: Reverse-geocoded place name.
-        state: Reverse-geocoded state / province code.
-        rg_brg: Reverse-geocode bearing from the matched place, degrees.
+        city: Reverse-geocoded place name; null when the geocoder matched
+            no nearby place (live-observed 2026-07-22).
+        state: Reverse-geocoded state / province code; null when no place
+            matched.
+        rg_brg: Reverse-geocode bearing from the matched place, degrees;
+            null when no place matched.
         rg_km: Reverse-geocode distance from the matched place,
-            kilometers.
+            kilometers; null when no place matched.
         rg_match: Whether the reverse geocoder matched a place directly.
         end_type: Free-form interval-end reason (``"engine_stop"`` /
             ``"vehicle_moving"`` observed), mirrored, never interpreted.
@@ -65,10 +77,10 @@ class IdleEvent(ResponseModel):
     veh_fuel_end: float | None = None
     lat: float
     lon: float
-    city: str
-    state: str
-    rg_brg: float
-    rg_km: float
+    city: str | None = None
+    state: str | None = None
+    rg_brg: float | None = None
+    rg_km: float | None = None
     rg_match: bool
     end_type: str
     driver: UserSummary | None = None

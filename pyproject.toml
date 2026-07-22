@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 ###############################################################################
 [project]
 name = "fleetpull"
-version = "0.1.1"
+version = "0.1.2"
 description = "Pull fleet telematics data from provider APIs (Motive, Samsara, GeoTab) into typed polars DataFrames and parquet: retrieval, dtype coercion, and light structural normalization — no assumed end use."
 readme = "README.md"
 authors = [{ name = "Andrew Jordan", email = "andrewjordan3@gmail.com" }]
