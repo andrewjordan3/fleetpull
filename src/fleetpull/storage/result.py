@@ -2,8 +2,8 @@
 """The storage write report.
 
 ``WriteResult`` is what a ``DatasetWriter.finalize`` returns -- the run ledger
-reads it (via the orchestrator, not storage). The fleetpull analogue of
-fleet-telemetry-hub's merge stats.
+reads it (via the orchestrator, not storage): the per-run write stats a
+consumer inspects to know what a sync produced.
 """
 
 from dataclasses import dataclass

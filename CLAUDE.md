@@ -1,12 +1,12 @@
 # CLAUDE.md
 
-Guidelines for Claude Code. These bias toward correctness over speed. For trivial tasks, use judgment.
+Engineering guidelines for this repository. These bias toward correctness over speed. For trivial tasks, use judgment.
 
 ## What This Package Is
 
 fleetpull pulls fleet telematics data from provider APIs (Motive, GeoTab, Samsara) and delivers typed, dtype-coerced, lightly normalized tabular output as close to the raw API responses as is reasonable.
 
-Endpoint coverage is deliberately broad: as many endpoints per provider as practical, built into a large default library. "No assumed end use" includes not assuming which endpoints are useful — an endpoint is deferred, never excluded for lacking a known consumer. fleet-telemetry-hub is a porting aid, not a scope ceiling.
+Endpoint coverage is deliberately broad: as many endpoints per provider as practical, built into a large default library. "No assumed end use" includes not assuming which endpoints are useful — an endpoint is deferred, never excluded for lacking a known consumer. A legacy telematics package was a porting aid, not a scope ceiling.
 
 **`ENDPOINTS.md` at the repo root is the endpoint manifest** — the shipped-endpoint inventory and the port queue. Adding, renaming, or re-scoping an endpoint updates it in the same change.
 

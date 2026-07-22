@@ -153,10 +153,10 @@ class EndpointDefinition[ModelT: ResponseModel]:
     ``type[ModelT]``, so an ``EndpointDefinition[Vehicle]`` carries the concrete
     model type forward to a typed ``iter_records`` (§10). ``ModelT`` appears only in
     that output position, so a heterogeneous collection of definitions uses the base
-    bound, ``EndpointDefinition[ResponseModel]`` (that collection is a later
-    prompt's concern). ``response_model`` is the per-record model (e.g. ``Vehicle``),
-    not a full-response wrapper — the ``page_decoder`` owns the envelope, so
-    fleet-telemetry-hub's wrapper models are not ported, only the per-record ones.
+    bound, ``EndpointDefinition[ResponseModel]``. ``response_model`` is the
+    per-record model (e.g. ``Vehicle``), not a full-response wrapper — the
+    ``page_decoder`` owns the envelope, so full-response wrapper models are never
+    modeled, only the per-record ones.
 
     Keyword-only because positional fields here are an error waiting to happen. The
     ``event_time_column`` the watermark and date-partitioning read (§3/§5) now

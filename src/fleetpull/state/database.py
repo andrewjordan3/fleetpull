@@ -3,8 +3,7 @@
 
 The connection substrate beneath the `state/` package (DESIGN §5). One SQLite
 database lives at the resolved path passed to :class:`StateDatabase` at
-construction; this module does not derive that path (runtime config resolves it —
-see the prompt context).
+construction; this module does not derive that path (runtime config resolves it).
 
 Layout is a functional core under a thin shell. The public module-level
 functions are the stateless primitives the store layers above import and

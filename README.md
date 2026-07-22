@@ -13,12 +13,20 @@ probed (never merely documented) provider behavior, crash-safe incremental
 state, token-bucket rate limiting at the transport boundary, and one
 explicit schema per (provider, endpoint).
 
-**Status:** alpha; under active development. The two public verbs below are
-settled; endpoint coverage is growing (see [ENDPOINTS.md](ENDPOINTS.md)).
+**Status:** alpha. The two public verbs below are settled, and coverage is
+broad — the Motive and Samsara endpoint inventories and the GeoTab `Get` and
+feed surfaces are all shipped (see [ENDPOINTS.md](ENDPOINTS.md)). Pre-1.0,
+the internals are still free to improve.
 
 ## Install
 
-Not yet on PyPI. From source:
+```bash
+pip install fleetpull
+# or
+uv add fleetpull
+```
+
+The latest development version, straight from source:
 
 ```bash
 pip install git+https://github.com/andrewjordan3/fleetpull
@@ -26,6 +34,10 @@ pip install git+https://github.com/andrewjordan3/fleetpull
 
 Python ≥ 3.12. Core dependencies: `httpx`, `polars`, `pydantic` 2.x,
 `pyyaml`, `truststore`, `tzdata`.
+
+To scaffold a starter config for the `sync` verb below, run
+`fleetpull init-config` — it writes an annotated `fleetpull_config.yaml`
+you edit and point `sync` at.
 
 ## The two verbs
 
@@ -60,6 +72,7 @@ devices = fetch(
 
 The pipeline verb: a YAML config selects providers and endpoints; each run
 fetches incrementally, writes parquet, and commits its resume state.
+`fleetpull init-config` writes a documented starter config to edit.
 
 ```python
 from fleetpull import Sync
@@ -160,7 +173,11 @@ shared token-bucket limiter sits at the transport boundary and a 429's
   and the probe-captured provider behaviors every binding encodes.
 - [CLAUDE.md](CLAUDE.md) — engineering standards and verification gates.
 
-## Development
+## Contributing
+
+Contributions are welcome and encouraged — a new endpoint, a bug fix, a
+sharper docstring, or a provider quirk you've hit in the wild. Start with
+[CONTRIBUTING.md](CONTRIBUTING.md); the short version:
 
 ```bash
 uv sync --group dev
@@ -170,9 +187,23 @@ uv run ruff format . && uv run ruff check . \
   && uv run pytest
 ```
 
-All five gates must pass before any change is complete. Tests never hit real
-provider APIs; new endpoints are built probe-first from live captures (see
-ENDPOINTS.md's port discipline).
+These five gates are exactly what CI runs on every pull request, so a green
+local run is a green CI run. Tests never hit real provider APIs; new
+endpoints are built probe-first from live captures — the port discipline is
+in [ENDPOINTS.md](ENDPOINTS.md), and the engineering standards are in
+[CLAUDE.md](CLAUDE.md).
+
+## Acknowledgements
+
+Built on [Polars](https://pola.rs), [Pydantic](https://pydantic.dev),
+[httpx](https://www.python-httpx.org), and
+[truststore](https://truststore.readthedocs.io) — fleetpull is a thin, rigorous
+layer over their work.
+
+## Author
+
+By Andrew Jordan. Questions, bugs, and endpoint requests are best raised as
+[GitHub issues](https://github.com/andrewjordan3/fleetpull/issues).
 
 ## License
 
