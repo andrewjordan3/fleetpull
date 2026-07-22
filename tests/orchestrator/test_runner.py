@@ -588,7 +588,14 @@ class TestWatermarkRun:
         assert recorder.started == []
         assert cursor.advance_calls == []
 
-    def test_guard_b_future_event_fails_the_run(self, tmp_path: Path) -> None:
+    def test_future_event_is_dropped_and_the_run_completes(
+        self, tmp_path: Path
+    ) -> None:
+        # A record materializing after the run clock (e.g. during a long sync)
+        # falls past the trailing edge and outside the resume window, so the
+        # window filter drops it -- an expected, handled condition, not a fatal
+        # guard. The run completes with no in-window rows, and because the unit
+        # folds no observation the prefix rule advances no watermark.
         recorder = _RecordingRecorder()
         cursor = _StubCursorAccess()
         runner = _make_runner(
@@ -598,10 +605,10 @@ class TestWatermarkRun:
             default_start_date=date(2026, 6, 12),
         )
         batch = _wm_batch(datetime(2026, 6, 17, 8, tzinfo=UTC))  # after now (06-16)
-        with pytest.raises(ProviderResponseError):
-            runner.run(_watermark_definition(), CannedDriver([batch]))
-        assert len(recorder.failed) == 1
-        assert recorder.completed == []
+        outcome = runner.run(_watermark_definition(), CannedDriver([batch]))
+        assert isinstance(outcome, Executed)
+        assert recorder.failed == []
+        assert recorder.completed == [(1, 0)]
         assert cursor.advance_calls == []
 
     def test_feed_cursor_on_a_watermark_endpoint_raises(self, tmp_path: Path) -> None:

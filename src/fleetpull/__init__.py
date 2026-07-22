@@ -21,7 +21,7 @@ from fleetpull.exceptions import (
     SyncFailuresError,
 )
 
-__version__: str = '0.1.2'
+__version__: str = '0.1.3'
 
 __all__: list[str] = [
     'AuthenticationError',
