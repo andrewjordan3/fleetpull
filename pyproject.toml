@@ -101,9 +101,11 @@ include = ["fleetpull*"]
 exclude = ["tests*", "docs*"]
 
 # Ship the PEP 561 marker file so external mypy / pyright runs honor the
-# in-package type annotations instead of treating every import as ``Any``.
+# in-package type annotations instead of treating every import as ``Any``,
+# and the packaged example configuration `fleetpull init-config` materializes.
 [tool.setuptools.package-data]
 fleetpull = ["py.typed"]
+"fleetpull.resources" = ["*.yaml"]
 
 ###############################################################################
 # [tool.ruff] - LINTING AND FORMATTING

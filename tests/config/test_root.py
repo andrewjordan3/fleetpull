@@ -19,13 +19,12 @@ from fleetpull.config import (
     ProvidersConfig,
     StorageConfig,
     SyncConfig,
+    read_example_config,
 )
 from fleetpull.exceptions import ConfigurationError
 from fleetpull.paths import resolve_path
 
 _SYNTHETIC_KEY = 'synthetic-motive-key-000'
-
-_EXAMPLE_FILE = Path(__file__).parents[2] / 'config.example.yaml'
 
 
 @pytest.fixture(autouse=True)
@@ -470,7 +469,7 @@ class TestExampleFile:
         monkeypatch.setenv('MOTIVE_API_KEY', 'env-synthetic-key')
         monkeypatch.setenv('GEOTAB_PASSWORD', 'env-synthetic-pass')
         monkeypatch.setenv('SAMSARA_API_KEY', 'env-synthetic-token')
-        example_text = _EXAMPLE_FILE.read_text(encoding='utf-8')
+        example_text = read_example_config()
         pointed = example_text.replace('/data/fleetpull', str(tmp_path))
         config = FleetpullConfig.from_yaml(_write(tmp_path, pointed))
         motive = config.providers.motive

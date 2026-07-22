@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use fleetpull in your work, please cite it as below."
+title: fleetpull
+abstract: >-
+  Pull fleet telematics data from provider APIs (Motive, Samsara, GeoTab)
+  into typed Polars DataFrames and parquet: retrieval, dtype coercion, and
+  light structural normalization, with no assumed end use.
+type: software
+authors:
+  - family-names: Jordan
+    given-names: Andrew
+version: 0.1.0
+date-released: "2026-07-22"
+license: Apache-2.0
+repository-code: https://github.com/andrewjordan3/fleetpull
+url: https://github.com/andrewjordan3/fleetpull
+keywords:
+  - telematics
+  - fleet
+  - motive
+  - samsara
+  - geotab
+  - polars
+  - parquet
+  - api-client

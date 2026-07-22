@@ -94,8 +94,9 @@ headers; the configured self-limit is the only budget. 429s carry fractional
 ## Port queue
 
 Endpoint breadth is a scope principle (DESIGN §1): an endpoint is deferred,
-never excluded for lacking a known consumer. fleet-telemetry-hub seeds the
-order below; it is a bootstrap aid, not the ceiling.
+never excluded for lacking a known consumer. A legacy telematics package
+seeded the initial porting order below; it is a bootstrap aid, not the
+ceiling.
 
 ### 1. Samsara legacy wave (COMPLETE 2026-07-21)
 
