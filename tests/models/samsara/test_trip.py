@@ -18,6 +18,8 @@ from pydantic import ValidationError
 
 from fleetpull.models.samsara import Trip, TripAddress, TripCoordinates
 from tests.samsara_trips_capture import (
+    STAMPED_TRIP_RECORDS,
+    SYNTHETIC_VEHICLE_ID,
     TRIP_RECORDS,
     TRIPS_MISSING_VEHICLE_ID_400_BODY,
     TRIPS_RANGE_CAP_400_BODY,
@@ -74,11 +76,16 @@ class TestFixtureProperties:
         assert TRIP_RECORDS[0]['driverId'] == 7100001
         assert TRIP_RECORDS[1]['driverId'] == 0
 
-    def test_the_list_fields_are_empty_only(self) -> None:
-        # The one list shape observed across all 725 census records.
-        for record in TRIP_RECORDS:
-            assert record['assetIds'] == []
-            assert record['codriverIds'] == []
+    def test_the_list_field_shapes(self) -> None:
+        maximal, minimal = TRIP_RECORDS
+        # Both list[int] shapes the wire carries: the maximal variant a
+        # populated assetIds (the shape a full-scale live pull revealed,
+        # absent from the 725-trip census), the minimal an empty one.
+        assert maximal['assetIds'] == [3300001, 3300002]
+        assert minimal['assetIds'] == []
+        # codriverIds stayed empty across census and the larger pull.
+        assert maximal['codriverIds'] == []
+        assert minimal['codriverIds'] == []
 
     def test_the_400_bodies_are_plain_rpc_error_strings(self) -> None:
         for body in (TRIPS_MISSING_VEHICLE_ID_400_BODY, TRIPS_RANGE_CAP_400_BODY):
@@ -88,8 +95,24 @@ class TestFixtureProperties:
 
 
 class TestTripValidation:
+    def test_the_stamped_vehicle_id_is_mirrored_as_string(self) -> None:
+        # The one synthesized field: SamsaraTripsPageDecoder stamps the
+        # fan-out vehicleId off the sent spec, mirrored as a string to
+        # match Vehicle.id for a direct join to the vehicles listing.
+        trip = Trip.model_validate(STAMPED_TRIP_RECORDS[0])
+        assert 'vehicle_id' in Trip.model_fields
+        assert trip.vehicle_id == SYNTHETIC_VEHICLE_ID
+        assert isinstance(trip.vehicle_id, str)
+
+    def test_an_unstamped_record_fails_loudly(self) -> None:
+        # vehicle_id is REQUIRED: the wire never echoes it, so a record
+        # reaching the model unstamped is a decoder bug that must fail
+        # validation, never land vehicle-less.
+        with pytest.raises(ValidationError):
+            Trip.model_validate(TRIP_RECORDS[0])
+
     def test_epoch_ms_recovers_exact_tz_aware_utc_datetimes(self) -> None:
-        trip = Trip.model_validate(TRIP_RECORDS[0])
+        trip = Trip.model_validate(STAMPED_TRIP_RECORDS[0])
         assert trip.start_time == datetime(2026, 1, 1, 0, 0, 0, 123000, tzinfo=UTC)
         assert trip.end_time == datetime(2026, 1, 1, 1, 0, 45, 456000, tzinfo=UTC)
         # Canonical UTC identity, not merely aware (the canon doctrine).
@@ -97,12 +120,12 @@ class TestTripValidation:
         assert trip.end_time.tzinfo is UTC
 
     def test_millisecond_free_epochs_recover_whole_instants(self) -> None:
-        trip = Trip.model_validate(TRIP_RECORDS[1])
+        trip = Trip.model_validate(STAMPED_TRIP_RECORDS[1])
         assert trip.start_time == datetime(2026, 1, 2, 0, 0, tzinfo=UTC)
         assert trip.end_time == datetime(2026, 1, 2, 1, 0, tzinfo=UTC)
 
     def test_the_unit_int_fields_mirror_verbatim(self) -> None:
-        trip = Trip.model_validate(TRIP_RECORDS[0])
+        trip = Trip.model_validate(STAMPED_TRIP_RECORDS[0])
         assert trip.distance_meters == 52000
         assert trip.fuel_consumed_ml == 21000
         assert trip.toll_meters == 1200
@@ -120,18 +143,22 @@ class TestTripValidation:
     def test_the_zero_driver_sentinel_is_untouched(self) -> None:
         # 0 means unassigned (110/725) -- mirrored verbatim, never
         # nulled or interpreted.
-        trip = Trip.model_validate(TRIP_RECORDS[1])
+        trip = Trip.model_validate(STAMPED_TRIP_RECORDS[1])
         assert trip.driver_id == 0
         assert isinstance(trip.driver_id, int)
 
-    def test_the_empty_lists_mirror_as_empty(self) -> None:
-        for record in TRIP_RECORDS:
-            trip = Trip.model_validate(record)
-            assert trip.asset_ids == []
-            assert trip.codriver_ids == []
+    def test_the_list_fields_mirror_verbatim(self) -> None:
+        maximal = Trip.model_validate(STAMPED_TRIP_RECORDS[0])
+        minimal = Trip.model_validate(STAMPED_TRIP_RECORDS[1])
+        # The list[int] typing round-trips both the populated shape (the
+        # at-scale finding) and the empty one, verbatim.
+        assert maximal.asset_ids == [3300001, 3300002]
+        assert minimal.asset_ids == []
+        assert maximal.codriver_ids == []
+        assert minimal.codriver_ids == []
 
     def test_the_coordinate_blocks(self) -> None:
-        trip = Trip.model_validate(TRIP_RECORDS[0])
+        trip = Trip.model_validate(STAMPED_TRIP_RECORDS[0])
         start = trip.start_coordinates
         end = trip.end_coordinates
         assert isinstance(start, TripCoordinates)
@@ -141,7 +168,7 @@ class TestTripValidation:
         assert end.latitude == pytest.approx(40.2051)
 
     def test_the_maximal_record_carries_both_address_blocks(self) -> None:
-        trip = Trip.model_validate(TRIP_RECORDS[0])
+        trip = Trip.model_validate(STAMPED_TRIP_RECORDS[0])
         start_address = trip.start_address
         end_address = trip.end_address
         assert isinstance(start_address, TripAddress)
@@ -154,24 +181,19 @@ class TestTripValidation:
         assert end_address.name == 'Example Terminal'
 
     def test_the_minimal_record_lands_both_address_blocks_null(self) -> None:
-        trip = Trip.model_validate(TRIP_RECORDS[1])
+        trip = Trip.model_validate(STAMPED_TRIP_RECORDS[1])
         assert trip.start_address is None
         assert trip.end_address is None
 
     def test_the_geocoded_location_strings(self) -> None:
-        trip = Trip.model_validate(TRIP_RECORDS[1])
+        trip = Trip.model_validate(STAMPED_TRIP_RECORDS[1])
         assert trip.start_location == '300 Example Blvd, Example City, CA'
         assert trip.end_location == '400 Example Way, Example City, CA'
-
-    def test_the_record_does_not_echo_a_vehicle_id(self) -> None:
-        # Per-vehicle attribution is the request parameter (the roster
-        # fan-out member), never a record field.
-        assert 'vehicle_id' not in Trip.model_fields
 
     def test_a_quoted_epoch_fails_loudly(self) -> None:
         # The census observed BARE ints only; a quoted number is wire
         # drift the strict recovery must reject, not coerce.
-        drifted = {**TRIP_RECORDS[1], 'startMs': '1767312000000'}
+        drifted = {**STAMPED_TRIP_RECORDS[1], 'startMs': '1767312000000'}
         with pytest.raises(ValidationError):
             Trip.model_validate(drifted)
 
@@ -179,7 +201,7 @@ class TestTripValidation:
         # endMs was present on every observed trip (in-progress trips
         # materialize on completion); a trip without one is an
         # unobserved shape that must fail validation, not land null.
-        truncated = dict(TRIP_RECORDS[1])
+        truncated = dict(STAMPED_TRIP_RECORDS[1])
         del truncated['endMs']
         with pytest.raises(ValidationError):
             Trip.model_validate(truncated)

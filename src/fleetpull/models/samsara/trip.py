@@ -26,17 +26,26 @@ Everything else mirrors verbatim: the unit-suffixed int family
 (``distanceMeters``, ``fuelConsumedMl``, ``tollMeters``) and the
 odometer pair keep provider units untouched; ``driverId`` is an int
 whose ``0`` is the UNASSIGNED sentinel (110/725) -- mirrored verbatim,
-never nulled or interpreted. ``assetIds``/``codriverIds`` were observed
-ONLY EMPTY across all 725 records; they are typed ``list[int]`` --
-the int-id family, in the ``list[scalar]`` form the records layer's
-schema derivation represents (DESIGN §9; the §9 pipeline has no tuple
-form) -- so a first non-empty capture lands as data, not a crash.
+never nulled or interpreted. ``assetIds``/``codriverIds`` are typed
+``list[int]`` -- the int-id family, in the ``list[scalar]`` form the
+records layer's schema derivation represents (DESIGN §9; the §9
+pipeline has no tuple form). The 725-trip census observed both EMPTY on
+every record; a larger live pull (2026-07-22) then returned ``assetIds``
+populated on a substantial minority of trips (its elements are attached
+assets -- trailers/equipment -- not the trip's own vehicle), while
+``codriverIds`` stayed empty. The ``list[int]`` typing anticipated
+exactly that, so a non-empty capture lands as data, not a crash -- the
+census sized the shape, it never bounded the population.
 
-The record does NOT echo the requested ``vehicleId``: per-vehicle
-attribution lives in the request parameter (the roster fan-out member),
-not on the wire record. The response *wrapper* (the ``{"trips": [...]}``
-envelope, unpaginated) is the endpoints layer's decoder concern; this
-module mirrors only the inner per-trip object.
+The wire record does NOT echo the requested ``vehicleId``: per-vehicle
+attribution is the request parameter (the roster fan-out member), not a
+wire field. So ``vehicle_id`` is the one SYNTHESIZED field on this
+otherwise-pure mirror -- ``SamsaraTripsPageDecoder`` stamps it off the
+sent spec before validation, mirrored as a string to match
+``Vehicle.id`` for a direct join to the vehicles listing. The response
+*wrapper* (the ``{"trips": [...]}`` envelope, unpaginated) is the
+endpoints layer's decoder concern; this module mirrors only the inner
+per-trip object, plus that one synthesized identity.
 
 Wire keys are camelCase; fields are snake_case via the ``to_camel``
 alias generator (``startMs``/``endMs`` carry explicit aliases, since
@@ -133,12 +142,16 @@ class TripAddress(ResponseModel):
 class Trip(ResponseModel):
     """One Samsara vehicle trip, overlap-retrieved per (vehicle, window).
 
-    A pure mirror of the captured fields (module docstring). Field
-    semantics and units are Samsara's; no value is derived or
-    interpreted here. The requested ``vehicleId`` is not echoed on the
-    record.
+    A near-pure mirror of the captured fields (module docstring): field
+    semantics and units are Samsara's, no value derived or interpreted
+    -- the one exception is ``vehicle_id``, synthesized because the wire
+    record does not echo the requested ``vehicleId`` (stamped off the
+    sent spec by ``SamsaraTripsPageDecoder``).
 
     Attributes:
+        vehicle_id: The fan-out vehicle this trip belongs to, stamped
+            from the request's ``vehicleId`` -- the wire record never
+            echoes it; a numeric string, matching ``Vehicle.id``.
         start_time: Trip start, recovered from the wire's epoch-ms
             ``startMs`` -- the endpoint's event time (start-anchored
             ownership, DESIGN §4).
@@ -158,10 +171,11 @@ class Trip(ResponseModel):
         end_location: Reverse-geocoded end location string.
         start_coordinates: The start ``{latitude, longitude}`` block.
         end_coordinates: The end ``{latitude, longitude}`` block.
-        asset_ids: Attached asset ids; observed ONLY EMPTY across all
-            725 census records.
-        codriver_ids: Co-driver ids; observed ONLY EMPTY across all 725
-            census records.
+        asset_ids: Attached asset ids (trailers/equipment, not the
+            trip's own vehicle); empty across the 725-trip census, then
+            populated on a minority of trips in a larger live pull.
+        codriver_ids: Co-driver ids; empty across the 725-trip census
+            and the larger live pull alike.
         start_address: The matched start address/geofence block
             (177/725); null when no defined address matched.
         end_address: The matched end address/geofence block (185/725);
@@ -169,6 +183,14 @@ class Trip(ResponseModel):
     """
 
     model_config = ConfigDict(alias_generator=to_camel)
+
+    # The fan-out vehicle, synthesized: the wire record does not echo the
+    # requested vehicleId, so SamsaraTripsPageDecoder stamps it off the
+    # sent spec before validation (module docstring). Mirrored as a
+    # string, matching Vehicle.id, so it joins the vehicles listing
+    # directly; the to_camel generator aliases vehicle_id -> vehicleId,
+    # which is the decoder's stamp key.
+    vehicle_id: str
 
     # The trip interval (epoch-ms recovered, module docstring).
     start_time: _EpochMillisecondsDatetime = Field(alias='startMs')

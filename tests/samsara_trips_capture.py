@@ -6,10 +6,15 @@ across 60 vehicles, zero nulls anywhere) inside the captured
 v1-only surface (the modern candidates 404); one unpaginated response
 per (vehicle, window). The maximal variant carries both matched
 address/geofence blocks (``startAddress`` 177/725, ``endAddress``
-185/725 in census); the minimal variant carries neither, plus
-``driverId: 0`` (the UNASSIGNED sentinel, 110/725) and the empty
-``assetIds``/``codriverIds`` lists -- the ONLY list shape observed in
-all 725 records. Beside the envelope sit the two captured HTTP 400
+185/725 in census) and a POPULATED ``assetIds`` -- the shape a
+full-scale live pull (2026-07-22) revealed on a minority of trips,
+absent from the 725-trip census (attached assets, not the trip's own
+vehicle); the minimal variant carries neither address block,
+``driverId: 0`` (the UNASSIGNED sentinel, 110/725), and the empty
+``assetIds``/``codriverIds`` lists the census saw. The two variants
+thus exercise both the empty and non-empty ``list[int]`` shapes;
+``codriverIds`` is empty on both (empty across census and the larger
+pull alike). Beside the envelope sit the two captured HTTP 400
 bodies: the missing-``vehicleId`` rejection (the parameter is REQUIRED)
 and the 90-day range-cap rejection (a 90-day window succeeded; 91 was
 rejected).
@@ -20,8 +25,9 @@ distance, and timestamp is synthetic outright (the address strings and
 coordinates are PII-adjacent). What IS verbatim wire truth: the
 envelope key, the camelCase key set, the epoch-MILLISECOND int shape of
 ``startMs``/``endMs``, the bare-int unit fields and int-id family, the
-``{address, id, name}`` address-block shape, the empties-only list
-shape, the 0 driver sentinel -- and the two 400 bodies, which are
+``{address, id, name}`` address-block shape, the ``list[int]`` shape in
+both its empty and populated forms, the 0 driver sentinel -- and the
+two 400 bodies, which are
 TEXT/PLAIN rpc-error strings exactly as captured (the v1 posture: the
 known Samsara plain-string-body rule extends beyond 5xx to these 400s).
 
@@ -72,7 +78,7 @@ TRIPS_RESPONSE_JSON: str = r"""
                 "id": 8800002,
                 "name": "Example Terminal"
             },
-            "assetIds": [],
+            "assetIds": [3300001, 3300002],
             "codriverIds": []
         },
         {
@@ -132,3 +138,18 @@ def _envelope_records(envelope: dict[str, JsonValue]) -> list[JsonObject]:
 
 # Both committed records, in capture order: maximal, then minimal.
 TRIP_RECORDS: list[JsonObject] = _envelope_records(TRIPS_RESPONSE)
+
+# The synthetic fan-out vehicle id -- a numeric string shaped exactly
+# like Vehicle.id (mirrored as string). SamsaraTripsPageDecoder stamps
+# it onto every record off the sent spec's vehicleId param, so it is the
+# value the Trip model consumes in production (the wire never echoes it).
+# Shared with the trips endpoint tests, which fan it out as the member.
+SYNTHETIC_VEHICLE_ID: str = '212000000000001'
+
+# The records as the Trip model sees them in production: each raw wire
+# record after SamsaraTripsPageDecoder stamps the fan-out vehicleId. The
+# stamp key is the model's vehicleId alias, so validation binds it to the
+# vehicle_id field.
+STAMPED_TRIP_RECORDS: list[JsonObject] = [
+    {**record, 'vehicleId': SYNTHETIC_VEHICLE_ID} for record in TRIP_RECORDS
+]

@@ -5,10 +5,11 @@ The binding declares the roster machinery's first cross-provider
 requires ``vehicleId``, so the leaf builder merges the fan-out member
 verbatim as a query parameter (the drivers-leaf precedent) beside the
 resume window rendered as ``startMs``/``endMs`` epoch milliseconds; the
-unpaginated ``{"trips": [...]}`` envelope pairs with the shared
-``SinglePageDecoder`` (the exception_events precedent); and retrieval
-is overlap-anchored, so ownership anchors on ``start_time`` with no
-wire pad (DESIGN §4).
+unpaginated ``{"trips": [...]}`` envelope pairs with
+``SamsaraTripsPageDecoder``, which stamps the fan-out ``vehicleId`` onto
+every record (the wire never echoes it); and retrieval is
+overlap-anchored, so ownership anchors on ``start_time`` with no wire
+pad (DESIGN §4).
 """
 
 from datetime import UTC, datetime, timedelta
@@ -30,12 +31,12 @@ from fleetpull.endpoints.shared import (
 from fleetpull.incremental import DateWindow
 from fleetpull.models.samsara import Trip
 from fleetpull.network.contract import HttpMethod
-from fleetpull.network.decoders import SinglePageDecoder
+from fleetpull.network.decoders import SamsaraTripsPageDecoder
 from fleetpull.roster import RosterKey
 from fleetpull.vocabulary import Provider, QuotaScope
+from tests.samsara_trips_capture import SYNTHETIC_VEHICLE_ID
 
 _VEHICLE_ID_PARAM = 'vehicleId'
-_SYNTHETIC_VEHICLE_ID = '212000000000001'
 
 
 def _build_endpoint() -> EndpointDefinition[Trip]:
@@ -59,7 +60,7 @@ class TestTripsSpecBuilder:
     def test_builds_the_get_with_member_and_epoch_window(self) -> None:
         spec = _build_endpoint().spec_builder.build_spec(
             resume=_window(),
-            member_values={_VEHICLE_ID_PARAM: _SYNTHETIC_VEHICLE_ID},
+            member_values={_VEHICLE_ID_PARAM: SYNTHETIC_VEHICLE_ID},
         )
         assert spec.method is HttpMethod.GET
         assert spec.url == 'https://api.samsara.com/v1/fleet/trips'
@@ -69,7 +70,7 @@ class TestTripsSpecBuilder:
         # 1767225600 s and the exclusive end is 7 days (604800 s)
         # later, both times 1000.
         assert spec.params == {
-            _VEHICLE_ID_PARAM: _SYNTHETIC_VEHICLE_ID,
+            _VEHICLE_ID_PARAM: SYNTHETIC_VEHICLE_ID,
             'startMs': '1767225600000',
             'endMs': '1767830400000',
         }
@@ -83,7 +84,7 @@ class TestTripsSpecBuilder:
         )
         spec = _build_endpoint().spec_builder.build_spec(
             resume=window,
-            member_values={_VEHICLE_ID_PARAM: _SYNTHETIC_VEHICLE_ID},
+            member_values={_VEHICLE_ID_PARAM: SYNTHETIC_VEHICLE_ID},
         )
         assert spec.params is not None
         assert spec.params['startMs'] == '1767225600123'
@@ -99,7 +100,7 @@ class TestTripsSpecBuilder:
         )
         spec = _build_endpoint().spec_builder.build_spec(
             resume=window,
-            member_values={_VEHICLE_ID_PARAM: _SYNTHETIC_VEHICLE_ID},
+            member_values={_VEHICLE_ID_PARAM: SYNTHETIC_VEHICLE_ID},
         )
         assert spec.params is not None
         assert spec.params['startMs'] == '2182727972319'
@@ -108,7 +109,7 @@ class TestTripsSpecBuilder:
         config = SamsaraConfig(base_url='https://alt.example.test/')
         spec = build_endpoint(config).spec_builder.build_spec(
             resume=_window(),
-            member_values={_VEHICLE_ID_PARAM: _SYNTHETIC_VEHICLE_ID},
+            member_values={_VEHICLE_ID_PARAM: SYNTHETIC_VEHICLE_ID},
         )
         # The config strips the trailing slash so the path joins cleanly.
         assert spec.url == 'https://alt.example.test/v1/fleet/trips'
@@ -117,13 +118,13 @@ class TestTripsSpecBuilder:
         with pytest.raises(TypeError):
             _build_endpoint().spec_builder.build_spec(
                 resume=None,
-                member_values={_VEHICLE_ID_PARAM: _SYNTHETIC_VEHICLE_ID},
+                member_values={_VEHICLE_ID_PARAM: SYNTHETIC_VEHICLE_ID},
             )
 
     def test_no_credentials_or_body(self) -> None:
         spec = _build_endpoint().spec_builder.build_spec(
             resume=_window(),
-            member_values={_VEHICLE_ID_PARAM: _SYNTHETIC_VEHICLE_ID},
+            member_values={_VEHICLE_ID_PARAM: SYNTHETIC_VEHICLE_ID},
         )
         assert spec.headers == {}
         assert spec.json_body is None
@@ -151,12 +152,15 @@ class TestBuildTripsEndpoint:
         assert custom.sync_mode.lookback == timedelta(days=2)
         assert custom.sync_mode.cutoff == timedelta(days=1)
 
-    def test_uses_the_single_page_decoder_on_the_trips_key(self) -> None:
-        # One unpaginated response per (vehicle, window) -- the
-        # exception_events pairing precedent.
+    def test_uses_the_trips_stamp_decoder_on_the_trips_key(self) -> None:
+        # One unpaginated response per (vehicle, window); the decoder
+        # stamps the fan-out vehicleId onto every record (the wire never
+        # echoes it). member_key is the same token the RosterFanOut fans
+        # out, so the stamp reads back exactly what was sent.
         decoder = _build_endpoint().page_decoder
-        assert isinstance(decoder, SinglePageDecoder)
+        assert isinstance(decoder, SamsaraTripsPageDecoder)
         assert decoder.records_key == 'trips'
+        assert decoder.member_key == _VEHICLE_ID_PARAM
 
     def test_declares_the_cross_provider_roster_fan_out(self) -> None:
         shape = _build_endpoint().request_shape
