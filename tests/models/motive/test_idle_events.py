@@ -111,3 +111,20 @@ class TestIdleEventValidation:
         event = IdleEvent.model_validate(record)
         assert event.veh_fuel_start is None
         assert event.veh_fuel_end is None
+
+    def test_null_reverse_geocode_fields_land_null(self) -> None:
+        # Constructed variant: the 2026-07-22 live run observed an event
+        # failing string_type/float_type on city/state/rg_brg/rg_km at once
+        # -- when the geocoder matches no nearby place, all four are null.
+        # The 2026-07-15 census never saw this (every record was near a
+        # place), the census-scope lesson.
+        record = dict(IDLE_EVENT_RECORDS[0])
+        record['city'] = None
+        record['state'] = None
+        record['rg_brg'] = None
+        record['rg_km'] = None
+        event = IdleEvent.model_validate(record)
+        assert event.city is None
+        assert event.state is None
+        assert event.rg_brg is None
+        assert event.rg_km is None
