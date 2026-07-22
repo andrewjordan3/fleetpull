@@ -16,7 +16,6 @@ from datetime import datetime
 import polars as pl
 
 from fleetpull.endpoints.shared import EndpointDefinition
-from fleetpull.exceptions import ProviderResponseError
 from fleetpull.incremental import DateWindow
 from fleetpull.model_contract import ResponseModel
 from fleetpull.records import latest_event_time, models_to_dataframe, validate_records
@@ -75,22 +74,23 @@ def process_batch(
     definition: EndpointDefinition[ResponseModel],
     context: WindowContext | None,
 ) -> ProcessedBatch:
-    """Validate, frame, and (watermark only) guard-and-window one batch.
+    """Validate, frame, and (watermark only) window one batch.
 
     The shared per-batch transform both runner arms drive. Snapshot path
     (``context is None``): validate the raw records against the response model
     and frame them; the frame is written as-is and carries no fold candidate.
-    Watermark path: additionally apply the future-event guard to the raw frame,
-    filter the frame to the resume window, and fold the in-window maximum event
-    time.
+    Watermark path: additionally filter the frame to the resume window and fold
+    the in-window maximum event time.
 
-    The guard runs on the *raw* frame, before the window filter: the window's
-    end is at or before ``now`` (the trailing edge is held back), so a
-    future-dated record falls outside the window and the filter would silently
-    drop it -- guarding the raw frame surfaces the anomaly instead. The fold
-    uses the *filtered* frame: an event time past ``window.end`` would otherwise
-    advance the watermark past the trailing edge and skip the next run's cutoff
-    holdback.
+    An overlap- or pad-anchored endpoint legitimately returns records past the
+    window's trailing edge -- including, on a long run, events that materialized
+    AFTER the run clock but before wall-clock ``now`` (e.g. Motive
+    ``idle_events``, whose company-local-day window is padded a day each side).
+    That is an EXPECTED, HANDLED condition, not an anomaly: the window filter
+    drops those records (they fall outside the resume window) and the next run's
+    window covers them, so it is never a fatal error. The fold uses the
+    *filtered* frame so such a record never advances the watermark past the
+    trailing edge and skips the next run's cutoff holdback.
 
     Args:
         batch: One batch of raw response records from the driver.
@@ -101,10 +101,9 @@ def process_batch(
         The frame to write and its fold candidate.
 
     Raises:
-        ProviderResponseError: A raw event time exceeds ``context.now`` -- a
-            contract violation (watermark path only). Validation and framing
-            errors propagate from ``validate_records`` / ``models_to_dataframe``
-            unchanged.
+        ProviderResponseError: Validation errors propagate from
+            ``validate_records`` and framing errors from ``models_to_dataframe``
+            unchanged. The watermark path adds no guard of its own.
 
     Side Effects:
         None -- pure transform; the caller writes the frame.
@@ -113,16 +112,6 @@ def process_batch(
     frame = models_to_dataframe(models, definition.response_model)
     if context is None:
         return ProcessedBatch(frame=frame, latest_event_time=None)
-    observed_raw = latest_event_time(frame, context.event_time_column)
-    if observed_raw is not None and observed_raw > context.now:
-        raise ProviderResponseError(
-            provider=definition.provider.value,
-            endpoint=definition.name,
-            detail=(
-                f'observed event time {observed_raw.isoformat()} is after the '
-                f'run clock {context.now.isoformat()}'
-            ),
-        )
     in_scope = frame.filter(in_window(context.event_time_column, context.window))
     return ProcessedBatch(
         frame=in_scope,

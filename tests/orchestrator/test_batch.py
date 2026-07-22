@@ -2,15 +2,12 @@
 
 from datetime import UTC, datetime
 
-import pytest
-
 from fleetpull.endpoints.shared import (
     EndpointDefinition,
     SnapshotMode,
     StaticGetSpecBuilder,
     StorageKind,
 )
-from fleetpull.exceptions import ProviderResponseError
 from fleetpull.incremental import DateWindow
 from fleetpull.model_contract import ResponseModel
 from fleetpull.orchestrator.batch import (
@@ -87,13 +84,17 @@ def test_watermark_path_drops_out_of_window_rows() -> None:
     assert processed.latest_event_time == datetime(2026, 6, 2, 12, tzinfo=UTC)
 
 
-def test_watermark_path_future_event_raises_before_filtering() -> None:
+def test_watermark_path_future_event_is_dropped_not_raised() -> None:
+    # A record materializing after the run clock (e.g. during a long sync) is an
+    # expected, handled condition, not an anomaly: it falls outside the resume
+    # window, so the filter drops it -- there is no fatal guard.
     batch = [
-        _record(1, datetime(2026, 6, 1, 8, tzinfo=UTC)),
-        _record(2, datetime(2026, 6, 11, tzinfo=UTC)),  # after now: a guard trip
+        _record(1, datetime(2026, 6, 1, 8, tzinfo=UTC)),  # in window
+        _record(2, datetime(2026, 6, 11, tzinfo=UTC)),  # after now + window: dropped
     ]
-    with pytest.raises(ProviderResponseError):
-        process_batch(batch, _definition(), _context())
+    processed = process_batch(batch, _definition(), _context())
+    assert processed.frame.get_column('id').to_list() == [1]
+    assert processed.latest_event_time == datetime(2026, 6, 1, 8, tzinfo=UTC)
 
 
 def test_empty_batch_snapshot_path() -> None:

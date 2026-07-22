@@ -12,7 +12,6 @@ from fleetpull.endpoints.shared import (
     StaticGetSpecBuilder,
     StorageKind,
 )
-from fleetpull.exceptions import ProviderResponseError
 from fleetpull.incremental import DateWindow
 from fleetpull.model_contract import ResponseModel
 from fleetpull.network.client import FetchedPage, TransportClient
@@ -155,10 +154,12 @@ def test_propagates_driver_fetch_failure() -> None:
         list(stream)
 
 
-def test_propagates_future_event_guard() -> None:
+def test_future_event_is_dropped_not_raised() -> None:
+    # A record materializing after the run clock (e.g. during a long sync) falls
+    # outside the resume window, so the window filter drops it. It is an expected,
+    # handled condition -- the stream yields a batch with no in-window rows rather
+    # than raising.
     batch = [_record(1, datetime(2026, 6, 11, tzinfo=UTC))]  # after _NOW (06-10)
-    stream = stream_processed_batches(
-        _definition(), CannedDriver([batch]), StubClient(), _WINDOW, _context()
-    )
-    with pytest.raises(ProviderResponseError):
-        list(stream)
+    processed = _stream(CannedDriver([batch]), _WINDOW, _context())
+    assert processed[0].frame.height == 0
+    assert processed[0].latest_event_time is None
