@@ -171,6 +171,8 @@ shared token-bucket limiter sits at the transport boundary and a 429's
   the port queue.
 - [DESIGN.md](DESIGN.md) — the design of record: architecture, invariants,
   and the probe-captured provider behaviors every binding encodes.
+- [ROADMAP.md](ROADMAP.md) — the consolidated index of deferred engineering
+  work, each item pointing back to its DESIGN.md rationale.
 - [CLAUDE.md](CLAUDE.md) — engineering standards and verification gates.
 
 ## Contributing
