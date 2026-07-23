@@ -43,7 +43,10 @@ class DrivingPeriod(ResponseModel):
         notes: Free-form annotation text; null when absent.
         duration: Span length in float seconds; on an in-progress record,
             the elapsed value so far.
-        start_kilometers: Odometer at span start, kilometers.
+        start_kilometers: Odometer at span start, kilometers; null when the
+            provider omits the start-side reading -- rare, but observed in
+            production history (a device/telemetry gap on an otherwise-complete
+            span), so nullable like its ``end_kilometers`` sibling.
         end_kilometers: Odometer at span end; null while in progress.
         driver: Attributed driver; null when the span is unattributed.
         vehicle: The vehicle the span belongs to.
@@ -69,7 +72,7 @@ class DrivingPeriod(ResponseModel):
     annotation_status: int | None = None
     notes: str | None = None
     duration: float
-    start_kilometers: float
+    start_kilometers: float | None = None
     end_kilometers: float | None = None
     driver: UserSummary | None = None
     vehicle: VehicleSummary

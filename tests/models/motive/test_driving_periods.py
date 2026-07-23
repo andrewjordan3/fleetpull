@@ -119,6 +119,17 @@ class TestDrivingPeriodValidation:
         assert period.annotation_status == 1
         assert period.notes == 'synthetic note 001'
 
+    def test_null_start_kilometers_validates(self) -> None:
+        # Production observed (a late-2025 backfill window) a completed span
+        # whose start-side odometer was absent -- start_kilometers null on an
+        # otherwise-complete record. The 2026-07-15 capture never exhibited it,
+        # so the case is synthesized from a captured complete record; the field
+        # is nullable because the provider can omit either odometer end.
+        record = {**DRIVING_PERIOD_RECORDS[0], 'start_kilometers': None}
+        period = DrivingPeriod.model_validate(record)
+        assert period.start_kilometers is None
+        assert period.status == 'complete'
+
     def test_the_in_progress_end_side_shape(self) -> None:
         period = DrivingPeriod.model_validate(DRIVING_PERIOD_IN_PROGRESS_RECORD)
         assert period.status == 'in_progress'
